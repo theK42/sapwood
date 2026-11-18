@@ -1,0 +1,10 @@
+{
+  "name": "@sapwood/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Schema, sheets, ops, formulas, validation and export. Pure TypeScript with no I/O; runs in the browser and on the server.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
