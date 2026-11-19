@@ -1,0 +1,13 @@
+{
+  "name": "@sapwood/spike-s1-formula",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bench": "node src/bench.ts",
+    "bench:ironcalc": "node src/bench-ironcalc.ts"
+  },
+  "devDependencies": {
+    "@ironcalc/nodejs": "^0.9.1",
+    "@ironcalc/wasm": "^0.9.1"
+  }
+}

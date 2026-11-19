@@ -1,6 +1,6 @@
 # Sapwood — Design Document
 
-> **Status:** Draft 3, 2026-11-15. Decisions marked **Decided** came out of design discussion; items marked **Open** are listed again in [§14](#14-open-questions).
+> **Status:** Draft 4, 2026-11-18 (formula engine decided, spike S1). Decisions marked **Decided** came out of design discussion; items marked **Open** are listed again in [§14](#14-open-questions).
 
 ---
 
@@ -245,7 +245,12 @@ rules:
 - **Per-entity rules** run once per active entity of `type`. Fields are named variables, and `REFS(field, "otherField")` follows references.
 - **Global rules** (no `type`) can use aggregate functions such as `ENTITIES("Weapon")`.
 - **Severity:** `error` blocks landing; `warning` does not.
-- The exact function set for rules is defined in the formula spike (Roadmap S1).
+- **Rule functions** (from spike S1):
+  - Field names are variables in per-entity rules. Rules have no grid, so `hp1` is a field, not a cell.
+  - `REFS(field, "other")` follows `ref` and `list<ref>` fields.
+  - `ENTITIES(type)` returns IDs; `ENTITIES(type, field)` returns that field's values.
+  - `ENTITY(id).field` and `ENTITY(id).id` work as in cells.
+  - Rules are not limited by pack reach.
 
 ### 5.8 Schema authoring
 
@@ -353,7 +358,14 @@ Child rows under a parent are explicitly **not** supported.
   - `'root/Weapon'!C4` (qualified) always names the pack explicitly.
   - Either way, the reference is **stored against the sheet's stable ID**, not its name. A sheet added or renamed later never silently retargets an existing formula. Once a reference would be ambiguous, it is rendered qualified.
   - The UI shows `pack/sheet` wherever a bare sheet name would be ambiguous.
-- **Entity references:** `ENTITY("Blaster").cooldown` (exact syntax decided in S1). Survives any row movement, and is the natural form for LLM-written formulas.
+- **Entity references:** `ENTITY("Blaster").cooldown`. **Decided** (S1). `.field` is postfix access on any expression, so `ENTITY(B2).damage` works too, and `SINGLETON("T").field` uses the same mechanism. These references survive any row or column movement, and they're the natural form for LLM-written formulas. `ENTITY()` and `ENTITIES()` in cells obey pack reach.
+- **No volatile functions.** **Decided** (S1). `TODAY`, `NOW`, `RAND` and similar are not provided, because the same commit must always export the same bytes.
+- **Column A is always literal; column B may be a formula.** **Decided** (S1). These rules apply on data sheets; scratch sheets have no bound rows.
+  - The type drives classification, layout and the sticky header, so it can't come from a formula.
+  - A computed ID (`=Tuning!$A$1&K2`, `="sword_"&C2`) is entered in the entity index once it has been calculated.
+  - An ID may not depend on `ENTITY()` or `ENTITIES()`, directly or through other cells (`#CYCLE!`). That rules out every cycle through the index, such as an ID that changes which entities exist, which in turn changes the ID.
+  - An entity's identity is its **row**. Editing an input renames the entity as a side effect (§8.4).
+  - ID formulas that use position (`ROW()`, `COLUMN()`) get a validation warning, because moving rows would rename entities.
 - **Pack reachability.** **Decided.** A formula may only read cells on sheets in its own pack or an ancestor pack. This is the same rule as for refs (§7.2), so the UI only has one rule to explain.
 - **No external I/O functions.** `IMPORTDATA`, `IMPORTRANGE`, web fetches and similar are not provided (§11.5).
 - **Errors:** a formula error in a bound cell is a validation error. In scratch it is only displayed.
@@ -466,7 +478,7 @@ Every change is an op against stable IDs. Every op has an exact inverse.
 
 Some edits are recorded with their **intent**, so a rebase can re-run them instead of replaying stale cell writes:
 
-- `renameId(old, new)` rewrites column B and every **literal** reference to the ID across all sheets. It reports refs produced by formulas (`="sword_"&B2`) that it cannot rewrite.
+- `renameId(old, new)` rewrites column B and every **literal** reference to the ID across all sheets. It reports refs produced by formulas (`="sword_"&B2`) that it cannot rewrite. When column B is itself a formula, there is nothing to rewrite there; a rename happens by changing the formula's inputs (§8.4).
 - `renameType` rewrites column A.
 - `renameEnumMember` rewrites enum cells.
 
@@ -486,6 +498,7 @@ On rebase, the intent is re-applied against the new head, so rows added concurre
 1. Rebase the task onto the branch head (op transformation against stable IDs).
 2. Recompute affected formulas.
 3. Run full validation on the **merged result**, so problems that only appear in combination (such as the same ID created in two tasks) are caught.
+   - **Computed-ID renames.** Rows whose ID changed are detected per row (the row's ID before and after). Validation reports the references left dangling, and the task offers a one-click **update references** that adds a `renameId`-style rewrite to the task.
 4. If there are no errors, commit atomically. Lands are **serialized** per branch through a queue.
 
 ### 8.5 Conflicts
@@ -807,7 +820,7 @@ The commit and op log already records who changed what and when. Auth events, ro
 | Server framework | Fastify or Hono (pick at setup) | Small, typed, fast |
 | Web | React + Vite | Largest ecosystem for grid components |
 | Grid | **Spike S2:** Glide Data Grid (MIT, canvas, fast) vs Univer (Apache-2.0, a full spreadsheet suite) | Canvas rendering is needed at 100k rows |
-| Formula engine | **Spike S1** (§12.2) | The riskiest component |
+| Formula engine | **Our own, in TypeScript** (§12.2, decided by spike S1) | Needs incremental recalc, stable-ID references, entity functions and pack reach, none of which an existing engine offers |
 | Database | **SQLite**, behind a thin storage interface | Single file, no server process, trivial to self-host. Our writes are serialized lands, so we don't need Postgres's concurrent writers. A Postgres adapter stays possible later |
 | Repo | Monorepo: `packages/core`, `server`, `web`, `cli`, `mcp` | `core` has no I/O and is shared by all |
 
@@ -815,8 +828,8 @@ The commit and op log already records who changed what and when. Auth events, ro
 
 **Decided: WASM is not a goal.** TypeScript compiles to JavaScript, not WebAssembly. The TS-to-WASM options (AssemblyScript and similar) are a different language with TS-like syntax. The preference for WASM was aesthetic, so it doesn't drive the choice. Spike S1 decides the formula engine on merit:
 
-- **(a) Engine in TypeScript.** Simplest integration, one language. Performance is fine at our scale. **Current lean.**
-- **(b) IronCalc** (Rust → WASM, MIT/Apache). An existing engine, so less to write. We'd need to fit our stable-ID references and entity references to it, and that may be harder than it sounds.
+- **(a) Engine in TypeScript.** Simplest integration, one language. **Decided** ([S1 result](spikes/S1-formula-engine.md)). With incremental recalc, a typical edit to a 30k-formula workbook takes 4–26 ms, against IronCalc's 200 ms.
+- **(b) IronCalc** (Rust → WASM, MIT/Apache). Fast at raw evaluation, with a large function library. But it recalculates the whole workbook on every edit, has no custom-function hook, and stores formulas by position. It is kept as a **dev-only differential test oracle** for function semantics.
 
 HyperFormula is excluded (GPLv3).
 

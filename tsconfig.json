@@ -1,6 +1,6 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/core" }
+    { "path": "packages/core" }, { "path": "spikes/s1-formula" }
   ]
 }

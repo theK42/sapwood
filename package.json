@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "spikes/*"
   ],
   "engines": {
     "node": ">=24"

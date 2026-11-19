@@ -12,7 +12,9 @@ Companion to [DESIGN.md](DESIGN.md). Phases are ordered by dependency and risk. 
 
 Each spike is throwaway code with a written result: what was tried, measurements, and a decision.
 
-### S1. Formula engine (riskiest)
+### S1. Formula engine (riskiest): done
+
+**Result:** [spikes/S1-formula-engine.md](spikes/S1-formula-engine.md). We write our own TypeScript engine. IronCalc becomes a dev-only test oracle: we run the same formulas through it and compare results. Every pass criterion was met.
 
 Evaluate (a) a TypeScript engine of our own and (b) IronCalc via WASM, with (c) C++/Rust → WASM in view (DESIGN §12.2).
 
