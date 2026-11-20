@@ -1,0 +1,405 @@
+{
+  "pack": "root",
+  "parent": null,
+  "types": {
+    "CollisionShape": {
+      "bolt": {
+        "shapes": [
+          {
+            "kind": "Box",
+            "size": {
+              "x": 5,
+              "y": 40
+            },
+            "rotation": 0
+          }
+        ]
+      },
+      "house": {
+        "shapes": [
+          {
+            "kind": "Box",
+            "size": {
+              "x": 40,
+              "y": 20
+            },
+            "offset": {
+              "x": 0,
+              "y": 10
+            },
+            "rotation": 0
+          },
+          {
+            "kind": "Box",
+            "size": {
+              "x": 40,
+              "y": 20
+            },
+            "offset": {
+              "x": 0,
+              "y": 10
+            },
+            "rotation": 0.785
+          }
+        ]
+      }
+    },
+    "Enemy": {
+      "basic_enemy": {
+        "sprite": {
+          "type": "Sprite",
+          "id": "spr_ship"
+        },
+        "script": "enemyShip.lua",
+        "collider": {
+          "type": "CollisionShape",
+          "id": "house"
+        }
+      }
+    },
+    "FlyoffStyle": {
+      "scoreFlyoff": {
+        "font": {
+          "type": "Font",
+          "id": "cellphone"
+        },
+        "script": "Flyoff.lua",
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        }
+      }
+    },
+    "Font": {
+      "cellphone": {
+        "texture": {
+          "type": "Texture",
+          "id": "tex_cellphone"
+        },
+        "width": 128,
+        "height": 64,
+        "glyphWidth": 7,
+        "glyphHeight": 9,
+        "glyphs": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~",
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        }
+      },
+      "good_neighbors": {
+        "texture": {
+          "type": "Texture",
+          "id": "tex_good_neighbors"
+        },
+        "width": 850,
+        "height": 64,
+        "glyphWidth": 9,
+        "glyphHeight": 64,
+        "glyphs": "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~",
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        }
+      }
+    },
+    "PlayerShip": {
+      "basic_ship": {
+        "sprite": {
+          "type": "Sprite",
+          "id": "spr_ship"
+        },
+        "collider": {
+          "type": "CollisionShape",
+          "id": "house"
+        }
+      }
+    },
+    "Projectile": {
+      "BlasterBolt": {
+        "sprite": {
+          "type": "Sprite",
+          "id": "spr_blaster"
+        },
+        "script": "blaster_bolt.lua",
+        "collider": {
+          "type": "CollisionShape",
+          "id": "bolt"
+        }
+      }
+    },
+    "Shader": {
+      "Textured": {
+        "vertFilename": "basic.vert",
+        "fragFilename": "textured.frag"
+      }
+    },
+    "Sprite": {
+      "spr_blaster": {
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        },
+        "texture": {
+          "type": "Texture",
+          "id": "tex_blaster"
+        },
+        "width": 40,
+        "height": 40
+      },
+      "spr_galaxy": {
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        },
+        "texture": {
+          "type": "Texture",
+          "id": "tex_galaxy"
+        },
+        "width": 50,
+        "height": 50
+      },
+      "spr_galaxy2": {
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        },
+        "texture": {
+          "type": "Texture",
+          "id": "tex_galaxy3"
+        },
+        "width": 50,
+        "height": 50
+      },
+      "spr_nebula": {
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        },
+        "texture": {
+          "type": "Texture",
+          "id": "tex_nebula"
+        },
+        "width": 50,
+        "height": 50
+      },
+      "spr_ship": {
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        },
+        "texture": {
+          "type": "Texture",
+          "id": "tex_ship"
+        },
+        "width": 40,
+        "height": 40
+      },
+      "spr_star1": {
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        },
+        "texture": {
+          "type": "Texture",
+          "id": "tex_star2"
+        },
+        "width": 16,
+        "height": 16
+      },
+      "spr_star2": {
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        },
+        "texture": {
+          "type": "Texture",
+          "id": "tex_star3"
+        },
+        "width": 16,
+        "height": 16
+      },
+      "spr_star3": {
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        },
+        "texture": {
+          "type": "Texture",
+          "id": "tex_star4"
+        },
+        "width": 16,
+        "height": 16
+      },
+      "spr_star4": {
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        },
+        "texture": {
+          "type": "Texture",
+          "id": "tex_star5"
+        },
+        "width": 16,
+        "height": 16
+      },
+      "spr_star5": {
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        },
+        "texture": {
+          "type": "Texture",
+          "id": "tex_star6"
+        },
+        "width": 16,
+        "height": 16
+      },
+      "spr_star6": {
+        "shader": {
+          "type": "Shader",
+          "id": "Textured"
+        },
+        "texture": {
+          "type": "Texture",
+          "id": "tex_star7"
+        },
+        "width": 16,
+        "height": 16
+      }
+    },
+    "StarfieldLayer": {
+      "far": {
+        "density": 6,
+        "speed": 30,
+        "alpha": 0.3,
+        "stars": [
+          {
+            "type": "Sprite",
+            "id": "spr_galaxy"
+          },
+          {
+            "type": "Sprite",
+            "id": "spr_galaxy2"
+          },
+          {
+            "type": "Sprite",
+            "id": "spr_nebula"
+          }
+        ]
+      },
+      "mid": {
+        "density": 20,
+        "speed": 50,
+        "alpha": 0.5,
+        "stars": [
+          {
+            "type": "Sprite",
+            "id": "spr_star1"
+          },
+          {
+            "type": "Sprite",
+            "id": "spr_star2"
+          },
+          {
+            "type": "Sprite",
+            "id": "spr_star3"
+          },
+          {
+            "type": "Sprite",
+            "id": "spr_star4"
+          },
+          {
+            "type": "Sprite",
+            "id": "spr_star5"
+          },
+          {
+            "type": "Sprite",
+            "id": "spr_star6"
+          }
+        ]
+      },
+      "near": {
+        "density": 10,
+        "speed": 100,
+        "alpha": 0.6,
+        "stars": [
+          {
+            "type": "Sprite",
+            "id": "spr_star2"
+          }
+        ]
+      }
+    },
+    "Texture": {
+      "tex_blaster": {
+        "filename": "blaster.png",
+        "isPixelArt": true
+      },
+      "tex_cellphone": {
+        "filename": "charmap-cellphone_white.png",
+        "isPixelArt": true
+      },
+      "tex_galaxy": {
+        "filename": "galaxy.png",
+        "isPixelArt": false
+      },
+      "tex_galaxy3": {
+        "filename": "galaxy3.png",
+        "isPixelArt": false
+      },
+      "tex_good_neighbors": {
+        "filename": "good_neighbors.png",
+        "isPixelArt": true
+      },
+      "tex_nebula": {
+        "filename": "nebula.png",
+        "isPixelArt": false
+      },
+      "tex_ship": {
+        "filename": "ship.png",
+        "isPixelArt": true
+      },
+      "tex_star1": {
+        "filename": "star1.png",
+        "isPixelArt": true
+      },
+      "tex_star2": {
+        "filename": "star2.png",
+        "isPixelArt": true
+      },
+      "tex_star3": {
+        "filename": "star3.png",
+        "isPixelArt": true
+      },
+      "tex_star4": {
+        "filename": "star4.png",
+        "isPixelArt": true
+      },
+      "tex_star5": {
+        "filename": "star5.png",
+        "isPixelArt": true
+      },
+      "tex_star6": {
+        "filename": "star6.png",
+        "isPixelArt": true
+      },
+      "tex_star7": {
+        "filename": "star7.png",
+        "isPixelArt": true
+      }
+    },
+    "Weapon": {
+      "Blaster": {
+        "projectiles": [
+          {
+            "type": "Projectile",
+            "id": "BlasterBolt"
+          }
+        ],
+        "script": "blaster.lua",
+        "cooldown": 0.5,
+        "damage": 1
+      }
+    }
+  }
+}

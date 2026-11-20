@@ -111,7 +111,8 @@ export class Engine {
   private byType = new Map<string, string[]>(); // cache of typeIds()
   private typeRows = new Map<string, Set<RowId>>();
   private rowEnt = new Map<RowId, EntityRec>();
-  private layouts = new Map<SheetId, Map<string, Map<string, ColId>>>();
+  /** sheet -> type -> field -> column; null for a field the sheet has no column for (reads as blank). */
+  private layouts = new Map<SheetId, Map<string, Map<string, ColId | null>>>();
   private entitiesDirty = true;
   private dirtyEntityRows = new Map<RowId, SheetId>();
 
@@ -289,7 +290,7 @@ export class Engine {
    * The same, with each field's column given directly. Only fields held in one cell are
    * listed: `ENTITY(id).field` reads exactly one cell.
    */
-  setLayoutColumns(sheet: SheetId, type: string, fields: ReadonlyMap<string, ColId>): void {
+  setLayoutColumns(sheet: SheetId, type: string, fields: ReadonlyMap<string, ColId | null>): void {
     let bySheet = this.layouts.get(sheet);
     if (!bySheet) this.layouts.set(sheet, (bySheet = new Map()));
     bySheet.set(type, new Map(fields));
@@ -995,7 +996,8 @@ export class Engine {
     if (isErr(rec)) return rec;
     if (field === "id") return rec.id;
     const col = this.layouts.get(rec.sheet)?.get(rec.type)?.get(field);
-    if (!col) return new FError("#NAME?", `${rec.type} has no field '${field}'`);
+    if (col === undefined) return new FError("#NAME?", `${rec.type} has no field '${field}'`);
+    if (col === null) return null; // a field with no column on this sheet is blank
     return this.readCell(rec.sheet, rec.row, col);
   }
 

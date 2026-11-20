@@ -28,6 +28,7 @@ export interface ProjectDef {
 export function loadProject(schemaYaml: string, def: ProjectDef | string): { project: Project; schemaIssues: SchemaIssue[] } {
   const parsed = parseSchema(schemaYaml);
   const schema = resolveSchema(parsed.schema);
+  schema.issues.unshift(...parsed.issues); // validation reports both
   const project = new Project(schema);
   const d: ProjectDef = typeof def === "string" ? (parseYaml(def) as ProjectDef) : def;
   for (const p of d.packs ?? []) project.addPack(p.name, p.parent ?? project.wb.root);
@@ -38,7 +39,7 @@ export function loadProject(schemaYaml: string, def: ProjectDef | string): { pro
       project.setRows(id, s.rows.map((r) => r.map(toInput)));
     }
   });
-  return { project, schemaIssues: [...parsed.issues, ...schema.issues] };
+  return { project, schemaIssues: schema.issues };
 }
 
 /** A YAML scalar as cell input: numbers and booleans as they'd be typed. */

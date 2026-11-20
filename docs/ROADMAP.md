@@ -66,6 +66,33 @@ Pass criteria:
 
 **Milestone M1:** KRBSG expressed as a schema plus sheets in test fixtures. Validation catches injected errors (bad ref, duplicate ID, wrong type, a cross-sibling pack ref). Export produces the expected JSON.
 
+**Status (2026-11-19): M1 met.** The fixtures are in [`packages/core/fixtures/krbsg`](../packages/core/fixtures/krbsg), including the expected export. Done so far:
+
+- **Schema:** the model, the YAML text form and resolution.
+- **Engine:** the S1 formula engine is in core and is now schema-aware.
+- **Sheets:** layouts (whole, split-struct and repeated-list columns), row classification including singletons, cell parsing for every field type, and entity projection.
+- **Validation:** the whole pipeline, including custom rules.
+- **Export:** deterministic JSON per pack, plus the manifest.
+
+Importing KRBSG showed that its per-tab names collide once IDs are global (`Ship` was both a texture and a sprite, and so on). The fixture prefixes them. Phase 5's importer will need a way to handle this.
+
+Still to do in Phase 1:
+
+- **Ops on the real model**, per S3: apply, invert and rebase, plus formats.
+  - The refactor ops `renameId`, `renameType` and `renameEnumMember`. Renames rewrite IDs inside JSON list cells (§6.4); the S3 spike used comma lists.
+  - Schema ops and migrations (§5.9).
+- **The project API:** load, apply ops, validate, export.
+- **Engine performance**, from S2:
+  - column-level dependencies for `ENTITIES(type, field)`;
+  - an entity index and validation that update per row;
+  - a topological recalc order;
+  - loading stored values instead of recalculating everything.
+- **Smaller gaps:**
+  - the `SINGLETON("T").field` formula function;
+  - schema checks for datetime and duration `min`/`max`;
+  - stable pack IDs (packs are keyed by name today);
+  - singleton lists spread over repeated cells (§6.8).
+
 ## Phase 2: Server, persistence, CLI
 
 - SQLite storage: commits, ops, tasks, branches, snapshots.

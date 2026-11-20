@@ -26,7 +26,8 @@ export interface Issue {
   /** Stable kind, for tests and filtering: "row.unknown-type", "cell.parse", … */
   code: string;
   message: string;
-  at: Location;
+  /** Absent for issues that aren't about one place, such as a missing required singleton field. */
+  at?: Location;
 }
 
 /** One field of one entity or singleton, as read from its cells. */
@@ -38,6 +39,8 @@ export interface FieldEntry {
   cells: Location[];
   /** Any of its cells holds a formula. */
   formula: boolean;
+  /** A cell failed to parse (already reported), so a missing value isn't "blank". */
+  invalid?: boolean;
 }
 
 export interface Entity {
@@ -60,6 +63,7 @@ export interface SingletonEntry {
   qualified: boolean;
   value?: FieldValue;
   formula: boolean;
+  invalid?: boolean;
 }
 
 export interface Projection {
@@ -133,7 +137,8 @@ export class Project {
     if (this.wb.sheet(sheet).kind !== "data") return;
     for (const [name, t] of this.schema.types) {
       if (t.def.singleton) continue;
-      const cols = new Map<string, ColId>();
+      // Every field is known to formulas; one without a single column of its own reads as blank.
+      const cols = new Map<string, ColId | null>(t.fields.map((f) => [f.def.name, null]));
       for (const c of this.layout(sheet, name)) {
         if (c.path.length || c.index !== undefined) continue;
         cols.set(t.fields.find((f) => f.def.id === c.field)!.def.name, c.col);
@@ -254,7 +259,10 @@ export class Project {
       const c = this.engine.cellById(sheet, row, col);
       if (c.formula) entry.formula = true;
       const r = parseCell(this.schema, type, c.value, c.formula);
-      if (r && !r.ok && active) issues.push({ level: "error", code: "cell.parse", message: `${f.def.name}: ${r.message}`, at: { sheet, row, col } });
+      if (r && !r.ok) {
+        entry.invalid = true;
+        if (active) issues.push({ level: "error", code: "cell.parse", message: `${f.def.name}: ${r.message}`, at: { sheet, row, col } });
+      }
       return r;
     };
     const whole = cols.find((c) => !c.path.length && c.index === undefined);
@@ -277,6 +285,7 @@ export class Project {
       }
       while (items.length && items[items.length - 1] === undefined) items.pop();
       const gap = items.findIndex((x) => x === undefined);
+      if (gap >= 0) entry.invalid = true;
       if (gap >= 0 && !bad && active)
         issues.push({ level: "error", code: "cell.list-gap", message: `${f.def.name}[${gap}] is blank but a later column is filled`, at: { sheet, row, col: sorted.find((c) => c.index === gap)?.col ?? sorted[0]!.col } });
       if (!bad && gap < 0 && items.length) entry.value = items as FieldValue[];
@@ -346,6 +355,7 @@ export class Project {
     const c = this.engine.cellById(sheet, row, colB);
     entry.formula = c.formula;
     const r = parseCell(this.schema, def.type, c.value, c.formula);
+    if (r && !r.ok) entry.invalid = true;
     if (r && !r.ok && active) issues.push({ level: "error", code: "cell.parse", message: `${path.join(".")}: ${r.message}`, at: { sheet, row, col: colB } });
     if (r?.ok) entry.value = r.value;
     return entry;

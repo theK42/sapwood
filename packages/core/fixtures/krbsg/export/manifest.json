@@ -1,0 +1,11 @@
+{
+  "branch": "main",
+  "packs": [
+    {
+      "name": "root",
+      "parent": null,
+      "file": "root.json",
+      "sha256": "a9cc9b01f0cff8c708657144fb736b84ce58477305b17e4f4f2d079a6394afd7"
+    }
+  ]
+}
