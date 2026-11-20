@@ -74,14 +74,20 @@ Pass criteria:
 - **Validation:** the whole pipeline, including custom rules.
 - **Export:** deterministic JSON per pack, plus the manifest.
 
+**Ops and rebase (2026-11-20).** The project's truth is a plain document that ops apply to; the workbook and engine mirror each op. Done:
+
+- Cell, format, structure, sheet, pack and layout ops, each with an exact inverse.
+- `renameId`, schema-aware, rewriting refs inside JSON cells token by token.
+- Rebase per S3, on the real document, with S3's property tests ported and passing.
+- Per-writer ID salts, so concurrent tasks never mint the same row ID; stable pack IDs.
+- An engine fix found by the property tests: deleting a row a formula reads, where the cell is empty, now gives `#REF!`.
+
 Importing KRBSG showed that its per-tab names collide once IDs are global (`Ship` was both a texture and a sprite, and so on). The fixture prefixes them. Phase 5's importer will need a way to handle this.
 
 Still to do in Phase 1:
 
-- **Ops on the real model**, per S3: apply, invert and rebase, plus formats.
-  - The refactor ops `renameId`, `renameType` and `renameEnumMember`. Renames rewrite IDs inside JSON list cells (§6.4); the S3 spike used comma lists.
-  - Schema ops and migrations (§5.9).
-- **The project API:** load, apply ops, validate, export.
+- **Schema ops and migrations** (§5.9), including the refactor ops `renameType` and `renameEnumMember`. The other ops are done (see above).
+- **The project API:** load, apply ops, validate and export all work (`loadProject`, `Project.apply`, `Project.fromDoc`, `validate`, `exportJson`); what remains is a tidy public facade over them.
 - **Engine performance**, from S2:
   - column-level dependencies for `ENTITIES(type, field)`;
   - an entity index and validation that update per row;
@@ -90,7 +96,6 @@ Still to do in Phase 1:
 - **Smaller gaps:**
   - the `SINGLETON("T").field` formula function;
   - schema checks for datetime and duration `min`/`max`;
-  - stable pack IDs (packs are keyed by name today);
   - singleton lists spread over repeated cells (§6.8).
 
 ## Phase 2: Server, persistence, CLI

@@ -1,6 +1,6 @@
 # Sapwood — Design Document
 
-> **Status:** Draft 6, 2026-11-19 (formula engine decided by spike S1, grid component by spike S2, op rebase by spike S3). Decisions marked **Decided** came out of design discussion; items marked **Open** are listed again in [§14](#14-open-questions).
+> **Status:** Draft 7, 2026-11-20 (formula engine decided by spike S1, grid component by spike S2, op rebase by spike S3). Decisions marked **Decided** came out of design discussion; items marked **Open** are listed again in [§14](#14-open-questions).
 
 ---
 
@@ -480,6 +480,7 @@ Every change is an op against stable IDs. Every op has an exact inverse.
 Some edits are recorded with their **intent**, so a rebase can re-run them instead of replaying stale cell writes:
 
 - `renameId(old, new)` rewrites column B and every **literal** reference to the ID across all sheets. It reports refs produced by formulas (`="sword_"&B2`) that it cannot rewrite. When column B is itself a formula, there is nothing to rewrite there; a rename happens by changing the formula's inputs (§8.4).
+  - References are found through the schema, not by matching text: only cells where the field type puts a ref (`ref<…>`, a list of them, or a ref inside a struct or union) are rewritten, so a description that happens to equal the ID is left alone. Inside JSON cells, only the matching string tokens change; the rest of the text stays as written. Matching is exact (case-sensitive). Commented-out rows are rewritten too. Formulas are never rewritten; the ones mentioning the old ID as a string literal are listed for the user.
 - `renameType` rewrites column A.
 - `renameEnumMember` rewrites enum cells.
 
@@ -515,6 +516,7 @@ On rebase, the intent is re-applied against the new head, so rows added concurre
 | One side inserts or moves rows after a row the other moved | No conflict. They stay put: they go after the anchor's old predecessor, so the result doesn't depend on landing order |
 | Each change is valid alone but invalid together (duplicate IDs, a broken ref) | Not a conflict. Caught by validation step 3 |
 | Formatting on the same cell | Last write wins |
+| Sheet, pack and layout changes (rename, move to a pack, set a layout) | Last write wins. One that no longer applies on the head, such as a sheet name the other side took, is dropped and reported |
 
 Conflicts are decided on each side's **net** effect, a three-way comparison with the base: writing a cell and writing it back is not a change. **Decided by S3.**
 

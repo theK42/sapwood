@@ -15,3 +15,4 @@ export * from "./formula/content.ts";
 export * from "./ops/doc.ts";
 export * from "./ops/ops.ts";
 export { renameIdFormulas, renameIdWrites, rewriteRefs } from "./ops/rename.ts";
+export * from "./ops/rebase.ts";
