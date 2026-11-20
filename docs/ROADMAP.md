@@ -27,7 +27,9 @@ Pass criteria:
 - About 10k formula cells recalculate after a single edit in under 50 ms.
 - An honest estimate of the cost to reach the target function set (the top ~100 Excel functions).
 
-### S2. Grid component
+### S2. Grid component: done
+
+**Result:** [spikes/S2-grid-component.md](spikes/S2-grid-component.md). We use Glide Data Grid. Our model, ops, clipboard and undo stay in our code, and Glide only renders and reports edits. Univer passed the criteria too, but only after its model, formula engine, editor and clipboard were all overridden. Copy/paste round trips with the real Excel and Sheets apps work.
 
 Evaluate Glide Data Grid vs Univer.
 

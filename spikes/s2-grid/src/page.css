@@ -1,0 +1,13 @@
+html, body, #root { height: 100%; margin: 0; }
+body { font: 13px/1.4 system-ui, sans-serif; color: #222; background: #fff; }
+#root { display: flex; flex-direction: column; }
+.bar { display: flex; gap: .5rem; align-items: center; padding: 6px 8px; border-bottom: 1px solid #ddd; background: #f7f7f7; }
+.bar .addr { width: 4.5rem; font-family: ui-monospace, monospace; color: #555; }
+.bar input.formula { flex: 1; font: 13px ui-monospace, monospace; padding: 3px 6px; border: 1px solid #ccc; border-radius: 3px; }
+.bar select, .bar button { font: inherit; }
+.grid { flex: 1; min-height: 0; position: relative; }
+.status { display: flex; gap: 1.25rem; padding: 4px 8px; border-top: 1px solid #ddd; background: #f7f7f7; color: #555; font-variant-numeric: tabular-nums; }
+.status b { color: #222; font-weight: 600; }
+.tip { position: fixed; z-index: 1000; pointer-events: none; background: #222; color: #fff; padding: 4px 8px; border-radius: 4px; max-width: 22rem; font-size: 12px; }
+.tip.warning { background: #8a5a00; }
+.tip.error { background: #a01818; }

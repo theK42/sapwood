@@ -1,6 +1,6 @@
 # Sapwood — Design Document
 
-> **Status:** Draft 4, 2026-11-18 (formula engine decided, spike S1). Decisions marked **Decided** came out of design discussion; items marked **Open** are listed again in [§14](#14-open-questions).
+> **Status:** Draft 5, 2026-11-19 (formula engine decided by spike S1, grid component by spike S2). Decisions marked **Decided** came out of design discussion; items marked **Open** are listed again in [§14](#14-open-questions).
 
 ---
 
@@ -373,6 +373,7 @@ Child rows under a parent are explicitly **not** supported.
 
 ### 6.6 Copy/paste
 
+- **Our own clipboard layer**, not the grid component's. **Decided** (S2). Copy writes TSV of the shown values, plus an HTML table whose formula cells carry relative R1C1 formulas in `data-sheets-formula`. That attribute is Google Sheets' own, and it is also how Sapwood pastes into itself.
 - Within Sapwood: cells copy with formulas, adjusted relatively as in Excel, and with formats.
 - To and from Excel and Google Sheets: through the clipboard's HTML and TSV formats. Values and formulas where they map, values otherwise.
 - Pasting into bound cells parses and validates immediately. A bad paste shows errors and is never silently coerced.
@@ -819,7 +820,7 @@ The commit and op log already records who changed what and when. Auth events, ro
 | Runtime | Node.js LTS | Mature; first-class SQLite bindings |
 | Server framework | Fastify or Hono (pick at setup) | Small, typed, fast |
 | Web | React + Vite | Largest ecosystem for grid components |
-| Grid | **Spike S2:** Glide Data Grid (MIT, canvas, fast) vs Univer (Apache-2.0, a full spreadsheet suite) | Canvas rendering is needed at 100k rows |
+| Grid | **Glide Data Grid** (MIT, canvas; decided by spike S2) | Canvas rendering is needed at 100k rows. Glide never owns data: it reads cells through a callback and reports edits, so our ops stay the truth. Univer (Apache-2.0) also scrolled 100k rows, but it has its own model, undo stack, clipboard and formula engine, and each had to be overridden |
 | Formula engine | **Our own, in TypeScript** (§12.2, decided by spike S1) | Needs incremental recalc, stable-ID references, entity functions and pack reach, none of which an existing engine offers |
 | Database | **SQLite**, behind a thin storage interface | Single file, no server process, trivial to self-host. Our writes are serialized lands, so we don't need Postgres's concurrent writers. A Postgres adapter stays possible later |
 | Repo | Monorepo: `packages/core`, `server`, `web`, `cli`, `mcp` | `core` has no I/O and is shared by all |

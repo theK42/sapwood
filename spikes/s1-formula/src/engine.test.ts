@@ -388,3 +388,53 @@ describe("rendering", () => {
     expect(e.formula(s, "Z99")).toBe(t);
   });
 });
+
+describe("wide readers computed before their inputs", () => {
+  // Found in S2: a reader written above its inputs used to retry once per stale
+  // precedent, which made loading 100k rows quadratic.
+  it("evaluate each formula a bounded number of times", () => {
+    const n = 3000;
+    const wb = new Workbook();
+    const s = wb.addSheet("S", "root", "scratch");
+    const e = new Engine(wb);
+    e.batch(() => {
+      e.setAt(s, 1, 3, "=SUM(B:B)");
+      for (let r = 1; r <= n; r++) {
+        e.setAt(s, r, 1, String(r));
+        e.setAt(s, r, 2, `=A${r}*2`);
+      }
+    });
+    expect(e.getAt(s, 1, 3)).toBe(n * (n + 1));
+    expect(e.lastEvaluations).toBeLessThanOrEqual(n + 2);
+  });
+
+  it("still detect a cycle through a wide read", () => {
+    const wb = new Workbook();
+    const s = wb.addSheet("S", "root", "scratch");
+    const e = new Engine(wb);
+    e.batch(() => {
+      e.set(s, "C1", "=SUM(B1:B3)");
+      e.set(s, "B1", "1");
+      e.set(s, "B2", "=C1+1");
+      e.set(s, "B3", "3");
+    });
+    expect(isErr(e.get(s, "C1")) || isErr(e.get(s, "B2"))).toBe(true);
+  });
+});
+
+describe("ROW and COLUMN", () => {
+  it("return positions and follow structure changes", () => {
+    const { s, e } = setup();
+    e.batch(() => {
+      e.set(s, "B3", "=ROW()");
+      e.set(s, "C1", "=COLUMN(E9)*100+ROW(E9)");
+    });
+    expect(e.get(s, "B3")).toBe(3);
+    expect(e.get(s, "C1")).toBe(509);
+    e.insertRows(s, 1, 2);
+    expect(e.get(s, "B5")).toBe(5);
+    expect(e.get(s, "C3")).toBe(511);
+    e.moveRows(s, 5, 1, 1);
+    expect(e.get(s, "B1")).toBe(1);
+  });
+});

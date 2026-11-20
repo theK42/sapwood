@@ -14,6 +14,8 @@ export interface Ctx {
   entity(id: string): EntityValue | FError;
   entityField(id: string, field: string): Value;
   entitiesOfType(type: string): string[] | FError;
+  /** 1-based position of a reference, or of the formula's own cell when `e` is undefined. */
+  position(e: Expr | undefined): { row: number; col: number } | FError;
 }
 
 export type Fn = (args: Expr[], ctx: Ctx) => Value;
@@ -329,6 +331,14 @@ export const FUNCTIONS: Record<string, Fn> = {
   },
 
   // ---------------------------------------------------------- lookup
+  ROW: (args, ctx) => {
+    const p = ctx.position(args[0]);
+    return isErr(p) ? p : p.row;
+  },
+  COLUMN: (args, ctx) => {
+    const p = ctx.position(args[0]);
+    return isErr(p) ? p : p.col;
+  },
   ROWS: (args, ctx) => asArray(ctx.eval(args[0]!)).rows.length,
   COLUMNS: (args, ctx) => asArray(ctx.eval(args[0]!)).rows[0]?.length ?? 0,
   INDEX: (args, ctx) => {

@@ -4,9 +4,11 @@
 // INDEX and anything else that decides at run time what it reads is tracked exactly.
 //
 // Recalc does not recurse. Stale cells are evaluated off a stack; when a formula
-// reads a precedent that is still stale, evaluation aborts (NotReady), the precedent
-// is pushed, and the formula is retried after it. A read of a precedent that is
-// itself waiting further down the stack is a cycle. Long chains therefore cost no
+// reads precedents that are still stale, evaluation carries on with placeholders and
+// collects them all; then it aborts (NotReady), the precedents are pushed, and the
+// formula is retried after them. Collecting them all keeps a wide reader
+// (SUM(ENTITIES(...)) over 80k rows) linear rather than one retry per precedent.
+// A read of a precedent that is itself waiting further down the stack is a cycle. Long chains therefore cost no
 // stack depth, and a good order is found without a separate topological sort.
 
 import { bind, BindError, render, shift, type BoundPoint, type Expr } from "./bind.ts";
@@ -56,9 +58,9 @@ interface EntityRec {
 }
 
 class NotReady {
-  readonly key: Key;
-  constructor(key: Key) {
-    this.key = key;
+  readonly keys: Key[];
+  constructor(keys: Key[]) {
+    this.keys = keys;
   }
 }
 
@@ -115,6 +117,12 @@ export class Engine {
 
   private batchDepth = 0;
   private pending: Key[] = [];
+  /** Stale precedents met during the current cell evaluation; null outside recalc. */
+  private missing: Key[] | null = null;
+  /** Cells written or recalculated since the last takeChanged(). */
+  private changed = new Set<Key>();
+  /** Formulas that called ROW() or COLUMN(). */
+  private positional = new Set<Key>();
   private scope: EvalScope = { owner: null, hostSheet: null, reachFrom: null, ruleEntity: null, collect: null };
 
   /** Number of formula evaluations in the last recalc (retries included). */
@@ -155,6 +163,20 @@ export class Engine {
   getAt(sheet: SheetId, rowPos: number, colPos: number): Scalar {
     const s = this.wb.sheet(sheet);
     return this.cells.get(keyOf(sheet, s.rows.idAt(rowPos), s.cols.idAt(colPos)))?.value ?? null;
+  }
+
+  /**
+   * Cells written or recalculated since the last call, for grids to repaint just those.
+   * A value may be unchanged; structure changes are not covered (repaint everything).
+   */
+  takeChanged(): { sheet: SheetId; row: RowId; col: ColId }[] {
+    this.flush();
+    const out = [...this.changed].map((k) => {
+      const [sheet, row, col] = k.split("|") as [SheetId, RowId, ColId];
+      return { sheet, row, col };
+    });
+    this.changed.clear();
+    return out;
   }
 
   /** Formula text as the grid would show it now, or null for a constant. */
@@ -275,6 +297,7 @@ export class Engine {
   }
 
   private setById(sheet: SheetId, row: RowId, col: ColId, input: string): void {
+    this.changed.add(keyOf(sheet, row, col));
     if (input.startsWith("=") && input.length > 1) {
       this.setFormula(sheet, row, col, input, () => bind(parseFormula(input), { wb: this.wb, sheet }));
       return;
@@ -371,6 +394,7 @@ export class Engine {
       if (c?.formula) this.pending.push(k); // a restored formula cell must re-evaluate
     }
     for (const rd of this.sheetRanges.get(sheet) ?? []) this.pending.push(rd.owner);
+    for (const k of this.positional) if (this.cells.get(k)?.sheet === sheet) this.pending.push(k);
     if (cols) this.reindexRanges(sheet);
     this.entitiesDirty = true;
     if (this.batchDepth === 0) this.flush();
@@ -537,8 +561,12 @@ export class Engine {
       this.scope = { owner: k, hostSheet: c.sheet, reachFrom: hostPack, ruleEntity: null, collect };
       c.state = "computing";
       evaluations++;
+      this.changed.add(k);
+      this.missing = [];
       try {
-        c.value = this.classifyColumns(c, this.toCellValue(this.eval(c.formula)), collect);
+        const raw = this.eval(c.formula);
+        if (this.missing.length > 0) throw new NotReady(this.missing);
+        c.value = this.classifyColumns(c, this.toCellValue(raw), collect);
         c.usesIndex = collect.usesIndex;
         this.rangeCache.get(c.sheet)?.clear(); // a value on this sheet changed
         c.state = "fresh";
@@ -552,8 +580,7 @@ export class Engine {
         }
       } catch (e) {
         if (!(e instanceof NotReady)) throw e;
-        const p = this.cells.get(e.key)!;
-        if (p.waiting) {
+        if (e.keys.some((key) => this.cells.get(key)!.waiting)) {
           // p is further down the stack, waiting on a chain that leads back here.
           c.value = new FError("#CYCLE!", "Circular reference");
           c.state = "fresh";
@@ -564,9 +591,10 @@ export class Engine {
           c.state = "stale";
           c.waiting = true;
           this.commitDeps(c, collect); // keep what we learned, so later edits still reach us
-          stack.push(e.key);
+          for (let i = e.keys.length - 1; i >= 0; i--) stack.push(e.keys[i]!);
         }
       } finally {
+        this.missing = null;
         this.scope = { owner: null, hostSheet: null, reachFrom: null, ruleEntity: null, collect: null };
       }
     }
@@ -616,7 +644,7 @@ export class Engine {
     const c = this.cells.get(k);
     if (!c) return null;
     if (c.state === "computing") return new FError("#CYCLE!", "Circular reference");
-    if (c.state === "stale") throw new NotReady(k);
+    if (c.state === "stale") return this.notReady(c);
     if (c.usesIndex && this.scope.collect) this.scope.collect.usesIndex = true;
     return c.value;
   }
@@ -639,8 +667,10 @@ export class Engine {
     let hit = bySheet?.get(ck);
     if (!hit) {
       this.rangeUsesIndex = false;
+      this.rangeIncomplete = false;
       const v = this.buildRange(e);
       if (isErr(v)) return v;
+      if (this.rangeIncomplete) return v; // has placeholders: never cache it
       hit = { v, usesIndex: this.rangeUsesIndex };
       if (!bySheet) this.rangeCache.set(e.sheet, (bySheet = new Map()));
       bySheet.set(ck, hit);
@@ -683,8 +713,23 @@ export class Engine {
     return { kind: "array", rows: out };
   }
 
+  /**
+   * A stale precedent: remember it and carry on with a placeholder, so one pass finds
+   * every precedent. A waiting one is on the stack below us, so stop now (a cycle).
+   */
+  private notReady(c: Cell): Scalar {
+    if (this.missing === null || c.waiting) throw new NotReady([c.key]);
+    this.missing.push(c.key);
+    return null;
+  }
+
+  private rangeIncomplete = false;
+
   private rangeCellValue(cell: Cell): Scalar {
-    if (cell.state === "stale") throw new NotReady(cell.key);
+    if (cell.state === "stale") {
+      this.rangeIncomplete = true;
+      return this.notReady(cell);
+    }
     if (cell.state === "computing") return new FError("#CYCLE!", "Circular reference");
     if (cell.usesIndex) this.rangeUsesIndex = true;
     return cell.value;
@@ -694,6 +739,24 @@ export class Engine {
     eval: (e) => this.eval(e),
     entity: (id) => this.entity(id),
     entityField: (id, field) => this.entityField(id, field),
+    position: (e) => {
+      // Position functions must re-run after any row or column change on their sheet.
+      if (this.scope.owner) this.positional.add(this.scope.owner);
+      let sheet: SheetId, row: RowId | null, col: ColId | null;
+      if (e === undefined) {
+        const c = this.scope.owner ? this.cells.get(this.scope.owner) : undefined;
+        if (!c) return new FError("#VALUE!", "ROW() and COLUMN() need a cell");
+        ({ sheet, row, col } = c);
+      } else if (e.k === "ref" || e.k === "range") {
+        const p = e.k === "ref" ? e.p : e.a;
+        sheet = e.sheet;
+        ({ row, col } = p);
+      } else return new FError("#VALUE!", "ROW() and COLUMN() take a reference");
+      const s = this.wb.sheet(sheet);
+      const r = row === null ? 1 : s.rows.posOf(row);
+      const cc = col === null ? 1 : s.cols.posOf(col);
+      return r === null || cc === null ? err("#REF!") : { row: r, col: cc };
+    },
     entitiesOfType: (type) => {
       this.scope.collect?.types.add(type);
       if (this.scope.collect) this.scope.collect.usesIndex = true;
