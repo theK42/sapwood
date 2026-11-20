@@ -2,15 +2,23 @@
 // entities derived from them (DESIGN §4.1). Sheets are the truth; entities and
 // singletons are a projection, recomputed from the sheets.
 //
-// This is the in-memory model that validation and export read. Edits go through
-// `set` for now; ops (DESIGN §8) arrive in a later slice and will call the same code.
+// The document (ops/doc.ts) is the truth. Every edit is an op (DESIGN §8.1), applied to
+// the document and mirrored into the workbook and formula engine, which validation and
+// export read. Edits written against positions (`set`, `insert`, …) return the ops
+// they made and their inverse, for a task to record and undo.
 
-import { Engine } from "../formula/engine.ts";
+import { bind, BindError } from "../formula/bind.ts";
+import type { Content } from "../formula/content.ts";
+import { Engine, parseInput } from "../formula/engine.ts";
 import { Workbook, type ColId, type PackId, type RowId, type SheetId, type SheetKind } from "../formula/model.ts";
+import { colToNumber, FormulaSyntaxError, parseFormula } from "../formula/parse.ts";
 import { formatNumber, isErr, type Scalar } from "../formula/values.ts";
+import { cellKey, emptyDoc, primeResolved, resolvedSchema, rootPack, splitCellKey, type Axis, type Doc, type Format } from "../ops/doc.ts";
+import { applyPlain, expand, type Op } from "../ops/ops.ts";
+import { renameIdFormulas } from "../ops/rename.ts";
 import type { FieldDef, FieldType } from "../schema/model.ts";
 import type { ResolvedField, ResolvedSchema, ResolvedType } from "../schema/resolve.ts";
-import { buildLayout, defaultSpecs, type Layout, type LayoutColumn } from "./layout.ts";
+import { buildLayout, sheetLayout, type Layout, type LayoutColumn } from "./layout.ts";
 import { classify, type RowClass } from "./rows.ts";
 import { parseCell, type FieldValue } from "./values.ts";
 
@@ -73,32 +81,215 @@ export interface Projection {
   issues: Issue[];
 }
 
+/** What an edit did: the ops it applied, and the ops that undo it. */
+export interface Edit {
+  ops: Op[];
+  inverse: Op[];
+}
+
 export class Project {
-  readonly schema: ResolvedSchema;
+  /** The truth: every change is an op applied here, then mirrored into the workbook and engine. */
+  readonly doc: Doc;
   readonly wb: Workbook;
   readonly engine: Engine;
-  /** sheet -> type name -> layout. Missing means the default layout. */
-  private layouts = new Map<SheetId, Map<string, Layout>>();
 
   constructor(schema: ResolvedSchema, rootPack = "root") {
-    this.schema = schema;
+    primeResolved(schema);
+    this.doc = emptyDoc(schema.schema, rootPack);
     this.wb = new Workbook(rootPack);
     this.engine = new Engine(this.wb);
     this.engine.setEntityTypes((name) => {
-      const t = schema.types.get(name);
+      const t = this.schema.types.get(name);
       return t !== undefined && !t.def.singleton;
     });
+  }
+
+  /** A project showing a document. The engine is built from it, and everything recalculates. */
+  static fromDoc(doc: Doc): Project {
+    const root = doc.packs.get(rootPack(doc))!;
+    const p = new Project(resolvedSchema(doc), root.id);
+    const ops: Op[] = [];
+    if (root.name !== root.id) ops.push({ kind: "renamePack", pack: root.id, name: root.name });
+    const placed = new Set([root.id]);
+    while (placed.size < doc.packs.size)
+      for (const x of doc.packs.values())
+        if (!placed.has(x.id) && x.parent !== null && placed.has(x.parent)) {
+          ops.push({ kind: "createPack", pack: x.id, name: x.name, parent: x.parent });
+          placed.add(x.id);
+        }
+    for (const s of doc.sheets.values()) {
+      ops.push({ kind: "createSheet", sheet: s.id, name: s.name, pack: s.pack, sheetKind: s.kind });
+      for (const axis of ["row", "col"] as const) {
+        const a = axis === "row" ? s.rows : s.cols;
+        if (a.order.length) ops.push({ kind: "insert", sheet: s.id, axis, after: null, ids: [...a.order] });
+      }
+      for (const [type, layout] of s.layouts) ops.push({ kind: "setLayout", sheet: s.id, type, layout });
+    }
+    // Cells on tombstones are written while their rows are live, then deleted.
+    for (const s of doc.sheets.values()) {
+      for (const [k, content] of s.cells) {
+        const [row, col] = splitCellKey(k);
+        ops.push({ kind: "setCell", sheet: s.id, row, col, content });
+      }
+      for (const [k, format] of s.formats) {
+        const [row, col] = splitCellKey(k);
+        ops.push({ kind: "setFormat", sheet: s.id, row, col, format });
+      }
+      for (const axis of ["row", "col"] as const) {
+        const a = axis === "row" ? s.rows : s.cols;
+        if (a.dead.size) ops.push({ kind: "delete", sheet: s.id, axis, ids: [...a.dead] });
+      }
+    }
+    p.apply(ops);
+    return p;
+  }
+
+  get schema(): ResolvedSchema {
+    return resolvedSchema(this.doc);
+  }
+
+  // ------------------------------------------------------------ ops
+
+  /**
+   * Apply ops: to the document, then to the workbook and engine. Atomic: if one fails,
+   * the ones before it are undone and the error is rethrown. Returns the inverse.
+   */
+  apply(ops: readonly Op[]): Op[] {
+    const inverse: Op[] = [];
+    this.engine.batch(() => {
+      try {
+        for (const op of ops)
+          for (const plain of expand(this.doc, op)) {
+            inverse.unshift(...applyPlain(this.doc, plain));
+            this.mirror(plain);
+          }
+      } catch (e) {
+        for (const op of inverse) {
+          applyPlain(this.doc, op);
+          this.mirror(op);
+        }
+        throw e;
+      }
+    });
+    return inverse;
+  }
+
+  /** Bring the workbook and engine in line with an op just applied to the document. */
+  private mirror(op: Op): void {
+    const e = this.engine;
+    switch (op.kind) {
+      case "setCell":
+        return e.setContent(op.sheet, op.row, op.col, op.content);
+      case "setFormat":
+        return; // formats live in the document only
+      case "insert":
+        e.insertIds(op.sheet, op.axis, op.after, op.ids);
+        break;
+      case "purge":
+        e.purgeIds(op.sheet, op.axis, op.ids);
+        break;
+      case "delete":
+        e.killIds(op.sheet, op.axis, op.ids);
+        break;
+      case "restore":
+        e.restoreIds(op.sheet, op.axis, op.ids);
+        break;
+      case "move":
+        e.moveIds(op.sheet, op.axis, op.after, op.ids);
+        break;
+      case "createSheet":
+        this.wb.addSheet(op.name, op.pack, op.sheetKind, op.sheet);
+        return this.syncLayouts(op.sheet);
+      case "removeSheet":
+        e.dropSheet(op.sheet);
+        this.wb.sheets.delete(op.sheet);
+        return;
+      case "renameSheet":
+        this.wb.sheet(op.sheet).name = op.name;
+        return;
+      case "setSheetPack":
+        return e.setSheetPack(op.sheet, op.pack);
+      case "setLayout":
+        return this.syncLayouts(op.sheet);
+      case "createPack":
+        this.wb.addPack(op.name, op.parent, op.pack);
+        return;
+      case "removePack":
+        this.wb.packs.delete(op.pack);
+        return;
+      case "renamePack":
+        this.wb.packs.get(op.pack)!.name = op.name;
+        return;
+      case "renameId":
+        throw new Error("renameId is expanded before it is mirrored");
+    }
+    // Default layouts follow the columns, so a column change can move fields.
+    if (op.axis === "col") this.syncLayouts(op.sheet);
+  }
+
+  /**
+   * Run an edit written against positions. Reading a position past the end of a sheet
+   * creates its rows or columns in the workbook (grids are unbounded); those become
+   * insert ops, ahead of the edit's own.
+   */
+  private edit(fn: () => Op[]): Edit {
+    const appendInverse: Op[] = [];
+    const appends = this.syncAppends(appendInverse);
+    let own: Op[];
+    try {
+      own = fn();
+      appends.push(...this.syncAppends(appendInverse));
+    } catch (e) {
+      this.dropAppends(appendInverse);
+      throw e;
+    }
+    try {
+      const inverse = this.apply(own);
+      return { ops: [...appends, ...own], inverse: [...inverse, ...appendInverse] };
+    } catch (e) {
+      this.dropAppends(appendInverse);
+      throw e;
+    }
+  }
+
+  /**
+   * Rows and columns the workbook created past the end of a sheet, added to the
+   * document as insert ops. The workbook already has them, so they aren't mirrored.
+   */
+  private syncAppends(inverse: Op[]): Op[] {
+    const out: Op[] = [];
+    for (const s of this.wb.sheets.values()) {
+      const d = this.doc.sheets.get(s.id)!;
+      for (const axis of ["row", "col"] as const) {
+        const have = (axis === "row" ? d.rows : d.cols).order;
+        const all = (axis === "row" ? s.rows : s.cols).order();
+        if (all.length <= have.length) continue;
+        const op: Op = { kind: "insert", sheet: s.id, axis, after: have.at(-1) ?? null, ids: all.slice(have.length) };
+        inverse.unshift(...applyPlain(this.doc, op));
+        out.push(op);
+        if (axis === "col") this.syncLayouts(s.id);
+      }
+    }
+    return out;
+  }
+
+  private dropAppends(inverse: Op[]): void {
+    if (inverse.length) this.apply(inverse);
+    inverse.length = 0;
   }
 
   // ------------------------------------------------------------ structure
 
   addPack(name: string, parent: PackId = this.wb.root): PackId {
-    return this.wb.addPack(name, parent);
+    let id = name;
+    for (let n = 1; this.doc.packs.has(id); n++) id = `p${this.wb.idSalt}${n}`;
+    this.apply([{ kind: "createPack", pack: id, name, parent }]);
+    return id;
   }
 
   addSheet(name: string, pack: PackId = this.wb.root, kind: SheetKind = "data"): SheetId {
-    const id = this.wb.addSheet(name, pack, kind);
-    this.syncLayouts(id);
+    const id = this.wb.freshSheetId();
+    this.apply([{ kind: "createSheet", sheet: id, name, pack, sheetKind: kind }]);
     return id;
   }
 
@@ -109,27 +300,20 @@ export class Project {
   }
 
   /** Set the columns (from C) for a type on a sheet, as field specs: `cooldown`, `price.amount`, `projectiles[0]`. */
-  setLayout(sheet: SheetId, type: string, specs: readonly string[]): void {
-    const t = this.schema.types.get(type);
-    if (!t) throw new Error(`Unknown type ${type}`);
-    const { layout, errors } = buildLayout(this.schema, t, specs, this.colsFromC(sheet, specs.length));
-    if (errors.length) throw new Error(errors.map((e) => e.message).join("; "));
-    let bySheet = this.layouts.get(sheet);
-    if (!bySheet) this.layouts.set(sheet, (bySheet = new Map()));
-    bySheet.set(type, layout);
-    this.syncLayouts(sheet);
+  setLayout(sheet: SheetId, type: string, specs: readonly string[]): Edit {
+    return this.edit(() => {
+      const t = this.schema.types.get(type);
+      if (!t) throw new Error(`Unknown type ${type}`);
+      const cols = this.wb.sheet(sheet).cols;
+      const ids = Array.from({ length: specs.length }, (_, i) => cols.idAt(3 + i));
+      const { layout, errors } = buildLayout(this.schema, t, specs, ids);
+      if (errors.length) throw new Error(errors.map((e) => e.message).join("; "));
+      return [{ kind: "setLayout", sheet, type, layout }];
+    });
   }
 
   layout(sheet: SheetId, type: string): Layout {
-    const custom = this.layouts.get(sheet)?.get(type);
-    if (custom) return custom;
-    const t = this.schema.types.get(type)!;
-    return buildLayout(this.schema, t, defaultSpecs(t), this.colsFromC(sheet, t.fields.length)).layout;
-  }
-
-  private colsFromC(sheet: SheetId, n: number): ColId[] {
-    const cols = this.wb.sheet(sheet).cols;
-    return Array.from({ length: n }, (_, i) => cols.idAt(3 + i));
+    return sheetLayout(this.schema, this.doc.sheets.get(sheet)!, type);
   }
 
   /** Tell the engine which column holds each single-cell field, for `ENTITY(id).field`. */
@@ -147,16 +331,98 @@ export class Project {
     }
   }
 
-  // ------------------------------------------------------------ cells
+  // ------------------------------------------------------------ edits by position
 
   /** Set a cell from user input, by A1 address. */
-  set(sheet: SheetId, a1: string, input: string): void {
-    this.engine.set(sheet, a1, input);
+  set(sheet: SheetId, a1: string, input: string): Edit {
+    return this.edit(() => {
+      const { row, col } = this.locate(sheet, a1);
+      return [{ kind: "setCell", sheet, row, col, content: this.parseInput(sheet, input) }];
+    });
   }
 
   /** Write rows of inputs starting at row 1 (or `fromRow`). Values are typed as in a cell. */
-  setRows(sheet: SheetId, rows: readonly (readonly string[])[], fromRow = 1): void {
-    this.engine.batch(() => rows.forEach((r, i) => r.forEach((v, j) => v !== "" && this.engine.setAt(sheet, fromRow + i, j + 1, v))));
+  setRows(sheet: SheetId, rows: readonly (readonly string[])[], fromRow = 1): Edit {
+    return this.edit(() => {
+      const s = this.wb.sheet(sheet);
+      const ops: Op[] = [];
+      rows.forEach((r, i) =>
+        r.forEach((v, j) => {
+          if (v !== "") ops.push({ kind: "setCell", sheet, row: s.rows.idAt(fromRow + i), col: s.cols.idAt(j + 1), content: this.parseInput(sheet, v) });
+        }),
+      );
+      return ops;
+    });
+  }
+
+  /** Set a cell's format (null clears it). */
+  setFormat(sheet: SheetId, a1: string, format: Format | null): Edit {
+    return this.edit(() => {
+      const { row, col } = this.locate(sheet, a1);
+      return [{ kind: "setFormat", sheet, row, col, format }];
+    });
+  }
+
+  format(sheet: SheetId, row: RowId, col: ColId): Format | null {
+    return this.doc.sheets.get(sheet)?.formats.get(cellKey(row, col)) ?? null;
+  }
+
+  /** Insert `count` rows (or columns) before position `pos`. */
+  insert(sheet: SheetId, axis: Axis, pos: number, count = 1): Edit {
+    return this.edit(() => {
+      const a = this.axisOf(sheet, axis);
+      const after = pos > 1 ? a.idAt(pos - 1) : null;
+      return [{ kind: "insert", sheet, axis, after, ids: a.freshIds(count) }];
+    });
+  }
+
+  /** Delete `count` rows (or columns) from position `pos`. */
+  remove(sheet: SheetId, axis: Axis, pos: number, count = 1): Edit {
+    return this.edit(() => [{ kind: "delete", sheet, axis, ids: this.axisOf(sheet, axis).liveIds().slice(pos - 1, pos - 1 + count) }]);
+  }
+
+  /** Move `count` rows (or columns) at `pos` so they start at position `to` (counted once they're taken out). */
+  move(sheet: SheetId, axis: Axis, pos: number, count: number, to: number): Edit {
+    return this.edit(() => {
+      const live = this.axisOf(sheet, axis).liveIds();
+      const ids = live.slice(pos - 1, pos - 1 + count);
+      const rest = live.filter((id) => !ids.includes(id));
+      const at = Math.min(to - 1, rest.length);
+      return [{ kind: "move", sheet, axis, after: at > 0 ? rest[at - 1]! : null, ids }];
+    });
+  }
+
+  /** Rename an entity ID and every literal reference to it (§8.2). Lists the formulas that mention it, which it leaves alone. */
+  renameId(from: string, to: string): Edit & { formulas: { sheet: SheetId; row: RowId; col: ColId }[] } {
+    const e = this.edit(() => [{ kind: "renameId", from, to }]);
+    return { ...e, formulas: renameIdFormulas(this.doc, from) };
+  }
+
+  /** User input as stored content: a formula bound against stable IDs, or a literal. */
+  parseInput(sheet: SheetId, input: string): Content {
+    if (input.startsWith("=") && input.length > 1) {
+      try {
+        return { f: bind(parseFormula(input), { wb: this.wb, sheet }) };
+      } catch (e) {
+        if (e instanceof FormulaSyntaxError) return { bad: input, code: "#ERROR!", message: e.message };
+        if (e instanceof BindError) return { bad: input, code: e.code, message: e.message };
+        throw e;
+      }
+    }
+    const v = parseInput(input);
+    return v === null || isErr(v) ? null : { v };
+  }
+
+  private locate(sheet: SheetId, a1: string): { row: RowId; col: ColId } {
+    const m = /^([A-Za-z]{1,3})([0-9]+)$/.exec(a1);
+    if (!m) throw new Error(`bad cell address ${a1}`);
+    const s = this.wb.sheet(sheet);
+    return { row: s.rows.idAt(Number(m[2])), col: s.cols.idAt(colToNumber(m[1]!)) };
+  }
+
+  private axisOf(sheet: SheetId, axis: Axis) {
+    const s = this.wb.sheet(sheet);
+    return axis === "row" ? s.rows : s.cols;
   }
 
   // ------------------------------------------------------------ projection

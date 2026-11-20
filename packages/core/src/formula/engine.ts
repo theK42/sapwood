@@ -12,6 +12,7 @@
 // stack depth, and a good order is found without a separate topological sort.
 
 import { bind, BindError, render, shift, type BoundPoint, type Expr } from "./bind.ts";
+import type { Content } from "./content.ts";
 import { callFunction, type Ctx } from "./functions.ts";
 import type { ColId, PackId, RowId, SheetId, Workbook } from "./model.ts";
 import { colToNumber, FormulaSyntaxError, parseFormula } from "./parse.ts";
@@ -241,14 +242,14 @@ export class Engine {
 
   deleteRows(sheet: SheetId, pos: number, count = 1): RowId[] {
     const ids = this.wb.sheet(sheet).rows.delete(pos, count);
-    this.structureChanged(sheet, false, this.cellsIn(this.rowCells, ids));
+    this.structureChanged(sheet, false, [...this.cellsIn(this.rowCells, ids), ...this.readersOf(sheet, "row", ids)]);
     return ids;
   }
 
   /** Bring deleted rows back (the inverse op a revert would apply). */
   restoreRows(sheet: SheetId, ids: readonly RowId[]): void {
     this.wb.sheet(sheet).rows.restore(ids);
-    this.structureChanged(sheet, false, this.cellsIn(this.rowCells, ids));
+    this.structureChanged(sheet, false, [...this.cellsIn(this.rowCells, ids), ...this.readersOf(sheet, "row", ids)]);
   }
 
   moveRows(sheet: SheetId, pos: number, count: number, to: number): void {
@@ -264,8 +265,100 @@ export class Engine {
 
   deleteCols(sheet: SheetId, pos: number, count = 1): ColId[] {
     const ids = this.wb.sheet(sheet).cols.delete(pos, count);
-    this.structureChanged(sheet, true, this.cellsIn(this.colCells, ids));
+    this.structureChanged(sheet, true, [...this.cellsIn(this.colCells, ids), ...this.readersOf(sheet, "col", ids)]);
     return ids;
+  }
+
+  // ------------------------------------------------------------ by stable ID (ops)
+
+  /** Set a cell's stored content (see content.ts). */
+  setContent(sheet: SheetId, row: RowId, col: ColId, content: Content): void {
+    if (content === null || "v" in content) return this.setValue(sheet, row, col, content === null ? null : content.v);
+    this.changed.add(keyOf(sheet, row, col));
+    if ("f" in content) return this.setFormula(sheet, row, col, "", () => content.f);
+    const k = keyOf(sheet, row, col);
+    const c = this.cells.get(k) ?? this.newCell(sheet, row, col);
+    this.commitDeps(c, null);
+    c.formula = null;
+    c.invalidText = content.bad;
+    c.value = new FError(content.code, content.message);
+    c.state = "fresh";
+    this.touchedCell(sheet, row, col);
+    this.pending.push(k);
+    if (this.batchDepth === 0) this.flush();
+  }
+
+  /** A cell's stored content. */
+  content(sheet: SheetId, row: RowId, col: ColId): Content {
+    const c = this.cells.get(keyOf(sheet, row, col));
+    if (!c) return null;
+    if (c.invalidText !== null) {
+      const e = c.value as FError;
+      return { bad: c.invalidText, code: e.code, message: e.detail ?? "" };
+    }
+    if (c.formula) return { f: c.formula };
+    return c.value === null || isErr(c.value) ? null : { v: c.value };
+  }
+
+  insertIds(sheet: SheetId, axis: "row" | "col", after: string | null, ids: readonly string[]): void {
+    this.axis(sheet, axis).insertIds(after, ids);
+    this.structureChanged(sheet, axis === "col", []);
+  }
+
+  /** Remove IDs entirely. Their cells must already be empty. */
+  purgeIds(sheet: SheetId, axis: "row" | "col", ids: readonly string[]): void {
+    this.axis(sheet, axis).purgeIds(ids);
+    this.structureChanged(sheet, axis === "col", []);
+  }
+
+  killIds(sheet: SheetId, axis: "row" | "col", ids: readonly string[]): void {
+    this.axis(sheet, axis).killIds(ids);
+    this.structureChanged(sheet, axis === "col", [...this.cellsIn(axis === "row" ? this.rowCells : this.colCells, ids), ...this.readersOf(sheet, axis, ids)]);
+  }
+
+  restoreIds(sheet: SheetId, axis: "row" | "col", ids: readonly string[]): void {
+    this.axis(sheet, axis).restore(ids);
+    this.structureChanged(sheet, axis === "col", [...this.cellsIn(axis === "row" ? this.rowCells : this.colCells, ids), ...this.readersOf(sheet, axis, ids)]);
+  }
+
+  /**
+   * Formulas that read a position in these rows or columns, even an empty one (it has
+   * no cell, so nothing else would tell them): a delete turns the read into #REF!.
+   */
+  private readersOf(sheet: SheetId, axis: "row" | "col", ids: readonly string[]): Key[] {
+    const gone = new Set(ids);
+    const out: Key[] = [];
+    for (const [k, readers] of this.dependents) {
+      const [s, row, col] = k.split("|") as [SheetId, RowId, ColId];
+      if (s === sheet && gone.has(axis === "row" ? row : col)) out.push(...readers);
+    }
+    return out;
+  }
+
+  moveIds(sheet: SheetId, axis: "row" | "col", after: string | null, ids: readonly string[]): void {
+    this.axis(sheet, axis).moveIds(after, ids);
+    this.structureChanged(sheet, axis === "col", []);
+  }
+
+  /** Forget a sheet's layouts (the sheet is being removed; it must be empty). */
+  dropSheet(sheet: SheetId): void {
+    this.layouts.delete(sheet);
+    this.grid.delete(sheet);
+    this.rangeCache.delete(sheet);
+    this.entitiesDirty = true;
+    if (this.batchDepth === 0) this.flush();
+  }
+
+  /** Everything recalculates: a sheet or pack was renamed or moved, so names and reach may differ. */
+  recalcAll(): void {
+    this.entitiesDirty = true;
+    for (const c of this.cells.values()) if (c.formula) this.pending.push(c.key);
+    if (this.batchDepth === 0) this.flush();
+  }
+
+  private axis(sheet: SheetId, axis: "row" | "col") {
+    const s = this.wb.sheet(sheet);
+    return axis === "row" ? s.rows : s.cols;
   }
 
   /** Move a sheet to another pack. Reach may change anywhere, so everything recalculates. */
@@ -332,7 +425,11 @@ export class Engine {
       this.setFormula(sheet, row, col, input, () => bind(parseFormula(input), { wb: this.wb, sheet }));
       return;
     }
-    const value = parseInput(input);
+    this.setValue(sheet, row, col, parseInput(input));
+  }
+
+  private setValue(sheet: SheetId, row: RowId, col: ColId, value: Scalar): void {
+    this.changed.add(keyOf(sheet, row, col));
     const k = keyOf(sheet, row, col);
     let c = this.cells.get(k);
     if (value === null && c) {
@@ -683,7 +780,7 @@ export class Engine {
     const from = this.scope.reachFrom;
     if (from === null) return null;
     const to = this.wb.sheet(sheet).pack;
-    return this.wb.canReach(from, to) ? null : new FError("#REACH!", `Pack '${from}' cannot read pack '${to}'`);
+    return this.wb.canReach(from, to) ? null : new FError("#REACH!", `Pack '${this.wb.packName(from)}' cannot read pack '${this.wb.packName(to)}'`);
   }
 
   private readRange(e: Extract<Expr, { k: "range" }>): Value {

@@ -47,9 +47,9 @@ export function bind(raw: RawExpr, host: Host): Expr {
     const hostPack = wb.sheet(host.sheet).pack;
     const s = wb.resolveSheet(hostPack, st.pack, st.sheet);
     const shown = st.pack === null ? st.sheet : `${st.pack}/${st.sheet}`;
-    if (!s) throw new BindError("#REF!", `No sheet '${shown}' reachable from pack '${hostPack}'`);
+    if (!s) throw new BindError("#REF!", `No sheet '${shown}' reachable from pack '${wb.packName(hostPack)}'`);
     if (!wb.canReach(hostPack, s.pack)) {
-      throw new BindError("#REACH!", `Pack '${hostPack}' cannot read sheet '${shown}' (pack '${s.pack}' is not itself or an ancestor)`);
+      throw new BindError("#REACH!", `Pack '${wb.packName(hostPack)}' cannot read sheet '${shown}' (pack '${wb.packName(s.pack)}' is not itself or an ancestor)`);
     }
     return s.id;
   };
@@ -169,7 +169,7 @@ function sheetPrefix(host: Host, sheet: SheetId, explicit: boolean): string {
   const hostPack: PackId = wb.sheet(host.sheet).pack;
   // Bare name if it still resolves to the same sheet from here, otherwise qualify.
   const bare = wb.resolveSheet(hostPack, null, target.name)?.id === sheet;
-  const name = bare ? target.name : `${target.pack}/${target.name}`;
+  const name = bare ? target.name : `${wb.packName(target.pack)}/${target.name}`;
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !/^[A-Za-z]{1,3}[0-9]+$/.test(name)
     ? `${name}!`
     : `'${name.replaceAll("'", "''")}'!`;

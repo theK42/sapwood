@@ -132,6 +132,18 @@ describe("stable row/column IDs", () => {
     expect(e.get(s, "B1")).toBe(42);
   });
 
+  it("deleting a referenced row gives #REF! even when the referenced cell is empty", () => {
+    const { s, e } = setup();
+    e.set(s, "A1", "=B2+1");
+    expect(e.get(s, "A1")).toBe(1);
+    e.deleteRows(s, 2);
+    expect(code(e.get(s, "A1"))).toBe("#REF!");
+    e.deleteCols(s, 2);
+    e.set(s, "C1", "=D3");
+    e.deleteCols(s, 4);
+    expect(code(e.get(s, "C1"))).toBe("#REF!");
+  });
+
   it("ranges grow on insert inside and survive deleting a corner", () => {
     const { s, e } = setup();
     e.batch(() => {

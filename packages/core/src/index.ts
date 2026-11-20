@@ -11,3 +11,7 @@ export * from "./project/load.ts";
 export * from "./project/validate.ts";
 export * from "./export/json.ts";
 export { sha256 } from "./export/sha256.ts";
+export * from "./formula/content.ts";
+export * from "./ops/doc.ts";
+export * from "./ops/ops.ts";
+export { renameIdFormulas, renameIdWrites, rewriteRefs } from "./ops/rename.ts";

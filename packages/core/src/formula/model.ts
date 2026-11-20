@@ -15,6 +15,7 @@ export class Axis {
   private dead = new Set<string>();
   private counter = 0;
   private readonly prefix: string;
+  private readonly salt: () => string;
   // Caches, rebuilt lazily after any structural change.
   private dirty = true;
   private live: string[] = [];
@@ -22,12 +23,62 @@ export class Axis {
   private fullIdx = new Map<string, number>(); // id -> index in `ids`
   private liveBefore: number[] = []; // liveBefore[i] = live ids at full index < i
 
-  constructor(prefix: string) {
+  /**
+   * `salt` goes into every new ID. Writers that may run concurrently (two tasks on one
+   * branch) must use different salts, so the rows they insert never share an ID.
+   */
+  constructor(prefix: string, salt: () => string = () => "") {
     this.prefix = prefix;
+    this.salt = salt;
   }
 
   private fresh(): string {
-    return `${this.prefix}${++this.counter}`;
+    this.rebuild();
+    for (;;) {
+      const id = `${this.prefix}${this.salt()}${++this.counter}`;
+      if (!this.fullIdx.has(id)) return id;
+    }
+  }
+
+  /** New IDs that aren't on this axis yet, without placing them. */
+  freshIds(count: number): string[] {
+    return Array.from({ length: count }, () => this.fresh());
+  }
+
+  /** Every ID in order, tombstones included. */
+  order(): readonly string[] {
+    return this.ids;
+  }
+
+  has(id: string): boolean {
+    this.rebuild();
+    return this.fullIdx.has(id);
+  }
+
+  // ---- by ID, for ops (see insertAfter / moveAfter below for the order rules)
+
+  insertIds(after: string | null, ids: readonly string[]): void {
+    insertAfter(this.ids, after, ids);
+    this.dirty = true;
+  }
+
+  /** Remove IDs entirely (undoing an insert). */
+  purgeIds(ids: readonly string[]): void {
+    const gone = new Set(ids);
+    this.ids = this.ids.filter((id) => !gone.has(id));
+    for (const id of ids) this.dead.delete(id);
+    this.dirty = true;
+  }
+
+  /** Tombstone IDs. */
+  killIds(ids: readonly string[]): void {
+    for (const id of ids) this.dead.add(id);
+    this.dirty = true;
+  }
+
+  moveIds(after: string | null, ids: readonly string[]): void {
+    moveAfter(this.ids, after, ids);
+    this.dirty = true;
   }
 
   private rebuild(): void {
@@ -143,6 +194,27 @@ export class Axis {
   }
 }
 
+/** Index of `after` in a full order; -1 means "at the start". */
+export function anchorIndex(ord: readonly string[], after: string | null): number {
+  if (after === null) return -1;
+  const i = ord.indexOf(after);
+  if (i < 0) throw new Error(`no anchor ${after}`);
+  return i;
+}
+
+/** Insert `ids` right after `after` (null: at the start), in order. */
+export function insertAfter(ord: string[], after: string | null, ids: readonly string[]): void {
+  ord.splice(anchorIndex(ord, after) + 1, 0, ...ids);
+}
+
+/** Take `ids` out and put them right after `after`, in the order given. */
+export function moveAfter(ord: string[], after: string | null, ids: readonly string[]): void {
+  ids.forEach((id, j) => {
+    ord.splice(ord.indexOf(id), 1);
+    ord.splice(anchorIndex(ord, after) + 1 + j, 0, id);
+  });
+}
+
 export interface Pack {
   id: PackId;
   name: string;
@@ -165,6 +237,8 @@ export class Workbook {
   readonly packs = new Map<PackId, Pack>();
   readonly sheets = new Map<SheetId, Sheet>();
   private sheetCounter = 0;
+  /** Goes into new row, column and sheet IDs; see Axis. */
+  idSalt = "";
 
   constructor(rootName = "root") {
     this.packs.set(rootName, { id: rootName, name: rootName, parent: null });
@@ -175,18 +249,37 @@ export class Workbook {
     throw new Error("no root pack");
   }
 
-  /** Pack IDs are their names in this spike. */
-  addPack(name: string, parent: PackId): PackId {
-    if (this.packs.has(name)) throw new Error(`pack ${name} exists`);
+  /** A pack's ID is stable; renaming it changes only its name. The ID defaults to the name. */
+  addPack(name: string, parent: PackId, id: PackId = name): PackId {
+    if (this.packs.has(id)) throw new Error(`pack ${id} exists`);
+    if (this.packByName(name)) throw new Error(`a pack is already called ${name}`);
     if (!this.packs.has(parent)) throw new Error(`no pack ${parent}`);
-    this.packs.set(name, { id: name, name, parent });
-    return name;
+    this.packs.set(id, { id, name, parent });
+    return id;
   }
 
-  addSheet(name: string, pack: PackId = this.root, kind: SheetKind = "data"): SheetId {
+  packByName(name: string): Pack | undefined {
+    for (const p of this.packs.values()) if (p.name === name) return p;
+    return undefined;
+  }
+
+  packName(id: PackId): string {
+    return this.packs.get(id)?.name ?? id;
+  }
+
+  /** A sheet ID that isn't taken. */
+  freshSheetId(): SheetId {
+    for (;;) {
+      const id = `s${this.idSalt}${++this.sheetCounter}`;
+      if (!this.sheets.has(id)) return id;
+    }
+  }
+
+  addSheet(name: string, pack: PackId = this.root, kind: SheetKind = "data", id: SheetId = this.freshSheetId()): SheetId {
     if (this.findSheet(pack, name)) throw new Error(`sheet ${name} exists in ${pack}`);
-    const id = `s${++this.sheetCounter}`;
-    this.sheets.set(id, { id, name, pack, kind, rows: new Axis(`${id}r`), cols: new Axis(`${id}c`) });
+    if (this.sheets.has(id)) throw new Error(`sheet ${id} exists`);
+    const salt = () => this.idSalt;
+    this.sheets.set(id, { id, name, pack, kind, rows: new Axis(`${id}r`, salt), cols: new Axis(`${id}c`, salt) });
     return id;
   }
 
@@ -214,9 +307,12 @@ export class Workbook {
     return this.ancestors(from).includes(to);
   }
 
-  /** Resolve a sheet name as written in a formula hosted in `hostPack`. */
+  /** Resolve a sheet name as written in a formula hosted in `hostPack`. `pack` is a pack name. */
   resolveSheet(hostPack: PackId, pack: string | null, name: string): Sheet | undefined {
-    if (pack !== null) return this.findSheet(pack, name);
+    if (pack !== null) {
+      const p = this.packByName(pack);
+      return p && this.findSheet(p.id, name);
+    }
     for (const p of this.ancestors(hostPack)) {
       const s = this.findSheet(p, name);
       if (s) return s;

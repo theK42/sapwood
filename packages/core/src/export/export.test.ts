@@ -46,7 +46,7 @@ describe("M1: KRBSG export", () => {
     const p = krbsg();
     const s = p.sheetId("Textures");
     const rows = p.wb.sheet(s).rows;
-    p.engine.moveRows(s, 2, 1, 15); // move the first texture to the end
+    p.move(s, "row", 2, 1, 15); // move the first texture to the end
     expect(rows.liveIds().length).toBeGreaterThan(0);
     expect(file(exportJson(p, { branch: "main" }), "root.json")).toBe(fixture("export/root.json"));
   });

@@ -10,6 +10,7 @@
 // so moving columns or renaming fields never breaks them.
 
 import type { ColId } from "../formula/model.ts";
+import { liveIds, type SheetDoc } from "../ops/doc.ts";
 import type { FieldDef } from "../schema/model.ts";
 import type { ResolvedSchema, ResolvedType } from "../schema/resolve.ts";
 
@@ -46,6 +47,7 @@ export function buildLayout(
   const seen = new Set<string>();
   specs.forEach((spec, i) => {
     if (spec === "") return; // a deliberately unmapped (scratch) column
+    if (cols[i] === undefined) return; // the sheet doesn't have this column yet
     const m = /^([A-Za-z_]\w*)((?:\.[A-Za-z_]\w*)*)(?:\[(\d+)\])?$/.exec(spec.trim());
     if (!m) return errors.push({ spec, message: `"${spec}" isn't a column: write field, field.sub or field[0]` });
     const [, name, rest, idx] = m;
@@ -83,3 +85,16 @@ export function buildLayout(
 
 /** The default layout: every field in schema order, one whole column each (§6.3). */
 export const defaultSpecs = (type: ResolvedType): string[] => type.fields.map((f) => f.def.name);
+
+/**
+ * The layout in force for `type` on a sheet: its custom layout, or else the default
+ * over the sheet's columns from C. Columns that are deleted, or that the sheet doesn't
+ * have yet, hold no field.
+ */
+export function sheetLayout(schema: ResolvedSchema, sheet: Pick<SheetDoc, "layouts" | "cols">, type: string): Layout {
+  const custom = sheet.layouts.get(type);
+  if (custom) return custom.filter((c) => !sheet.cols.dead.has(c.col));
+  const t = schema.types.get(type);
+  if (!t) return [];
+  return buildLayout(schema, t, defaultSpecs(t), liveIds(sheet.cols).slice(2)).layout;
+}
