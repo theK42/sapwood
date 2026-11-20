@@ -1,0 +1,106 @@
+traits:
+  Visual:
+    id: tr1
+    fields:
+      sprite: { id: f20, type: "ref<Sprite>", required: true }
+      script: { id: f21, type: string }
+  Collidable:
+    id: tr2
+    traits: [Visual]
+    fields:
+      collider: { id: f22, type: "ref<CollisionShape>", required: true }
+
+structs:
+  Vec2:
+    id: s1
+    fields:
+      x: { id: f40, type: float, default: 0 }
+      y: { id: f41, type: float, default: 0 }
+  Box:
+    id: s2
+    fields:
+      size:     { id: f42, type: "struct<Vec2>" }
+      offset:   { id: f43, type: "struct<Vec2>" }
+      rotation: { id: f44, type: float, default: 0 }
+  Circle:
+    id: s3
+    fields:
+      radius: { id: f45, type: float, min: 0 }
+      offset: { id: f46, type: "struct<Vec2>" }
+
+unions:
+  Shape: { id: u1, variants: [Box, Circle] }
+
+types:
+  Texture:
+    id: t1
+    fields:
+      filename:   { id: f1, type: string, required: true }
+      isPixelArt: { id: f2, type: bool, default: false }
+  Shader:
+    id: t8
+    fields:
+      vertFilename: { id: f30, type: string, required: true }
+      fragFilename: { id: f31, type: string, required: true }
+  Sprite:
+    id: t2
+    fields:
+      shader:  { id: f3, type: "ref<Shader>", required: true }
+      texture: { id: f4, type: "ref<Texture>", required: true }
+      width:   { id: f5, type: int, min: 1 }
+      height:  { id: f6, type: int, min: 1 }
+  CollisionShape:
+    id: t9
+    fields:
+      shapes: { id: f32, type: "list<union<Shape>>", minItems: 1 }
+  Enemy:
+    id: t5
+    traits: [Collidable]
+  PlayerShip:
+    id: t6
+    traits: [Collidable]
+  Projectile:
+    id: t10
+    traits: [Collidable]
+  Weapon:
+    id: t3
+    fields:
+      projectiles: { id: f7, type: "list<ref<Projectile>>", minItems: 1 }
+      script:      { id: f8, type: string }
+      cooldown:    { id: f9, type: float, min: 0 }
+      damage:      { id: f10, type: float }
+  Font:
+    id: t11
+    fields:
+      texture:     { id: f33, type: "ref<Texture>", required: true }
+      width:       { id: f34, type: int, min: 1 }
+      height:      { id: f35, type: int, min: 1 }
+      glyphWidth:  { id: f36, type: int, min: 1 }
+      glyphHeight: { id: f37, type: int, min: 1 }
+      glyphs:      { id: f38, type: string, nonEmpty: true }
+      shader:      { id: f39, type: "ref<Shader>", required: true }
+  FlyoffStyle:
+    id: t12
+    fields:
+      font:   { id: f50, type: "ref<Font>", required: true }
+      script: { id: f51, type: string }
+      shader: { id: f52, type: "ref<Shader>", required: true }
+  StarfieldLayer:
+    id: t4
+    fields:
+      density: { id: f11, type: int, min: 0 }
+      speed:   { id: f12, type: float }
+      alpha:   { id: f13, type: float, min: 0, max: 1 }
+      stars:   { id: f14, type: "list<ref<Sprite>>", minItems: 1 }
+
+rules:
+  - id: r1
+    type: Visual
+    severity: warning
+    expr: "=OR(script = \"\", RIGHT(script, 4) = \".lua\")"
+    message: "Scripts are Lua files"
+  - id: r2
+    type: Weapon
+    severity: warning
+    expr: "=cooldown >= 0.05"
+    message: "Cooldown under 50ms is probably a typo"
