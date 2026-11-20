@@ -324,7 +324,7 @@ Schema ops in a task change how existing cells are read. That never changes cell
 | `.maxLives` | Field row in the current singleton block. Error if no block is open |
 | `GameConfig.maxLives` | Qualified singleton field row, valid anywhere in the singleton's pack |
 | `#.maxLives`, `#GameConfig.maxLives` | Inactive singleton field row |
-| `#` + anything else | Comment/scratch row |
+| `#` + anything else, including `# Weapon` with a space | Comment/scratch row. A commented-out row has no space after `#` |
 | Any other text | **Error**: unknown type or field. Prevents a typo like `Weapn` from silently dropping data |
 
 **Inactive rows** keep their data. Formulas can still read their cells. They are skipped by export, field validation and ID uniqueness. A `ref` that points at an inactive entity is an error ("refers to commented-out entity").

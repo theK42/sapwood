@@ -1,0 +1,96 @@
+# The KRBSG Data sheet rebuilt as a Sapwood project (ROADMAP: reference fixture).
+#
+# Same tabs and values as the original, with two changes Sapwood needs:
+#  - IDs are global, so names KRBSG reused across tabs are prefixed: textures tex_,
+#    sprites spr_, and the enemy and player ship "basic" became basic_enemy / basic_ship.
+#  - Starfield layers have IDs (every type is keyed, DESIGN §5.2), and CollisionShapes
+#    use a Shape union instead of untyped JSON (§13).
+sheets:
+  - name: Textures
+    rows:
+      - ["# Texture", id, filename, isPixelArt]
+      - [Texture, tex_ship, ship.png, TRUE]
+      - [Texture, tex_blaster, blaster.png, TRUE]
+      - [Texture, tex_good_neighbors, good_neighbors.png, TRUE]
+      - [Texture, tex_cellphone, charmap-cellphone_white.png, TRUE]
+      - [Texture, tex_galaxy, galaxy.png, FALSE]
+      - [Texture, tex_galaxy3, galaxy3.png, FALSE]
+      - [Texture, tex_nebula, nebula.png, FALSE]
+      - [Texture, tex_star1, star1.png, TRUE]
+      - [Texture, tex_star2, star2.png, TRUE]
+      - [Texture, tex_star3, star3.png, TRUE]
+      - [Texture, tex_star4, star4.png, TRUE]
+      - [Texture, tex_star5, star5.png, TRUE]
+      - [Texture, tex_star6, star6.png, TRUE]
+      - [Texture, tex_star7, star7.png, TRUE]
+
+  - name: Shaders
+    rows:
+      - ["# Shader", id, vertFilename, fragFilename]
+      - [Shader, Textured, basic.vert, textured.frag]
+
+  - name: Sprites
+    rows:
+      - ["# Sprite", id, shader, texture, width, height]
+      - [Sprite, spr_ship, Textured, tex_ship, 40, 40]
+      - [Sprite, spr_blaster, Textured, tex_blaster, 40, 40]
+      - [Sprite, spr_galaxy, Textured, tex_galaxy, 50, 50]
+      - [Sprite, spr_galaxy2, Textured, tex_galaxy3, 50, 50]
+      - [Sprite, spr_nebula, Textured, tex_nebula, 50, 50]
+      - [Sprite, spr_star1, Textured, tex_star2, 16, 16]
+      - [Sprite, spr_star2, Textured, tex_star3, 16, 16]
+      - [Sprite, spr_star3, Textured, tex_star4, 16, 16]
+      - [Sprite, spr_star4, Textured, tex_star5, 16, 16]
+      - [Sprite, spr_star5, Textured, tex_star6, 16, 16]
+      - [Sprite, spr_star6, Textured, tex_star7, 16, 16]
+
+  - name: CollisionShapes
+    rows:
+      - ["# CollisionShape", id, shapes]
+      - - CollisionShape
+        - house
+        - - { kind: Box, size: { x: 40, y: 20 }, offset: { x: 0, y: 10 } }
+          - { kind: Box, size: { x: 40, y: 20 }, offset: { x: 0, y: 10 }, rotation: 0.785 }
+      - - CollisionShape
+        - bolt
+        - - { kind: Box, size: { x: 5, y: 40 } }
+
+  - name: Enemies
+    rows:
+      - ["# Enemy", id, sprite, script, collider]
+      - [Enemy, basic_enemy, spr_ship, enemyShip.lua, house]
+
+  - name: PlayerShips
+    layouts:
+      PlayerShip: [sprite, collider] # KRBSG's PlayerShips tab had no script column
+    rows:
+      - ["# PlayerShip", id, sprite, collider]
+      - [PlayerShip, basic_ship, spr_ship, house]
+
+  - name: Weapons
+    rows:
+      - ["# Weapon", id, projectiles, script, cooldown, damage]
+      - [Weapon, Blaster, [BlasterBolt], blaster.lua, 0.5, 1]
+
+  - name: Projectiles
+    rows:
+      - ["# Projectile", id, sprite, script, collider]
+      - [Projectile, BlasterBolt, spr_blaster, blaster_bolt.lua, bolt]
+
+  - name: FlyoffStyles
+    rows:
+      - ["# FlyoffStyle", id, font, script, shader]
+      - [FlyoffStyle, scoreFlyoff, cellphone, Flyoff.lua, Textured]
+
+  - name: Fonts
+    rows:
+      - ["# Font", id, texture, width, height, glyphWidth, glyphHeight, glyphs, shader]
+      - [Font, good_neighbors, tex_good_neighbors, 850, 64, 9, 64, "'!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~", Textured]
+      - [Font, cellphone, tex_cellphone, 128, 64, 7, 9, "' !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~", Textured]
+
+  - name: Starfield
+    rows:
+      - ["# StarfieldLayer", id, density, speed, alpha, stars]
+      - [StarfieldLayer, far, 6, 30, 0.3, [spr_galaxy, spr_galaxy2, spr_nebula]]
+      - [StarfieldLayer, mid, 20, 50, 0.5, [spr_star1, spr_star2, spr_star3, spr_star4, spr_star5, spr_star6]]
+      - [StarfieldLayer, near, 10, 100, 0.6, [spr_star2]]
