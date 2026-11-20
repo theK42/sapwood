@@ -79,7 +79,17 @@ S2 was the first time the engine ran on 100k realistic rows, and it found two en
 
 Two are left for Phase 1:
 
-- **Edits under a wide entity reader cost 150–420 ms.** An edit that no such reader depends on takes 0.1 ms. `SUM(ENTITIES("Weapon","dps"))` over 80k entities takes about 150 ms per evaluation, because it records 80k per-cell dependencies. It is also evaluated twice when breadth-first ordering visits it before a precedent. Phase 1 needs column-level dependencies for `ENTITIES(type, field)`, and a topological order instead of the retry.
+- **Most edits are slow at 100k rows, in two places.** Measured on one cell at a time:
+
+  | Edit | Engine | First repaint |
+  |---|---:|---:|
+  | A projectile's sprite (nothing reads it) | 0.1 ms | 77 ms |
+  | A projectile's speed (four weapons read it) | 0.2 ms | 185 ms |
+  | A weapon's damage or cooldown | 210–230 ms | 85–120 ms |
+  | A weapon's ID | 460 ms | 94 ms |
+
+  - **Engine.** Every weapon's `dps` feeds `SUM(ENTITIES("Weapon","dps"))`, so almost any edit to a weapon re-runs a formula that reads 80k entities. Each run looks up every entity again and records 80k per-cell dependencies. A profile puts nearly all the time in `readCell`, `findEntity` and dependency comparison. Changing an ID also rebuilds the whole entity index. Phase 1 needs column-level dependencies for `ENTITIES(type, field)`, an entity index that updates per row, and a topological order instead of the retry.
+  - **Validation.** The stand-in duplicate-ID and ref checks rebuild an index of all 100k IDs after every op, even an edit nothing reads. That is spike code, not the engine. DESIGN §5.7's validation must update per row as well.
 - **Loading 100k rows from scratch takes about 4 s.** Phase 1 should load stored computed values and recalculate lazily, rather than evaluating everything when a sheet opens.
 
 ## Risks and gaps
