@@ -1,5 +1,6 @@
 {
-  "name": "@sapwood/core",
+  "name": "@thek42/sapwood-core",
+  "license": "MIT",
   "version": "0.0.0",
   "private": true,
   "description": "Schema, sheets, ops, formulas, validation and export. Pure TypeScript with no I/O; runs in the browser and on the server.",

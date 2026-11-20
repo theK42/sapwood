@@ -1,5 +1,6 @@
 {
-  "name": "@sapwood/spike-s1-formula",
+  "name": "@thek42/sapwood-spike-s1-formula",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {

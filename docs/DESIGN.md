@@ -89,7 +89,7 @@ Why: formulas live in cells. If entities were primary and sheets were a "view", 
  │ In-memory materialized state per active branch head (+ overlays)   │
  └──────────────┬─────────────────────────────────────────────────────┘
                 │
- ┌──────────────┴───────────── @<scope>/sapwood-core (shared, no I/O) ┐
+ ┌──────────────┴────────────── @thek42/sapwood-core (shared, no I/O) ┐
  │ Schema model · Sheet model · Ops (apply/invert/rebase)             │
  │ Row classification · Cell parsing · Formula engine · Validation    │
  │ Entity projection · Export (JSON)                                  │
@@ -100,7 +100,7 @@ Why: formulas live in cells. If entities were primary and sheets were a "view", 
  └────────────────────────────────────────────────────────────────────┘
 ```
 
-`@<scope>/sapwood-core` is pure and deterministic, and runs both **in the browser and on the server**. The browser uses it for instant formula results and validation while typing. The server uses it as the authority when landing and exporting. Same code means identical results.
+`@thek42/sapwood-core` is pure and deterministic, and runs both **in the browser and on the server**. The browser uses it for instant formula results and validation while typing. The server uses it as the authority when landing and exporting. Same code means identical results.
 
 ## 5. Schema
 
@@ -369,7 +369,7 @@ Child rows under a parent are explicitly **not** supported.
 - **Pack reachability.** **Decided.** A formula may only read cells on sheets in its own pack or an ancestor pack. This is the same rule as for refs (§7.2), so the UI only has one rule to explain.
 - **No external I/O functions.** `IMPORTDATA`, `IMPORTRANGE`, web fetches and similar are not provided (§11.5).
 - **Errors:** a formula error in a bound cell is a validation error. In scratch it is only displayed.
-- **Evaluation** is incremental over a dependency graph, in `@<scope>/sapwood-core`, and runs on both client and server.
+- **Evaluation** is incremental over a dependency graph, in `@thek42/sapwood-core`, and runs on both client and server.
 
 ### 6.6 Copy/paste
 
@@ -885,7 +885,7 @@ None currently. New questions get added here as they come up.
 
 | # | Question | Decision |
 |---|---|---|
-| Q2 | Project name | Sapwood, published under the author's own npm scope (`@<scope>/sapwood-*`); CLI command `sapwood` |
+| Q2 | Project name | Sapwood, published under the author's npm scope as `@thek42/sapwood-*`; CLI command `sapwood`. License: **MIT** |
 | Q1 | WASM | Not a goal; the preference was aesthetic. Formula engine chosen on merit in S1 (§12.2) |
 | Q3 | ID case | Stored as typed. **Uniqueness** is checked case-insensitively, so `Blaster` and `blaster` can't both exist. **References** must match exactly (case-sensitive); a case-only mismatch is an error with a "did you mean" hint |
 | Q4 | `reach: descendants` for formulas | No. Formulas always follow the default rule |

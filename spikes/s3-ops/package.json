@@ -1,5 +1,6 @@
 {
-  "name": "@sapwood/spike-s3-ops",
+  "name": "@thek42/sapwood-spike-s3-ops",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "devDependencies": {

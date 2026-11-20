@@ -3,7 +3,7 @@
 Throwaway prototype. The write-up and decision are in [docs/spikes/S2-grid-component.md](../../docs/spikes/S2-grid-component.md).
 
 ```bash
-npm run dev -w @sapwood/spike-s2-grid      # then open http://localhost:5180
+npm run dev -w @thek42/sapwood-spike-s2-grid      # then open http://localhost:5180
 node spikes/s2-grid/src/model-check.ts     # the shared model on its own, in Node (N=rows)
 ```
 

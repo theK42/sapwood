@@ -1,5 +1,6 @@
 {
-  "name": "@sapwood/spike-s2-grid",
+  "name": "@thek42/sapwood-spike-s2-grid",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
