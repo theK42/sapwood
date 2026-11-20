@@ -1,6 +1,6 @@
 # Sapwood — Design Document
 
-> **Status:** Draft 5, 2026-11-19 (formula engine decided by spike S1, grid component by spike S2). Decisions marked **Decided** came out of design discussion; items marked **Open** are listed again in [§14](#14-open-questions).
+> **Status:** Draft 6, 2026-11-19 (formula engine decided by spike S1, grid component by spike S2, op rebase by spike S3). Decisions marked **Decided** came out of design discussion; items marked **Open** are listed again in [§14](#14-open-questions).
 
 ---
 
@@ -507,12 +507,18 @@ On rebase, the intent is re-applied against the new head, so rows added concurre
 | Situation | Result |
 |---|---|
 | Both sides set the same cell to different contents | Conflict |
-| One side edits a row the other deleted | Conflict |
-| Both sides insert after the same anchor row | No conflict. Deterministic order: the earlier-landed side goes first |
+| One side edits a row the other deleted (a cell in it, or moves it); the same for columns | Conflict |
+| Both sides move the same row to different places | Conflict. Moving it to the same place is not |
+| Both sides rename the same ID to different names | Conflict |
+| Both sides insert after the same anchor row | No conflict. Deterministic order: the earlier-landed side goes first, including rows it then inserted after those |
+| One side inserts after a row the other deleted | No conflict. The tombstone still anchors it |
+| One side inserts or moves rows after a row the other moved | No conflict. They stay put: they go after the anchor's old predecessor, so the result doesn't depend on landing order |
 | Each change is valid alone but invalid together (duplicate IDs, a broken ref) | Not a conflict. Caught by validation step 3 |
 | Formatting on the same cell | Last write wins |
 
-To resolve a conflict, the user picks *mine*, *theirs*, or edits the cell, per conflict.
+Conflicts are decided on each side's **net** effect, a three-way comparison with the base: writing a cell and writing it back is not a change. **Decided by S3.**
+
+To resolve a conflict, the user picks *mine*, *theirs*, or edits the cell, per conflict. Keeping an edit to a row the other side deleted restores the row with all its cells.
 
 ### 8.6 Branches
 

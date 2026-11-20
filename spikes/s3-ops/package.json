@@ -1,0 +1,8 @@
+{
+  "name": "@sapwood/spike-s3-ops",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "fast-check": "^4.3.0"
+  }
+}

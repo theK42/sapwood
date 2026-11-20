@@ -41,7 +41,9 @@ Pass criteria:
 - Copy/paste round-trips with Google Sheets and Excel (HTML + TSV).
 - We keep control of the data model: our ops are the truth, not the component's internal state.
 
-### S3. Op rebase
+### S3. Op rebase: done
+
+**Result:** [spikes/S3-op-rebase.md](spikes/S3-op-rebase.md). The op model in DESIGN §8 works as designed. Conflicts are decided by a three-way comparison of each side's net effect, ops are transformed one at a time, and `renameId` is re-run as intent. Property tests over 100,000 random cases each found two bugs and a design gap (anchors of rows the other side moved), all fixed. Phase 2 needs rebase to work from the keys the ops touch instead of diffing whole sheets.
 
 Prototype `apply`, `invert` and `rebase` for the cell, structure and `renameId` ops.
 
