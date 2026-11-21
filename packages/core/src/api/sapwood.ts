@@ -368,7 +368,9 @@ export class Sapwood {
     if (sheet === undefined) {
       const data = [...wb.sheets.values()].filter((s) => s.kind === "data" && (pack === undefined || s.pack === pack));
       if (data.length !== 1) throw new ApiError("no-sheet", `No sheet has a ${type} yet${data.length ? ", and there are several data sheets" : ""}: say which sheet`);
-      sheet = data[0]!.id;
+      const only = data[0]!;
+      // A sheet named after another type is that type's: the new type gets a sheet of its own.
+      sheet = only.name !== type && this.schema.types.has(only.name) ? this.newSheet(type, only.pack) : only.id;
     }
     return { sheet, after: this.lastUsedRow(sheet) };
   }
@@ -495,6 +497,17 @@ export class Sapwood {
     const inverse = this.project.apply([op]);
     this.grown!.ops.push(op);
     this.grown!.inverses.push(inverse);
+  }
+
+  /** A new data sheet, applied now and recorded in the change being written, like growColumns. */
+  private newSheet(name: string, pack: PackId): SheetId {
+    const wb = this.project.wb;
+    if (wb.findSheet(pack, name)) throw new ApiError("no-sheet", `No data sheet has a ${name} yet, and a sheet called ${name} already exists: say which sheet`);
+    const op: Op = { kind: "createSheet", sheet: wb.freshSheetId(), name, pack, sheetKind: "data" };
+    const inverse = this.project.apply([op]);
+    this.grown!.ops.push(op);
+    this.grown!.inverses.push(inverse);
+    return op.sheet;
   }
 
   private newId(v: JsonValue | undefined): string {

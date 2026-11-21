@@ -687,7 +687,7 @@ Wizard capabilities:
 
 - A field is written to the cells the sheet's layout gives it: one cell, a struct's sub-columns, or a list's repeated columns. Values are checked as the cells would be read, so a bad value is refused with the same message validation would give. Null clears a field. `{ "$formula": "=…" }` writes a formula, and needs no `force`.
 - `$id` in a `set` renames the entity like `renameId` (§8.2), and `$active` comments it out or back in. `$type`, `$pack` and `$sheet` can't be set.
-- `create` puts the new row after the last entity of its type (on the given sheet or pack, if any), or after another entity (`after`). A type with no entities yet needs a sheet, unless the pack has only one data sheet. Taken IDs are refused, regardless of case.
+- `create` puts the new row after the last entity of its type (on the given sheet or pack, if any), or after another entity (`after`). A type with no entities yet needs a sheet, unless the pack has only one data sheet. If that sheet is named after another type, it belongs to that type, so a new data sheet named after the new type is created, in the same change. Taken IDs are refused, regardless of case.
 - A patch file applies all or nothing, as one undo step. Its lines are `set`, `create`, `commentOut`, `uncomment` and `delete`.
 - Errors carry a stable code (`not-found`, `ambiguous`, `exists`, `formula`, `no-column`, `bad-value`, …) for the CLI and LLMs to act on.
 

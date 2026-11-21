@@ -400,6 +400,7 @@ export class Engine {
   /** Forget a sheet's layouts (the sheet is being removed; it must be empty). */
   dropSheet(sheet: SheetId): void {
     this.layouts.delete(sheet);
+    this.layoutCols.delete(sheet);
     this.grid.delete(sheet);
     this.rangeCache.delete(sheet);
     this.entitiesDirty = true;
@@ -1268,7 +1269,7 @@ export class Engine {
   }
 
   private entitySig(l: EntityRec[] | undefined): string {
-    return (l ?? []).map((r) => `${r.id}|${r.type}|${r.sheet}|${r.row}|${this.wb.sheet(r.sheet).pack}`).join(";");
+    return (l ?? []).map((r) => `${r.id}|${r.type}|${r.sheet}|${r.row}|${this.wb.sheets.get(r.sheet)?.pack}`).join(";");
   }
 
   private findEntity(id: string): EntityRec | FError {

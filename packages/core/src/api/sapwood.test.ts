@@ -157,6 +157,28 @@ describe("writes", () => {
     expect(canonDoc(s.doc)).toEqual(before);
   });
 
+  it("the only data sheet is used for a new type, unless it's named after another type", () => {
+    const s = Sapwood.load(SMALL, { sheets: [{ name: "Data", rows: [] }] });
+    s.create("Ammo", { $id: "a1", speed: 3 });
+    expect(s.get("a1").$sheet).toBe("Data");
+
+    const t = Sapwood.load(SMALL, { sheets: [{ name: "Weapon", rows: [["Weapon", "w1", 10]] }] });
+    const before = canonDoc(cloneDoc(t.doc));
+    t.create("Ammo", { $id: "a1", speed: 3 });
+    expect(t.get("a1")).toMatchObject({ $sheet: "Ammo", speed: 3 });
+    expect(t.validate().errors).toBe(0);
+    t.undo();
+    expect(canonDoc(t.doc)).toEqual(before);
+    t.redo();
+    expect(t.get("a1").$sheet).toBe("Ammo");
+
+    const u = Sapwood.load(SMALL, { sheets: [{ name: "Ammo", rows: [] }] });
+    u.create("Ammo", { $id: "a1", speed: 3 });
+    expect(u.get("a1").$sheet).toBe("Ammo");
+    const v = Sapwood.load(SMALL, { sheets: [{ name: "Weapon", rows: [] }, { name: "Ammo", kind: "scratch", rows: [] }] });
+    fails("no-sheet", () => v.create("Ammo", { $id: "a1" }));
+  });
+
   it("renaming through $id rewrites refs and lists the formulas that mention it", () => {
     const s = krbsg();
     s.set("Blaster", { damage: { $formula: '=ENTITY("BlasterBolt").id="x"' } });
