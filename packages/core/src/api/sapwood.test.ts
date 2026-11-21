@@ -33,6 +33,9 @@ types:
       released: datetime
       reload: duration
   Ammo: { fields: { speed: float } }
+  Config:
+    singleton: true
+    fields: { lives: int, cost: "struct<Cost>", best: "ref<Weapon>", tags: "list<string>" }
 `;
 const small = () =>
   Sapwood.load(SMALL, {
@@ -45,6 +48,27 @@ const small = () =>
       { name: "Ammo", rows: [["Ammo", "a1", 900], ["Ammo", "a2", 600]] },
     ],
   });
+
+/** small, plus a Config block (with a split struct) on a third sheet, and a qualified row. */
+const sing = () =>
+  Sapwood.load(SMALL, {
+    sheets: [
+      {
+        name: "Weapons",
+        layouts: { Weapon: ["damage", "price.amount", "price.currency", "shots[0]", "shots[1]", "element", "released", "reload"] },
+        rows: [["Weapon", "w1", 10, 5, "gold", "a1", "", "fire", "2026-11-14", "90s"]],
+      },
+      { name: "Ammo", rows: [["Ammo", "a1", 900], ["Ammo", "a2", 600], ["Config.best", "w1"]] },
+      { name: "Settings", rows: [["Config"], [".lives", 3], ["", "a note"], [".cost.amount", 5], ["Ammo", "a3", 100]] },
+    ],
+  });
+
+/** Column A of a sheet, top to bottom. */
+const colA = (s: Sapwood, sheet: string): unknown[] => {
+  const wb = s.project.wb;
+  const sh = [...wb.sheets.values()].find((x) => x.name === sheet)!;
+  return sh.rows.liveIds().map((r) => s.project.engine.cellById(sh.id, r, sh.cols.idAt(1)).value);
+};
 
 describe("reads", () => {
   it("an entity as JSON (§9.4)", () => {
@@ -221,6 +245,70 @@ describe("writes", () => {
   });
 });
 
+describe("singletons", () => {
+  it("read from blocks and qualified rows, with split structs as one object", () => {
+    const s = sing();
+    expect(s.singleton("Config")).toEqual({ $type: "Config", $pack: "root", lives: 3, cost: { amount: 5 }, best: "w1" });
+    expect(fails("singleton", () => s.get("Config"))).toContain('singleton("Config")');
+    fails("unknown-type", () => s.singleton("Weapon"));
+    fails("unknown-type", () => s.singleton("Nope"));
+  });
+
+  it("writes go to a field's row; new fields join the block", () => {
+    const s = sing();
+    const before = canonDoc(cloneDoc(s.doc));
+    s.setSingleton("Config", { lives: 4, cost: { amount: 6, currency: "gold" }, tags: ["a", "b"], best: null });
+    expect(s.singleton("Config")).toEqual({ $type: "Config", $pack: "root", lives: 4, cost: { amount: 6, currency: "gold" }, tags: ["a", "b"] });
+    // After the block's last field row, before the entity that ends it; schema order.
+    expect(colA(s, "Settings")).toEqual(["Config", ".lives", null, ".cost.amount", ".cost.currency", ".tags", "Ammo"]);
+    expect(colA(s, "Ammo")).toEqual(["Ammo", "Ammo", "Config.best"]); // cleared, not removed
+    expect(s.validate().errors).toBe(0);
+    expect(s.get("a3").$active).toBe(true);
+    s.undo();
+    expect(canonDoc(s.doc)).toEqual(before);
+  });
+
+  it("formulas, and what's refused", () => {
+    const s = sing();
+    s.setSingleton("Config", { lives: { $formula: "=2+2" } });
+    expect(s.singleton("Config").lives).toEqual({ $value: 4, $formula: "=2+2" });
+    expect(fails("formula", () => s.setSingleton("Config", { lives: 5 }))).toContain("=2+2");
+    s.setSingleton("Config", { lives: 5 }, { force: true });
+    expect(s.singleton("Config").lives).toBe(5);
+    expect(fails("bad-value", () => s.setSingleton("Config", { cost: 5 }))).toContain("split into rows");
+    expect(fails("bad-value", () => s.setSingleton("Config", { cost: { gems: 1 } }))).toContain("Cost has no field gems");
+    expect(fails("bad-value", () => s.setSingleton("Config", { lives: "many" }))).toContain("Config.lives");
+    fails("bad-value", () => s.setSingleton("Config", { $active: false }));
+    fails("unknown-field", () => s.setSingleton("Config", { nope: 1 }));
+    const d = Sapwood.load(SMALL, { sheets: [{ name: "Data", rows: [["Config"], [".lives", 1], ["Config.lives", 2]] }] });
+    expect(fails("ambiguous", () => d.setSingleton("Config", { lives: 3 }))).toContain("Data row 2, Data row 3");
+  });
+
+  it("with no block, one is added on the only data sheet or a sheet of its own", () => {
+    const d = Sapwood.load(SMALL, { sheets: [{ name: "Data", rows: [["Ammo", "a1", 1], [], ["", "a note"]] }] });
+    d.setSingleton("Config", { tags: ["x"], lives: 2 });
+    expect(colA(d, "Data")).toEqual(["Ammo", null, null, "Config", ".lives", ".tags"]);
+    expect(d.singleton("Config")).toMatchObject({ lives: 2, tags: ["x"] });
+
+    const s = small();
+    const before = canonDoc(cloneDoc(s.doc));
+    s.setSingleton("Config", { lives: 2 });
+    expect(colA(s, "Config")).toEqual(["Config", ".lives"]);
+    expect(s.validate().errors).toBe(0);
+    s.undo();
+    expect(canonDoc(s.doc)).toEqual(before);
+  });
+
+  it("in patches and the export", () => {
+    const s = small();
+    s.apply([{ op: "setSingleton", type: "Config", fields: { lives: 3, best: "w1" } }, { op: "set", id: "w1", fields: { damage: 12 } }]);
+    const root = JSON.parse(s.export().find((f) => f.path === "root.json")!.content);
+    expect(root.singletons).toEqual({ Config: { lives: 3, best: { type: "Weapon", id: "w1" } } });
+    s.undo();
+    expect(s.singleton("Config")).toEqual({ $type: "Config", $pack: "root" });
+  });
+});
+
 describe("validation", () => {
   it("issues are located by sheet, cell and entity", () => {
     const s = krbsg();
@@ -257,12 +345,19 @@ describe("the API (properties)", () => {
     speed: [1, 900, "fast", null],
     nope: [1],
   };
+  const SINGLE: Record<string, unknown[]> = {
+    lives: [1, "x", null, { $formula: "=1+2" }],
+    cost: [{ amount: 1 }, { amount: 1, currency: "g" }, { gems: 1 }, 5, null],
+    best: ["w1", "nope", null],
+    tags: [["a"], [], null, "x"],
+    $id: ["x"],
+  };
 
   it("every change undoes exactly, failures change nothing, and a rebuilt project agrees", () => {
     fc.assert(
       fc.property(fc.gen(), (g) => {
         const pick = <T,>(xs: readonly T[]): T => xs[g(fc.integer, { min: 0, max: xs.length - 1 })]!;
-        const s = small();
+        const s = pick([small, sing])();
         const start = canonDoc(cloneDoc(s.doc));
         let changes = 0;
         for (let i = g(fc.integer, { min: 1, max: 8 }); i > 0; i--) {
@@ -273,6 +368,10 @@ describe("the API (properties)", () => {
             () => ({ op: "set", id: pick(IDS), fields: { $id: pick(IDS) } }),
             () => ({ op: "create", type: pick(["Weapon", "Ammo"]), fields: { $id: pick(IDS), [field]: pick(VALUES[field]!) } }),
             () => ({ op: pick(["commentOut", "uncomment", "delete"]), id: pick(IDS) }),
+            () => {
+              const f = pick(Object.keys(SINGLE));
+              return { op: "setSingleton", type: "Config", fields: { [f]: pick(SINGLE[f]!) }, force: pick([true, false]) };
+            },
           ])() as Patch;
           try {
             s.apply(pick([[patch], [patch, patch]]));
@@ -289,6 +388,7 @@ describe("the API (properties)", () => {
           const read = (x: Sapwood) => { try { return x.get(id); } catch (e) { return (e as ApiError).code; } };
           expect(read(fresh)).toEqual(read(s));
         }
+        expect(fresh.singleton("Config")).toEqual(s.singleton("Config"));
         for (; changes > 0; changes--) expect(s.undo()).toBe(true);
         expect(canonDoc(s.doc)).toEqual(start);
       }),

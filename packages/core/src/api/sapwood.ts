@@ -16,10 +16,11 @@ import { undoAll, type Op } from "../ops/ops.ts";
 import { renameIdFormulas } from "../ops/rename.ts";
 import { formatSchema } from "../schema/yaml.ts";
 import type { FieldDef, FieldType } from "../schema/model.ts";
-import type { ResolvedSchema } from "../schema/resolve.ts";
+import type { ResolvedSchema, ResolvedType } from "../schema/resolve.ts";
 import type { LayoutColumn } from "../project/layout.ts";
 import { loadProject, type ProjectDef } from "../project/load.ts";
-import { Project, type Entity, type Issue } from "../project/project.ts";
+import { Project, type Entity, type Issue, type SingletonEntry } from "../project/project.ts";
+import { classify } from "../project/rows.ts";
 import { validate } from "../project/validate.ts";
 import { parseJson } from "../project/values.ts";
 
@@ -37,6 +38,17 @@ export interface EntityJson {
   $pack: string;
   $sheet: string;
   $active: boolean;
+  [field: string]: JsonValue;
+}
+
+/**
+ * A singleton as JSON: its fields, from their field rows (§6.8), shaped like an entity's.
+ * A struct split into rows (`.cost.amount`) reads as one object.
+ */
+export interface SingletonJson {
+  $type: string;
+  /** The pack it lives in. */
+  $pack: string;
   [field: string]: JsonValue;
 }
 
@@ -64,7 +76,8 @@ export class ApiError extends Error {
 export type Patch =
   | { op: "set"; id: string; fields: Record<string, JsonValue>; force?: boolean }
   | { op: "create"; type: string; fields: Record<string, JsonValue>; sheet?: string; pack?: string; after?: string }
-  | { op: "commentOut" | "uncomment" | "delete"; id: string };
+  | { op: "commentOut" | "uncomment" | "delete"; id: string }
+  | { op: "setSingleton"; type: string; fields: Record<string, JsonValue>; force?: boolean };
 
 /** Where a new entity goes. By default: after the last one of its type, or on the only data sheet. */
 export interface Placement {
@@ -171,6 +184,40 @@ export class Sapwood {
     return out;
   }
 
+  /**
+   * A singleton's fields, read from its active field rows. With two active rows for a field
+   * (a validation error), the first is shown.
+   */
+  singleton(type: string): SingletonJson {
+    const t = this.singletonType(type);
+    const out: SingletonJson = { $type: type, $pack: this.project.wb.packs.get(t.def.pack ?? this.project.wb.root)!.name };
+    const entries = this.singletonEntries(type);
+    for (const f of t.fields) {
+      const name = f.def.name;
+      const mine = entries.filter((e) => e.path[0] === name);
+      const whole = mine.find((e) => e.path.length === 1);
+      if (whole) {
+        const v = this.singletonValue(whole);
+        if (v !== undefined) out[name] = v;
+        continue;
+      }
+      // Split into rows: rebuild the struct from its sub-field rows.
+      const obj: { [k: string]: JsonValue } = {};
+      for (const e of mine) {
+        const v = this.singletonValue(e);
+        if (v === undefined) continue;
+        let o = obj;
+        for (const k of e.path.slice(1, -1)) {
+          const next = o[k];
+          o = isObject(next) && !isFormula(next) ? next : (o[k] = {});
+        }
+        o[e.path.at(-1)!] ??= v;
+      }
+      if (Object.keys(obj).length) out[name] = obj;
+    }
+    return out;
+  }
+
   validate(): ValidationJson {
     const v = validate(this.project);
     const byRow = new Map<string, Entity>();
@@ -198,6 +245,17 @@ export class Sapwood {
   /** Add an entity: `fields` must include `$id`. See Placement for where it goes. */
   create(type: string, fields: Record<string, JsonValue>, where: Placement = {}): Change {
     return this.write(() => this.createOps(type, fields, where));
+  }
+
+  /**
+   * Set fields of a singleton, as `set` does for an entity. A field with a row is written in
+   * column B; a struct split into rows is written row by row. A field with no row yet gets one,
+   * appended to the singleton's block; with no block, a block is added on the pack's only data
+   * sheet (unless it's named after another type), or else on the sheet named after the
+   * singleton, created if need be. Null clears a field's value.
+   */
+  setSingleton(type: string, fields: Record<string, JsonValue>, opts: { force?: boolean } = {}): Change {
+    return this.write(() => this.singletonOps(type, fields, opts.force ?? false));
   }
 
   commentOut(id: string): Change {
@@ -274,6 +332,8 @@ export class Sapwood {
         return this.uncomment(p.id);
       case "delete":
         return this.delete(p.id);
+      case "setSingleton":
+        return this.setSingleton(p.type, p.fields, { force: p.force ?? false });
       default:
         throw new ApiError("bad-value", `Unknown patch op ${JSON.stringify((p as { op: unknown }).op)}`);
     }
@@ -373,6 +433,103 @@ export class Sapwood {
       sheet = only.name !== type && this.schema.types.has(only.name) ? this.newSheet(type, only.pack) : only.id;
     }
     return { sheet, after: this.lastUsedRow(sheet) };
+  }
+
+  private singletonOps(type: string, fields: Record<string, JsonValue>, force: boolean): { ops: Op[] } {
+    const t = this.singletonType(type);
+    const entries = this.singletonEntries(type);
+    const ops: Op[] = [];
+    const missing: NewFieldRow[] = [];
+    for (const [name, value] of Object.entries(fields)) {
+      if (name.startsWith("$")) throw new ApiError("bad-value", `${name} can't be set on a singleton: it has no ID, and its rows are commented out on the sheet`);
+      const f = t.fieldByName.get(name);
+      if (!f) throw new ApiError("unknown-field", `${type} has no field ${name}`);
+      this.singletonFieldOps(type, f.def, [name], value, force, entries, ops, missing);
+    }
+    if (missing.length) {
+      const order = (r: NewFieldRow) => t.fields.findIndex((f) => f.def.name === r.path[0]);
+      missing.sort((a, b) => order(a) - order(b));
+      ops.push(...this.appendFieldRows(type, missing));
+    }
+    return { ops };
+  }
+
+  private singletonFieldOps(type: string, def: FieldDef, path: string[], value: JsonValue, force: boolean, entries: SingletonEntry[], ops: Op[], missing: NewFieldRow[]): void {
+    const key = path.join(".");
+    const label = `${type}.${key}`;
+    const exact = entries.filter((e) => e.path.join(".") === key);
+    if (exact.length > 1) throw new ApiError("ambiguous", `${label} has ${exact.length} active rows (${exact.map((e) => this.rowName(e.at.sheet, e.at.row)).join(", ")}); fix the duplicate first`);
+    const e = exact[0];
+    if (e) {
+      const colB = this.colAt(e.at.sheet, 2);
+      if (e.formula && !force && !isFormula(value)) throw new ApiError("formula", `${label} is computed by a formula (${this.formulaAt(e.at.sheet, e.at.row, colB)}); pass force to replace it`);
+      ops.push(this.cellOp(e.at.sheet, e.at.row, colB, this.content(e.at.sheet, def.type, value, label)));
+      return;
+    }
+    const below = entries.filter((x) => x.path.length > path.length && x.path.slice(0, path.length).join(".") === key);
+    const s = def.type.kind === "struct" ? this.schema.structs.get(def.type.name) : undefined;
+    if (below.length && s) {
+      // Split into rows (§6.8): each sub-field goes to its own row, as with struct sub-columns.
+      if (value !== null && (!isObject(value) || isFormula(value))) throw new ApiError("bad-value", `${label} is split into rows (.${key}.…): write an object`);
+      if (value !== null) for (const k of Object.keys(value)) if (!s.fields.some((f) => f.name === k)) throw new ApiError("bad-value", `${label}: ${s.name} has no field ${k}`);
+      for (const sub of s.fields) {
+        const v = value === null ? null : (value[sub.name] ?? null);
+        if (v !== null || below.some((x) => x.path[path.length] === sub.name)) this.singletonFieldOps(type, sub, [...path, sub.name], v, force, entries, ops, missing);
+      }
+      return;
+    }
+    if (value === null) return; // no row, so nothing to clear
+    missing.push({ path, type: def.type, value, label });
+  }
+
+  /** New field rows: after the last row of the singleton's block, or in a new block. */
+  private appendFieldRows(type: string, rows: NewFieldRow[]): Op[] {
+    const block = this.singletonBlock(type);
+    const sheet = block?.sheet ?? this.singletonSheet(type);
+    const after = block ? block.after : this.lastUsedRow(sheet);
+    const ids = this.project.wb.sheet(sheet).rows.freshIds(rows.length + (block ? 0 : 1));
+    const colA = this.colAt(sheet, 1);
+    const colB = this.colAt(sheet, 2);
+    const ops: Op[] = [{ kind: "insert", sheet, axis: "row", after, ids }];
+    if (!block) ops.push(this.cellOp(sheet, ids[0]!, colA, { v: type }));
+    rows.forEach((r, i) => {
+      const row = ids[i + (block ? 0 : 1)]!;
+      ops.push(this.cellOp(sheet, row, colA, { v: `.${r.path.join(".")}` }));
+      ops.push(this.cellOp(sheet, row, colB, this.content(sheet, r.type, r.value, r.label)));
+    });
+    return ops;
+  }
+
+  /** The singleton's first active block in its pack, and its last header or field row. */
+  private singletonBlock(type: string): { sheet: SheetId; after: RowId } | null {
+    const wb = this.project.wb;
+    const pack = this.schema.types.get(type)!.def.pack ?? wb.root;
+    for (const s of wb.sheets.values()) {
+      if (s.kind !== "data" || s.pack !== pack || s.cols.length < 1) continue;
+      const colA = s.cols.idAt(1);
+      let last: RowId | null = null;
+      for (const row of s.rows.liveIds()) {
+        const a = this.project.engine.cellById(s.id, row, colA);
+        const rc = classify(this.schema, a.value === null || a.formula ? "" : String(a.value));
+        if (rc.kind === "entity" || rc.kind === "header") {
+          if (last !== null) break;
+          if (rc.kind === "header" && rc.type === type && rc.active) last = row;
+        } else if (rc.kind === "field" && last !== null) last = row;
+      }
+      if (last !== null) return { sheet: s.id, after: last };
+    }
+    return null;
+  }
+
+  /** Where a singleton's first block goes (see setSingleton). */
+  private singletonSheet(type: string): SheetId {
+    const wb = this.project.wb;
+    const pack = this.schema.types.get(type)!.def.pack ?? wb.root;
+    const data = [...wb.sheets.values()].filter((s) => s.kind === "data" && s.pack === pack);
+    const only = data.length === 1 ? data[0]! : undefined;
+    if (only && (only.name === type || !this.schema.types.has(only.name))) return only.id;
+    const named = data.find((s) => s.name === type);
+    return named ? named.id : this.newSheet(type, pack);
   }
 
   /** The last row of a sheet with anything in it, so a new row doesn't go below blank ones. */
@@ -535,10 +692,41 @@ export class Sapwood {
     if (active.length === 0 && all.length === 1) return all[0]!;
     if (all.length === 0) {
       const near = this.project.project().entities.find((e) => e.id?.toLowerCase() === id.toLowerCase());
+      if (this.schema.types.get(id)?.def.singleton) throw new ApiError("singleton", `${id} is a singleton, not an entity: read it with singleton("${id}")`);
       throw new ApiError("not-found", `No entity "${id}"${near ? ` (IDs are case-sensitive: did you mean "${near.id}"?)` : ""}`);
     }
     const where = (active.length ? active : all).map((e) => `${this.project.wb.sheet(e.at.sheet).name} row ${this.project.wb.sheet(e.at.sheet).rows.posOf(e.at.row)}`);
     throw new ApiError("ambiguous", `Several entities have the ID "${id}" (${where.join(", ")}); fix the duplicate first`);
+  }
+
+  private singletonType(type: string): ResolvedType {
+    const t = this.schema.types.get(type);
+    if (!t) throw new ApiError("unknown-type", `No type called ${type}`);
+    if (!t.def.singleton) throw new ApiError("unknown-type", `${type} isn't a singleton: use get or query`);
+    return t;
+  }
+
+  /** A singleton's active field rows, in document order. */
+  private singletonEntries(type: string): SingletonEntry[] {
+    return this.project.project().singletons.filter((s) => s.active && s.type === type);
+  }
+
+  /** A field row's value as JSON, as entityJson shows a field; undefined when blank. */
+  private singletonValue(e: SingletonEntry): JsonValue | undefined {
+    const v = e.value === undefined ? null : valueJson(this.schema, e.field.type, e.value, { ref: (id) => id, defaults: false });
+    const s = this.project.wb.sheet(e.at.sheet);
+    const colB = s.cols.length >= 2 ? s.cols.idAt(2) : null;
+    if (e.formula && colB) return { $value: v, $formula: this.formulaAt(e.at.sheet, e.at.row, colB) };
+    if (e.invalid && v === null && colB) {
+      const raw = this.project.engine.cellById(e.at.sheet, e.at.row, colB).value;
+      return { $invalid: raw === null || typeof raw === "object" ? null : raw };
+    }
+    return v === null ? undefined : v;
+  }
+
+  private rowName(sheet: SheetId, row: RowId): string {
+    const s = this.project.wb.sheet(sheet);
+    return `${s.name} row ${s.rows.posOf(row)}`;
   }
 
   private packId(name: string): PackId {
@@ -603,6 +791,13 @@ export class Sapwood {
     }
     return out;
   }
+}
+
+interface NewFieldRow {
+  path: string[];
+  type: FieldType;
+  value: JsonValue;
+  label: string;
 }
 
 function isObject(v: JsonValue | undefined): v is { [k: string]: JsonValue } {

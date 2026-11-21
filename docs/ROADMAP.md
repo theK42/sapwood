@@ -118,8 +118,9 @@ DESIGN §12's targets at 10k entities are met: an edit with validation in under 
 - Reads: `get(id)` and `query(typeOrTrait, { where, pack, inactive })`, as entity JSON. A formula field shows its value and formula; a cell that doesn't parse shows what it holds.
 - Writes: `set`, `create`, `commentOut`, `uncomment`, `delete`, and `apply(patches)`, all or nothing. Each is ops applied to the project, and comes back with its inverse; `undo` and `redo` work over them. Columns a sheet doesn't have yet are added as ops in the same change.
 - `validate()` gives issues by sheet name, A1 address and entity; `export()`, `schemaYaml()`, `doc` and `applyOps` pass through.
+- Singletons (2026-11-21): `singleton(type)` and `setSingleton(type, fields)`, also a patch line. Writes go to a field's row, row by row for a struct split into rows; a new field joins the singleton's block, and a singleton with no block gets one (DESIGN §9.4).
 - A property test applies random patches and checks that every change undoes exactly, a refused patch changes nothing, and a project rebuilt from the document reads the same.
-- Not yet: singletons through the API (they have no ID: read and write them as field rows for now), `schema apply` (turning an edited schema file into schema ops), and a text syntax for `query --where`, which is the CLI's to parse.
+- Not yet: `schema apply` (turning an edited schema file into schema ops), and a text syntax for `query --where`, which is the CLI's to parse.
 
 Importing KRBSG showed that its per-tab names collide once IDs are global (`Ship` was both a texture and a sprite, and so on). The fixture prefixes them. Phase 5's importer will need a way to handle this.
 
