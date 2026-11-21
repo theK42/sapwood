@@ -514,7 +514,8 @@ export class Sapwood {
     if (last) return { sheet: last.at.sheet, after: last.at.row };
     if (sheet === undefined) {
       const data = [...wb.sheets.values()].filter((s) => s.kind === "data" && (pack === undefined || s.pack === pack));
-      if (data.length !== 1) throw new ApiError("no-sheet", `No sheet has a ${type} yet${data.length ? ", and there are several data sheets" : ""}: say which sheet`);
+      if (data.length === 0) return { sheet: this.newSheet(type, pack ?? this.project.wb.root), after: null }; // a project's first entity
+      if (data.length !== 1) throw new ApiError("no-sheet", `No sheet has a ${type} yet, and there are several data sheets: say which sheet`);
       const only = data[0]!;
       // A sheet named after another type is that type's: the new type gets a sheet of its own.
       sheet = only.name !== type && this.schema.types.has(only.name) ? this.newSheet(type, only.pack) : only.id;

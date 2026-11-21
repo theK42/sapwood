@@ -137,3 +137,67 @@ export function resolvedSchema(doc: Doc): ResolvedSchema {
 export function primeResolved(schema: ResolvedSchema): void {
   resolved.set(schema.schema, schema);
 }
+
+// ------------------------------------------------------------ as JSON
+
+/**
+ * A document as JSON, exactly: tombstones, cell contents (formulas as bound expressions,
+ * over stable row and column IDs), formats and layouts. For a project kept in a file.
+ */
+export interface DocJson {
+  format: "sapwood-doc";
+  version: 1;
+  schema: Schema;
+  packs: PackDoc[];
+  sheets: {
+    id: SheetId;
+    name: string;
+    pack: PackId;
+    kind: SheetKind;
+    rows: { order: string[]; dead: string[] };
+    cols: { order: string[]; dead: string[] };
+    /** [row|col key, content], in key order. */
+    cells: [string, Content][];
+    formats: [string, Format][];
+    layouts: [string, Layout][];
+  }[];
+}
+
+export function docToJson(doc: Doc): DocJson {
+  const sorted = <V>(m: Map<string, V>): [string, V][] => [...m].filter(([, v]) => v !== null).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0));
+  const axis = (a: AxisDoc) => ({ order: [...a.order], dead: a.order.filter((id) => a.dead.has(id)) });
+  return {
+    format: "sapwood-doc",
+    version: 1,
+    schema: doc.schema,
+    packs: [...doc.packs.values()].map((p) => ({ ...p })),
+    sheets: [...doc.sheets.values()].map((s) => ({
+      id: s.id,
+      name: s.name,
+      pack: s.pack,
+      kind: s.kind,
+      rows: axis(s.rows),
+      cols: axis(s.cols),
+      cells: sorted(s.cells),
+      formats: sorted(s.formats),
+      layouts: sorted(s.layouts),
+    })),
+  };
+}
+
+export function docFromJson(json: unknown): Doc {
+  const j = json as Partial<DocJson> | null;
+  if (!j || typeof j !== "object" || j.format !== "sapwood-doc") throw new Error("Not a Sapwood document");
+  if (j.version !== 1) throw new Error(`Unsupported Sapwood document version ${String(j.version)}`);
+  const axis = (a: { order: string[]; dead: string[] }): AxisDoc => ({ order: [...a.order], dead: new Set(a.dead) });
+  return {
+    schema: j.schema!,
+    packs: new Map(j.packs!.map((p) => [p.id, { ...p }])),
+    sheets: new Map(
+      j.sheets!.map((s) => [
+        s.id,
+        { id: s.id, name: s.name, pack: s.pack, kind: s.kind, rows: axis(s.rows), cols: axis(s.cols), cells: new Map(s.cells), formats: new Map(s.formats), layouts: new Map(s.layouts) },
+      ]),
+    ),
+  };
+}

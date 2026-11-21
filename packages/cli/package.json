@@ -1,0 +1,17 @@
+{
+  "name": "@thek42/sapwood-cli",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The sapwood command: read, edit, validate and export a Sapwood project.",
+  "type": "module",
+  "bin": {
+    "sapwood": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/cli.ts"
+  },
+  "dependencies": {
+    "@thek42/sapwood-core": "0.0.0"
+  }
+}

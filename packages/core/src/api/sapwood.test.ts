@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { canonDoc, cloneDoc } from "../ops/doc.ts";
+import { canonDoc, cloneDoc, docFromJson, docToJson } from "../ops/doc.ts";
 import { ApiError, Sapwood, type ApiErrorCode, type Patch } from "./sapwood.ts";
 
 const fixture = (f: string) => readFileSync(new URL(`../../fixtures/krbsg/${f}`, import.meta.url), "utf8");
@@ -382,8 +382,9 @@ describe("the API (properties)", () => {
           }
           if (pick([true, false])) s.validate();
         }
-        const fresh = Sapwood.fromDoc(cloneDoc(s.doc));
+        const fresh = Sapwood.fromDoc(docFromJson(JSON.parse(JSON.stringify(docToJson(s.doc))))); // as a saved file is
         expect(fresh.validate()).toEqual(s.validate());
+        expect(canonDoc(fresh.doc)).toEqual(canonDoc(s.doc));
         for (const id of IDS) {
           const read = (x: Sapwood) => { try { return x.get(id); } catch (e) { return (e as ApiError).code; } };
           expect(read(fresh)).toEqual(read(s));

@@ -124,7 +124,14 @@ DESIGN §12's targets at 10k entities are met: an edit with validation in under 
   - adding a field mid-type on a sheet with no spare columns pinned the layout to a column that didn't exist, in the project's own `addField` too. Pinning now adds the columns;
   - a new field could be given a removed field's ID, so anything still holding the old state would read the new field as the old one. A project now never gives out an ID it has held, and numbers new ones past the highest.
 - Known limits of the text form: enum members are matched by name, so renaming a member to a name the enum had reads as a removal and an addition. And edits made in another order than apply's (renaming a type, then removing it) can leave cells the text can't show.
-- Not yet: a text syntax for `query --where`, which is the CLI's to parse.
+- The text syntax for `query --where` is the CLI's (below).
+
+**The CLI, on a local project file (2026-11-21).** `packages/cli`, the `sapwood` command, over the `Sapwood` API (DESIGN §9.4). Done:
+
+- `init`, `get`, `query --where`, `set`, `create`, `comment-out`, `uncomment`, `delete`, `apply <patch.jsonl>`, `schema get`, `schema apply`, `validate` and `export`, on `sapwood.json` (the document as JSON, `docToJson`). Values are typed for each field's type.
+- `create` puts a project's first entity on a new sheet named after its type.
+- Tests run each command in a temporary folder. The API's property test now rebuilds the project from the document's JSON form, as a saved file would be.
+- Left for Phase 2: `login`, `token`, `branch` and `task`, which need the server. The local file then gives way to a server connection.
 
 Importing KRBSG showed that its per-tab names collide once IDs are global (`Ship` was both a texture and a sprite, and so on). The fixture prefixes them. Phase 5's importer will need a way to handle this.
 
@@ -144,7 +151,7 @@ Still to do in Phase 1:
 - History: commit log, revert commit, read/export at a commit.
 - HTTP API and WebSocket events.
 - GitHub OAuth (web) and device flow (CLI). Users, the four roles, scoped tokens.
-- CLI covering DESIGN §9.4.
+- CLI covering DESIGN §9.4: the data, schema, validation and export commands exist on a local file; add auth, branches and tasks, against the server.
 - HTTP export endpoint with ETags.
 - MCP server as a thin wrapper over the API.
 

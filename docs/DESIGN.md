@@ -712,6 +712,14 @@ In `@thek42/sapwood-core` this is the `Sapwood` class: reads, writes, validation
 | Schema | `schema get`, `schema apply <file>` |
 | Validation & export | `validate`, `export [--branch] [--commit] --out <dir>` |
 
+Until the server exists, the CLI works on a **local project file**, `sapwood.json`: the whole document as JSON, found in the current folder or the nearest one above it, or given with `--project`. `sapwood init [--schema <file>] [--from <project.yaml>]` starts one. Each command loads the file and a command that changes the project saves it again. Branches, tasks and landing need the server, so they aren't available locally. **Decided** (2026-11-21), as a way to use the data, schema and export commands before Phase 2.
+
+How values are typed on the command line:
+
+- `set <id> field=value…`: a value is read for the field's type. A blank clears the field, `=…` is a formula, numbers and `true`/`false` are read as such, and lists take JSON or a comma-separated list. Structs, unions and `json` take JSON. `field.sub=value` sets one part of a struct and keeps the rest. Quoted JSON text keeps a string as typed: `name='"=not a formula"'`. `$id=…` renames and `$active=false` comments out. A singleton's type name stands in for an ID in `get` and `set`.
+- `query --where`: `field<op>value` with `=`, `!=`, `<`, `<=`, `>`, `>=` and `~` (contains, ignoring case). Repeated `--where`s must all hold. A list matches `=` when it has the value, and `field=` matches a blank field. Numbers compare as numbers, everything else as text, so ISO dates compare in time order.
+- Output: `get` prints JSON, and `query` prints one JSON object per line (`--ids` for IDs only). Exit status 0 is success, 1 is a refused change, validation errors or a refused export, and 2 is a mistyped command.
+
 **HTTP API:** the same operations as REST/JSON. A WebSocket pushes validation results, head movement and task events to the web app.
 
 **MCP server:** a thin wrapper over the API. LLM edits always go into a task. Tokens can be issued **without land permission**, so a human reviews and lands LLM work (§11.3).
