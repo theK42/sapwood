@@ -86,6 +86,19 @@ describe("formula IDs", () => {
     expect(e.get(calc, "A1")).toBe(40);
   });
 
+  it("with a duplicate, the first in document order wins, however the clash came about", () => {
+    const { e, weapons, calc } = world();
+    e.set(calc, "A1", '=ENTITY("w2").damage');
+    e.setAt(weapons, 2, 11, "9"); // row 2 is w9: only row 4 can be w2 now
+    e.setAt(weapons, 4, 11, "2");
+    expect(e.get(calc, "A1")).toBe(40);
+    e.setAt(weapons, 2, 11, "2"); // row 2 is w2 again: it comes first, though it clashed second
+    expect(e.get(calc, "A1")).toBe(20);
+    e.moveRows(weapons, 2, 1, 6); // row 2 goes to the end: the other w2 comes first
+    expect([1, 2, 3, 4, 5].map((r) => e.getAt(weapons, r, 2))).toEqual(["w1", "w3", "w2", "w5", "w2"]);
+    expect(e.get(calc, "A1")).toBe(40);
+  });
+
   it("an ID may not depend on the entity index, even indirectly", () => {
     const { e, weapons, calc } = world();
     e.setAt(weapons, 2, 2, '=ENTITY("w1").id & "_child"');

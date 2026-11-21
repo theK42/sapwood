@@ -13,10 +13,13 @@ import { Engine, parseInput } from "../formula/engine.ts";
 import { Workbook, type ColId, type PackId, type RowId, type SheetId, type SheetKind } from "../formula/model.ts";
 import { colToNumber, FormulaSyntaxError, parseFormula } from "../formula/parse.ts";
 import { formatNumber, isErr, type Scalar } from "../formula/values.ts";
-import { cellKey, emptyDoc, primeResolved, resolvedSchema, rootPack, splitCellKey, type Axis, type Doc, type Format } from "../ops/doc.ts";
-import { applyPlain, expand, type Op } from "../ops/ops.ts";
-import { renameIdFormulas } from "../ops/rename.ts";
-import type { FieldDef, FieldType } from "../schema/model.ts";
+import { cellKey, cloneDoc, emptyDoc, primeResolved, resolvedSchema, rootPack, splitCellKey, type Axis, type Doc, type Format } from "../ops/doc.ts";
+import { applyOp, applyPlain, expand, type Op } from "../ops/ops.ts";
+import {
+  renameFieldMentions, renameIdFormulas, renameMemberMentions, renameTypeMentions, type RenameReport,
+} from "../ops/rename.ts";
+import { defByName, schemaNodes, siblings, type SchemaDef, type Section } from "../ops/schema.ts";
+import { parseType, type FieldDef, type FieldType, type Id } from "../schema/model.ts";
 import type { ResolvedField, ResolvedSchema, ResolvedType } from "../schema/resolve.ts";
 import { buildLayout, sheetLayout, type Layout, type LayoutColumn } from "./layout.ts";
 import { classify, type RowClass } from "./rows.ts";
@@ -87,6 +90,9 @@ export interface Edit {
   inverse: Op[];
 }
 
+/** A field as given to the schema edits: the type may be written as text (`list<ref<Projectile>>`). */
+export type FieldInput = Omit<FieldDef, "id" | "type"> & { id?: Id; type: string | FieldType };
+
 export class Project {
   /** The truth: every change is an op applied here, then mirrored into the workbook and engine. */
   readonly doc: Doc;
@@ -156,6 +162,7 @@ export class Project {
    */
   apply(ops: readonly Op[]): Op[] {
     const inverse: Op[] = [];
+    const schema = this.doc.schema;
     this.engine.batch(() => {
       try {
         for (const op of ops)
@@ -169,6 +176,8 @@ export class Project {
           this.mirror(op);
         }
         throw e;
+      } finally {
+        if (this.doc.schema !== schema) this.schemaChanged();
       }
     });
     return inverse;
@@ -220,11 +229,32 @@ export class Project {
       case "renamePack":
         this.wb.packs.get(op.pack)!.name = op.name;
         return;
+      case "addSchema":
+      case "removeSchema":
+      case "setSchema":
+        return; // see schemaChanged, once per apply
       case "renameId":
-        throw new Error("renameId is expanded before it is mirrored");
+      case "renameType":
+      case "renameField":
+      case "renameEnumMember":
+        throw new Error(`${op.kind} is expanded before it is mirrored`);
     }
     // Default layouts follow the columns, so a column change can move fields.
     if (op.axis === "col") this.syncLayouts(op.sheet);
+  }
+
+  /**
+   * The schema changed: cells are read under the new one (�5.9). Default layouts follow
+   * the fields, column A may name different types, and formulas reading fields by name
+   * may see different columns, so everything recalculates.
+   */
+  private schemaChanged(): void {
+    for (const s of this.wb.sheets.values()) {
+      if (s.kind !== "data") continue;
+      this.engine.clearLayouts(s.id);
+      this.syncLayouts(s.id);
+    }
+    this.engine.recalcAll();
   }
 
   /**
@@ -332,6 +362,180 @@ export class Project {
   }
 
   // ------------------------------------------------------------ edits by position
+
+  // ------------------------------------------------------------ schema edits (§5.9)
+
+  /** A schema ID no node uses yet, with this project's salt: `f1`, `t2`… */
+  freshSchemaId(prefix: string, taken: ReadonlySet<Id> = new Set()): Id {
+    const nodes = schemaNodes(this.doc.schema);
+    for (let n = 1; ; n++) {
+      const id = `${prefix}${this.wb.idSalt}${n}`;
+      if (!nodes.has(id) && !taken.has(id)) return id;
+    }
+  }
+
+  private fieldDef(f: FieldInput, taken: Set<Id>): SchemaDef {
+    const id = f.id ?? this.freshSchemaId("f", taken);
+    taken.add(id);
+    return { ...f, id, type: typeof f.type === "string" ? parseType(f.type) : f.type };
+  }
+
+  /**
+   * A schema edit. Default layouts follow the schema's field order, so adding or removing
+   * a field (or a trait) would shift every later column on sheets already holding rows of
+   * the type. On those sheets the layout is pinned first, as it is: removed fields' columns
+   * drop out of it (their cells become scratch) and new fields are appended (�5.9). Where
+   * the result is just the new default, nothing is pinned. Custom layouts get new fields
+   * appended too.
+   */
+  private schemaEdit(make: () => Op[]): Edit {
+    return this.edit(() => {
+      const ops = make();
+      const after = cloneDoc(this.doc);
+      for (const op of ops) applyOp(after, op);
+      return [...this.pinLayouts(resolvedSchema(after)), ...ops];
+    });
+  }
+
+  private pinLayouts(next: ResolvedSchema): Op[] {
+    const out: Op[] = [];
+    const now = this.schema;
+    for (const s of this.wb.sheets.values()) {
+      if (s.kind !== "data" || s.cols.length < 1) continue;
+      const doc = this.doc.sheets.get(s.id)!;
+      const types = new Set<string>();
+      const colA = s.cols.idAt(1);
+      for (const row of s.rows.liveIds()) {
+        const rc = classify(now, String(this.engine.cellById(s.id, row, colA).value ?? ""));
+        if (rc.kind === "entity") types.add(rc.type);
+      }
+      for (const type of types) {
+        const t = next.types.get(type);
+        const old = now.types.get(type)!;
+        if (!t || t.def.id !== old.def.id) continue;
+        const custom = doc.layouts.has(type);
+        const ids = new Set(t.fields.map((f) => f.def.id));
+        const layout = this.layout(s.id, type).filter((c) => ids.has(c.field));
+        // New fields go after the last column. A custom layout keeps hiding the fields it hid.
+        const known = custom ? new Set(old.fields.map((f) => f.def.id)) : new Set(layout.map((c) => c.field));
+        const fresh = t.fields.filter((f) => !known.has(f.def.id));
+        const live = s.cols.liveIds();
+        let pos = Math.max(2, ...layout.map((c) => live.indexOf(c.col) + 1)) + 1;
+        for (const f of fresh) layout.push({ col: s.cols.idAt(pos++), field: f.def.id, path: [] });
+        if (custom && !fresh.length) continue; // removed fields already drop out of custom layouts
+        // Already the new default: fields in order, one whole column each, from C.
+        const isDefault = !custom && layout.length === t.fields.length && layout.every((c, i) => c.field === t.fields[i]!.def.id && !c.path.length && c.index === undefined && c.col === s.cols.idAt(3 + i));
+        if (!isDefault) out.push({ kind: "setLayout", sheet: s.id, type, layout });
+      }
+    }
+    return out;
+  }
+
+  /** A definition by name, or a rule by ID. */
+  private defNode(name: string): { section: Section; def: SchemaDef } {
+    const d = defByName(this.doc.schema, name);
+    if (d) return d;
+    const rule = siblings(this.doc.schema, "rules").find((r) => r.id === name);
+    if (rule) return { section: "rules", def: rule };
+    throw new Error(`No type, trait, struct, union, enum or rule called ${name}`);
+  }
+
+  private fieldNode(owner: string, field: string): SchemaDef {
+    const f = (this.defNode(owner).def.fields as SchemaDef[] | undefined)?.find((x) => x.name === field);
+    if (!f) throw new Error(`${owner} has no field ${field}`);
+    return f;
+  }
+
+  /**
+   * Add a type, trait, struct, union, enum or rule, after the one named `after` (default:
+   * last). Fields may be given with it.
+   */
+  addDef(section: Section, def: { id?: Id; fields?: FieldInput[]; [k: string]: unknown }, after?: string): Edit & { id: Id } {
+    const prefix = { enums: "e", traits: "tr", structs: "s", unions: "u", types: "t", rules: "r" }[section];
+    const id = def.id ?? this.freshSchemaId(prefix);
+    const taken = new Set([id]);
+    const full: SchemaDef = { ...def, id };
+    if (def.fields) full.fields = def.fields.map((f) => this.fieldDef(f, taken));
+    const list = siblings(this.doc.schema, section);
+    const anchor = after === undefined ? (list.at(-1)?.id ?? null) : this.defNode(after).def.id;
+    return { ...this.schemaEdit(() => [{ kind: "addSchema", parent: section, def: full, after: anchor }]), id };
+  }
+
+  /** Add a field to a type, trait or struct, after the field named `after` (default: last). */
+  addField(owner: string, field: FieldInput, after?: string): Edit & { id: Id } {
+    const o = this.defNode(owner).def;
+    const fields = o.fields as SchemaDef[] | undefined;
+    if (!fields) throw new Error(`${owner} can't have fields`);
+    if (fields.some((f) => f.name === field.name)) throw new Error(`${owner} already has a field ${field.name}`);
+    const def = this.fieldDef(field, new Set());
+    const anchor = after === undefined ? (fields.at(-1)?.id ?? null) : this.fieldNode(owner, after).id;
+    return { ...this.schemaEdit(() => [{ kind: "addSchema", parent: o.id, def, after: anchor }]), id: def.id };
+  }
+
+  /** Set properties of a definition; `null` clears one. Use renameType for the name. */
+  setDef(name: string, props: Record<string, unknown>): Edit {
+    return this.setProps(this.defNode(name).def.id, props, "renameType");
+  }
+
+  /** Set properties of a field (`type` may be text); `null` clears one. Use renameField for the name. */
+  setField(owner: string, field: string, props: Record<string, unknown>): Edit {
+    const p: Record<string, unknown> = { ...props };
+    if (typeof p.type === "string") p.type = parseType(p.type);
+    return this.setProps(this.fieldNode(owner, field).id, p, "renameField");
+  }
+
+  private setProps(id: Id, props: Record<string, unknown>, rename: string): Edit {
+    if ("name" in props) throw new Error(`Use ${rename} to change a name`);
+    return this.schemaEdit(() =>
+      Object.entries(props).map(([key, value]): Op => (value === null || value === undefined ? { kind: "setSchema", id, key } : { kind: "setSchema", id, key, value })),
+    );
+  }
+
+  /**
+   * Remove a definition. Rows of a removed type become invalid until deleted or commented
+   * out (§5.9); `affected` lists them, for the user to confirm first.
+   */
+  removeDef(name: string): Edit & { affected: Location[] } {
+    const d = this.defNode(name);
+    const affected = d.section === "types" ? this.project().entities.filter((e) => e.type === name).map((e) => e.at) : [];
+    return { ...this.schemaEdit(() => [{ kind: "removeSchema", id: d.def.id }]), affected };
+  }
+
+  /**
+   * Remove a field. Its cells stay, as scratch (§5.9). `affected` lists the ones holding
+   * data in entity and singleton rows, for the user to confirm first.
+   */
+  removeField(owner: string, field: string): Edit & { affected: Location[] } {
+    const f = this.fieldNode(owner, field);
+    const p = this.project();
+    const affected: Location[] = [];
+    for (const e of p.entities)
+      for (const entry of e.fields.values())
+        if (entry.field.id === f.id && (entry.value !== undefined || entry.formula || entry.invalid)) affected.push(...entry.cells);
+    for (const s of p.singletons) if (s.field.id === f.id) affected.push(s.at);
+    return { ...this.schemaEdit(() => [{ kind: "removeSchema", id: f.id }]), affected };
+  }
+
+  /** Rename a type, trait, struct, union or enum (§8.2). Reports the formulas and rules it can't rewrite. */
+  renameType(name: string, to: string): Edit & RenameReport {
+    const id = this.defNode(name).def.id;
+    const report = renameTypeMentions(this.doc, id);
+    return { ...this.edit(() => [{ kind: "renameType", id, name: to }]), ...report };
+  }
+
+  /** Rename a field of a type, trait or struct (§8.2). Reports the formulas and rules it can't rewrite. */
+  renameField(owner: string, field: string, to: string): Edit & RenameReport {
+    const id = this.fieldNode(owner, field).id;
+    const report = renameFieldMentions(this.doc, id);
+    return { ...this.edit(() => [{ kind: "renameField", id, name: to }]), ...report };
+  }
+
+  /** Rename an enum member, rewriting every cell that holds it (§8.2). */
+  renameEnumMember(enumName: string, from: string, to: string): Edit & RenameReport {
+    const id = this.defNode(enumName).def.id;
+    const report = renameMemberMentions(this.doc, from);
+    return { ...this.edit(() => [{ kind: "renameEnumMember", enum: id, from, to }]), ...report };
+  }
 
   /** Set a cell from user input, by A1 address. */
   set(sheet: SheetId, a1: string, input: string): Edit {

@@ -8,8 +8,10 @@
 import { sameContent, type Content } from "../formula/content.ts";
 import { anchorIndex, insertAfter, type ColId, type PackId, type RowId, type SheetId, type SheetKind } from "../formula/model.ts";
 import type { Layout } from "../project/layout.ts";
-import { axisOf, cellKey, hasId, isLive, splitCellKey, type Axis, type Doc, type Format, type SheetDoc } from "./doc.ts";
-import { renameIdWrites } from "./rename.ts";
+import { axisOf, cellKey, OpError, hasId, isLive, splitCellKey, type Axis, type Doc, type Format, type SheetDoc } from "./doc.ts";
+import type { Id } from "../schema/model.ts";
+import { renameEnumMemberOps, renameFieldOps, renameIdWrites, renameTypeOps } from "./rename.ts";
+import { addNode, removeNode, setNodeProp, type SchemaDef, type SchemaParent } from "./schema.ts";
 
 export type Op =
   // cells
@@ -34,13 +36,25 @@ export type Op =
   /** Undo a createPack: the pack must have no sheets or sub-packs. */
   | { kind: "removePack"; pack: PackId }
   | { kind: "renamePack"; pack: PackId; name: string }
-  // refactors with intent (§8.2)
-  | { kind: "renameId"; from: string; to: string };
+  // schema (§5.9): see schema.ts
+  /** Add a definition to a section, or a field to its type, trait or struct, after a sibling (null: first). */
+  | { kind: "addSchema"; parent: SchemaParent; def: SchemaDef; after: Id | null }
+  /** Remove a definition (with its fields) or a field. */
+  | { kind: "removeSchema"; id: Id }
+  /** Set one property of a definition or field; without `value`, clear it. */
+  | { kind: "setSchema"; id: Id; key: string; value?: unknown }
+  // refactors with intent (§8.2): see rename.ts
+  | { kind: "renameId"; from: string; to: string }
+  /** Rename a type, trait, struct, union or enum, and rewrite what names it. */
+  | { kind: "renameType"; id: Id; name: string }
+  | { kind: "renameField"; id: Id; name: string }
+  | { kind: "renameEnumMember"; enum: Id; from: string; to: string };
 
-/** An op that can't apply to the document as it is. The document is unchanged. */
-export class OpError extends Error {
-  override name = "OpError";
-}
+/** Intent ops: expanded against the document they apply to, and re-run by a rebase. */
+export const isIntent = (op: Op): boolean =>
+  op.kind === "renameId" || op.kind === "renameType" || op.kind === "renameField" || op.kind === "renameEnumMember";
+
+export { OpError };
 
 /**
  * The plain ops an op comes down to on this document. Refactor ops expand into the cell
@@ -52,6 +66,9 @@ export function expand(doc: Doc, op: Op): Op[] {
     if (op.from === op.to) throw new OpError("renameId: the new ID is the same as the old one");
     return renameIdWrites(doc, op.from, op.to).map((w) => ({ kind: "setCell", sheet: w.sheet, row: w.row, col: w.col, content: w.content }));
   }
+  if (op.kind === "renameType") return renameTypeOps(doc, op.id, op.name);
+  if (op.kind === "renameField") return renameFieldOps(doc, op.id, op.name);
+  if (op.kind === "renameEnumMember") return renameEnumMemberOps(doc, op.enum, op.from, op.to);
   return [op];
 }
 
@@ -255,7 +272,24 @@ export function applyPlain(doc: Doc, op: Op): Op[] {
       p.name = op.name;
       return [{ ...op, name: prev }];
     }
+    case "addSchema":
+      doc.schema = addNode(doc.schema, op.parent, op.def, op.after);
+      return [{ kind: "removeSchema", id: op.def.id }];
+    case "removeSchema": {
+      const r = removeNode(doc.schema, op.id);
+      doc.schema = r.schema;
+      return [{ kind: "addSchema", parent: r.parent, def: r.def, after: r.after }];
+    }
+    case "setSchema": {
+      const r = setNodeProp(doc.schema, op.id, op.key, op.value);
+      if (r.schema === doc.schema) return [];
+      doc.schema = r.schema;
+      return [r.prev === undefined ? { kind: "setSchema", id: op.id, key: op.key } : { kind: "setSchema", id: op.id, key: op.key, value: r.prev }];
+    }
     case "renameId":
+    case "renameType":
+    case "renameField":
+    case "renameEnumMember":
       return applyOp(doc, op);
   }
 }

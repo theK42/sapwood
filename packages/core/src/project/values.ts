@@ -123,7 +123,8 @@ export function parseJson(schema: ResolvedSchema, type: FieldType, j: unknown, p
       const variant = typeof tag === "string" ? u.variants.find((v) => v === tag) : undefined;
       if (!variant)
         return at(path, fail(`"${u.discriminator}" must be one of ${u.variants.join(", ")}${tag === undefined ? "" : `, not ${showJson(tag)}`}`));
-      const s = schema.structs.get(variant)!;
+      const s = schema.structs.get(variant);
+      if (!s) return fail(`Unknown struct ${variant}, a variant of ${u.name}`); // the schema reports it too
       return structFields(schema, s.fields, j, path, { key: u.discriminator, value: variant });
     }
   }

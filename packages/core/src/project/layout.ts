@@ -89,12 +89,16 @@ export const defaultSpecs = (type: ResolvedType): string[] => type.fields.map((f
 /**
  * The layout in force for `type` on a sheet: its custom layout, or else the default
  * over the sheet's columns from C. Columns that are deleted, or that the sheet doesn't
- * have yet, hold no field.
+ * have yet, hold no field; nor do custom columns for fields the type no longer has.
  */
 export function sheetLayout(schema: ResolvedSchema, sheet: Pick<SheetDoc, "layouts" | "cols">, type: string): Layout {
   const custom = sheet.layouts.get(type);
-  if (custom) return custom.filter((c) => !sheet.cols.dead.has(c.col));
   const t = schema.types.get(type);
   if (!t) return [];
+  if (custom) {
+    // A field the type no longer has (removed, §5.9) holds nothing: its column is scratch.
+    const fields = new Set(t.fields.map((f) => f.def.id));
+    return custom.filter((c) => !sheet.cols.dead.has(c.col) && fields.has(c.field));
+  }
   return buildLayout(schema, t, defaultSpecs(t), liveIds(sheet.cols).slice(2)).layout;
 }

@@ -1,6 +1,6 @@
 # Sapwood — Design Document
 
-> **Status:** Draft 7, 2026-11-20 (formula engine decided by spike S1, grid component by spike S2, op rebase by spike S3). Decisions marked **Decided** came out of design discussion; items marked **Open** are listed again in [§14](#14-open-questions).
+> **Status:** Draft 8, 2026-11-20 (formula engine decided by spike S1, grid component by spike S2, op rebase by spike S3). Decisions marked **Decided** came out of design discussion; items marked **Open** are listed again in [§14](#14-open-questions).
 
 ---
 
@@ -299,11 +299,15 @@ Schema ops in a task change how existing cells are read. That never changes cell
 
 | Change | Effect |
 |---|---|
-| Rename type/field/enum member | Metadata only (field), or a cell rewrite (type names in column A, enum values) |
-| Add field | Appended to default layouts. Existing rows are blank, so a `required` field causes errors until filled |
+| Rename type/field/enum member | Metadata only (an entity field: layouts hold field IDs), or a cell rewrite (type names in column A, singleton field rows, struct keys and union tags in JSON cells, enum values) |
+| Add field | Appended to layouts. Existing rows are blank, so a `required` field causes errors until filled |
 | Change field type | Cells are re-parsed under the new type. Failures become validation errors in the same task, to fix before landing |
 | Remove field | Requires confirmation if any active cell has data. Cells become scratch rather than being deleted, so no data is lost |
 | Remove type | Rows become invalid (unknown type) until deleted or commented out |
+
+**Layouts don't shift.** A default layout follows the schema's field order, so adding a field mid-type (or to a trait, whose fields come first) or removing one would move every later field to a different column. On sheets that already hold rows of the type, the edit first pins the layout as it was: a removed field's column drops out of it and new fields are appended after its last column. Appending a field to the end of a type changes no columns, so nothing is pinned. **Decided.**
+
+**How schema ops are shaped.** The schema is a tree of nodes with stable IDs: the definitions in each section, and the fields of types, traits and structs. Three plain ops cover every change: `addSchema` (a definition or field, after a sibling), `removeSchema` (a definition goes with its fields), and `setSchema` (one property of one node, such as a field's `type` or `min`, or an enum's `members`). Schemas are values: an op makes a new schema and never changes the old one. **Decided.**
 
 ## 6. Sheets
 
@@ -473,7 +477,7 @@ Every change is an op against stable IDs. Every op has an exact inverse.
 | Structure | `insertRows(sheet, afterRow, rowIds[])` · `deleteRows` · `moveRows` · `insertCols` · `deleteCols` · `moveCols` |
 | Sheets | `createSheet` · `deleteSheet` · `renameSheet` · `setSheetPack` · `reorderSheets` · `setLayout(sheet, type, layout)` |
 | Packs | `createPack` · `renamePack` · `movePack` · `deletePack` (must be empty) |
-| Schema | `addType` · `removeType` · `renameType` · `addField` · `removeField` · `renameField` · `setFieldType` · `setFieldProps` · enum and rule ops · wizard and export config ops |
+| Schema | `addSchema(parent, def, after)` · `removeSchema(id)` · `setSchema(id, key, value)`, over definitions and fields by stable ID (§5.9) · wizard and export config ops |
 
 ### 8.2 Refactor ops (compound with intent)
 
@@ -481,8 +485,10 @@ Some edits are recorded with their **intent**, so a rebase can re-run them inste
 
 - `renameId(old, new)` rewrites column B and every **literal** reference to the ID across all sheets. It reports refs produced by formulas (`="sword_"&B2`) that it cannot rewrite. When column B is itself a formula, there is nothing to rewrite there; a rename happens by changing the formula's inputs (§8.4).
   - References are found through the schema, not by matching text: only cells where the field type puts a ref (`ref<…>`, a list of them, or a ref inside a struct or union) are rewritten, so a description that happens to equal the ID is left alone. Inside JSON cells, only the matching string tokens change; the rest of the text stays as written. Matching is exact (case-sensitive). Commented-out rows are rewritten too. Formulas are never rewritten; the ones mentioning the old ID as a string literal are listed for the user.
-- `renameType` rewrites column A.
-- `renameEnumMember` rewrites enum cells.
+- `renameType(id, name)` renames a type, trait, struct, union or enum. It rewrites the schema's references to it (field types, trait lists, union variants, rules), column A for a type (entity rows, singleton headers, qualified field rows), the sheets' layouts for it, and, for a struct that is a union variant, its tag in JSON cells.
+- `renameField(id, name)` rewrites singleton field rows in column A (`.lives`, `GameConfig.lives`, `.cost.amount`) and, for a struct's field, its key in JSON cells. Entity rows need nothing: layouts hold field IDs.
+- `renameEnumMember(enum, from, to)` rewrites enum cells, including lists and values inside JSON, and fields' defaults.
+- Schema renames address definitions and fields by stable ID, so a concurrent rename on the other side doesn't lose them. Like `renameId`, they never rewrite formulas or rule expressions; they list the ones that mention the old name (`ENTITIES("Weapon")`, `ENTITY(x).cooldown`, `="fire"`).
 
 On rebase, the intent is re-applied against the new head, so rows added concurrently by other tasks are rewritten too.
 
@@ -517,6 +523,12 @@ On rebase, the intent is re-applied against the new head, so rows added concurre
 | Each change is valid alone but invalid together (duplicate IDs, a broken ref) | Not a conflict. Caught by validation step 3 |
 | Formatting on the same cell | Last write wins |
 | Sheet, pack and layout changes (rename, move to a pack, set a layout) | Last write wins. One that no longer applies on the head, such as a sheet name the other side took, is dropped and reported |
+| Both sides set one schema property (a field's type, a type's name) to different values | Conflict. Different properties of the same field are not |
+| One side removes a schema definition or field the other changed or added fields to | Conflict. Keeping the change brings it back as it was in the base |
+| Both sides add enum members, traits or union variants | No conflict. Lists of names merge item by item; the earlier-landed side's additions go first |
+| Both sides add fields at the same place | No conflict. The earlier-landed side's go first |
+| One side's new schema value names a definition the other side renamed | No conflict. It gets the new name |
+| Both sides rename the same enum member differently | Conflict |
 
 Conflicts are decided on each side's **net** effect, a three-way comparison with the base: writing a cell and writing it back is not a change. **Decided by S3.**
 

@@ -14,6 +14,11 @@ import type { Layout } from "../project/layout.ts";
 
 export type Axis = "row" | "col";
 
+/** An op that can't apply to the document as it is. The document is unchanged. */
+export class OpError extends Error {
+  override name = "OpError";
+}
+
 /** User formatting for one cell (§6.7): fill, text color, bold, number format… Never validated. */
 export type Format = { [k: string]: string | number | boolean };
 

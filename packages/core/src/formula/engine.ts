@@ -115,6 +115,8 @@ export class Engine {
   /** sheet -> type -> field -> column; null for a field the sheet has no column for (reads as blank). */
   private layouts = new Map<SheetId, Map<string, Map<string, ColId | null>>>();
   private entitiesDirty = true;
+  /** Duplicate IDs -> the row that won at the last rebuild (see rebuildEntities). */
+  private dupWinner = new Map<string, string>();
   private dirtyEntityRows = new Map<RowId, SheetId>();
 
   private batchDepth = 0;
@@ -347,6 +349,12 @@ export class Engine {
     this.rangeCache.delete(sheet);
     this.entitiesDirty = true;
     if (this.batchDepth === 0) this.flush();
+  }
+
+  /** Forget a sheet's entity layouts (set them again with setLayoutColumns). */
+  clearLayouts(sheet: SheetId): void {
+    this.layouts.delete(sheet);
+    this.entitiesDirty = true;
   }
 
   /** Everything recalculates: a sheet or pack was renamed or moved, so names and reach may differ. */
@@ -1045,7 +1053,10 @@ export class Engine {
   private rebuildEntities(): Key[] {
     this.entitiesDirty = false;
     this.dirtyEntityRows.clear();
-    const before = new Map([...this.entities].map(([k, l]) => [k, this.entitySig(l)]));
+    // With a duplicate ID, which one wins depends on document order (firstInDocument), and a
+    // move can change that without changing the records: so the winner, as recorded at the
+    // last rebuild, is part of the signature.
+    const before = new Map([...this.entities].map(([k, l]) => [k, this.entitySig(l) + (this.dupWinner.get(k) ?? "")]));
     const typesBefore = new Map([...this.typeRows.keys()].map((t) => [t, this.typeIds(t).join("\n")]));
     this.entities = new Map();
     this.rowEnt = new Map();
@@ -1054,9 +1065,11 @@ export class Engine {
     const all: [RowId, SheetId][] = [];
     for (const s of this.wb.sheets.values()) for (const row of s.rows.liveIds()) all.push([row, s.id]);
     this.updateEntityRows(all);
+    this.dupWinner = new Map();
+    for (const [k, l] of this.entities) if (l.length > 1) this.dupWinner.set(k, `>${this.firstInDocument(l).row}`);
     const affected: Key[] = [];
     for (const id of new Set([...before.keys(), ...this.entities.keys()])) {
-      if (before.get(id) !== this.entitySig(this.entities.get(id))) affected.push(...(this.entWatch.get(id) ?? []));
+      if (before.get(id) !== this.entitySig(this.entities.get(id)) + (this.dupWinner.get(id) ?? "")) affected.push(...(this.entWatch.get(id) ?? []));
     }
     for (const t of new Set([...typesBefore.keys(), ...this.typeRows.keys()])) {
       if (typesBefore.get(t) !== (this.typeRows.has(t) ? this.typeIds(t).join("\n") : undefined)) {
@@ -1079,8 +1092,19 @@ export class Engine {
       const hint = list[0] ? ` (did you mean "${list[0].id}"?)` : "";
       return new FError("#REF!", `No entity "${id}"${hint}`);
     }
-    const rec = exact[0]!;
+    // A duplicate ID is a validation error; until it's fixed, the first in document order
+    // (sheet tabs, then rows) wins, however the index was built.
+    const rec = exact.length === 1 ? exact[0]! : this.firstInDocument(exact);
     return this.checkReach(rec.sheet) ?? rec;
+  }
+
+  private firstInDocument(recs: EntityRec[]): EntityRec {
+    const tabs = [...this.wb.sheets.keys()];
+    const key = (r: EntityRec): [number, number] => [tabs.indexOf(r.sheet), this.wb.sheet(r.sheet).rows.posOf(r.row) ?? Infinity];
+    return recs.reduce((best, r) => {
+      const [a, b] = key(r), [c, d] = key(best);
+      return a < c || (a === c && b < d) ? r : best;
+    });
   }
 
   private entity(id: string): EntityValue | FError {

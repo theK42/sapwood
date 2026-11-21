@@ -82,11 +82,23 @@ Pass criteria:
 - Per-writer ID salts, so concurrent tasks never mint the same row ID; stable pack IDs.
 - An engine fix found by the property tests: deleting a row a formula reads, where the cell is empty, now gives `#REF!`.
 
+**Schema ops and migrations (2026-11-20).** Done:
+
+- `addSchema`, `removeSchema` and `setSchema` over the schema's definitions and fields by stable ID, each with an exact inverse, mirrored into the engine (cells are re-read under the new schema).
+- The intent ops `renameType` (types, traits, structs, unions and enums), `renameField` and `renameEnumMember`, rewriting column A, singleton field rows, struct keys and union tags in JSON cells, and enum values. Each reports the formulas and rules it can't rewrite.
+- §5.9's migrations: layouts are pinned so adding or removing a field never shifts other columns; a removed field's cells become scratch and the edit lists the ones holding data.
+- Rebase of schema ops: per-property conflicts, removed-versus-changed conflicts, item-by-item merging of enum members, traits and variants, and theirs' renames carried into mine's new schema values.
+- Property tests for schema edits (undo, replay, mirror; a three-way merge oracle; landing-order symmetry). They found:
+  - a crash reading a union whose variant struct was gone;
+  - an export crash on two fields of one name;
+  - a pre-existing engine bug: with a duplicate ID, `ENTITY(id)` gave whichever row was indexed first, so an engine updated edit by edit could disagree with one rebuilt from scratch. The first in document order now wins, and a row move that changes which one recalculates its readers;
+  - rebase bugs: mine renaming a field and back undid theirs' rename of it, and mine removing a member it had added removed theirs' member of the same name.
+- Known limits: enum members, traits and variants are matched by name when lists merge, so a task that removes `fire` and then renames `ice` to `fire` merges as if `fire` had stayed. Reordering fields or definitions has no op of its own yet.
+
 Importing KRBSG showed that its per-tab names collide once IDs are global (`Ship` was both a texture and a sprite, and so on). The fixture prefixes them. Phase 5's importer will need a way to handle this.
 
 Still to do in Phase 1:
 
-- **Schema ops and migrations** (§5.9), including the refactor ops `renameType` and `renameEnumMember`. The other ops are done (see above).
 - **The project API:** load, apply ops, validate and export all work (`loadProject`, `Project.apply`, `Project.fromDoc`, `validate`, `exportJson`); what remains is a tidy public facade over them.
 - **Engine performance**, from S2:
   - column-level dependencies for `ENTITIES(type, field)`;

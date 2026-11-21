@@ -55,7 +55,8 @@ export function exportJson(project: Project, opts: ExportOptions = {}): ExportFi
     if (x instanceof Json) return x.value as JsonOut;
     switch (type.kind) {
       case "list":
-        return (x as FieldValue[]).map((el) => out(type.of, el));
+        // Not a list only when the schema has errors (two fields of one name): export as read.
+        return Array.isArray(x) ? x.map((el) => out(type.of, el)) : (x as JsonOut);
       case "struct":
         return struct(schema.structs.get(type.name)?.fields ?? [], x as Record<string, FieldValue>, null);
       case "union": {
