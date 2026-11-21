@@ -113,11 +113,18 @@ Pass criteria:
 
 DESIGN §12's targets at 10k entities are met: an edit with validation in under 50 ms, full validation in under 1 s. At 100k rows a weapon edit with validation takes 170–185 ms (1.4 s before), a full validation 0.9 s, and a load 4.9 s; the remaining costs are listed under Phase 2 and Phase 5. Property tests now validate between random edits, so what validation keeps is checked against a fresh project. They found one bug in the new column dependencies, fixed: an ID taken by an entity of another type changes which row `ENTITIES(type, field)` reads for it, and its readers weren't told.
 
+**The project API (2026-11-20).** `Sapwood` in `packages/core/src/api`, the entry point the CLI, HTTP API and MCP server will wrap (DESIGN §9.4). Done:
+
+- Reads: `get(id)` and `query(typeOrTrait, { where, pack, inactive })`, as entity JSON. A formula field shows its value and formula; a cell that doesn't parse shows what it holds.
+- Writes: `set`, `create`, `commentOut`, `uncomment`, `delete`, and `apply(patches)`, all or nothing. Each is ops applied to the project, and comes back with its inverse; `undo` and `redo` work over them. Columns a sheet doesn't have yet are added as ops in the same change.
+- `validate()` gives issues by sheet name, A1 address and entity; `export()`, `schemaYaml()`, `doc` and `applyOps` pass through.
+- A property test applies random patches and checks that every change undoes exactly, a refused patch changes nothing, and a project rebuilt from the document reads the same.
+- Not yet: singletons through the API (they have no ID: read and write them as field rows for now), `schema apply` (turning an edited schema file into schema ops), and a text syntax for `query --where`, which is the CLI's to parse.
+
 Importing KRBSG showed that its per-tab names collide once IDs are global (`Ship` was both a texture and a sprite, and so on). The fixture prefixes them. Phase 5's importer will need a way to handle this.
 
 Still to do in Phase 1:
 
-- **The project API:** load, apply ops, validate and export all work (`loadProject`, `Project.apply`, `Project.fromDoc`, `validate`, `exportJson`); what remains is a tidy public facade over them.
 - **Smaller gaps:**
   - the `SINGLETON("T").field` formula function;
   - schema checks for datetime and duration `min`/`max`;

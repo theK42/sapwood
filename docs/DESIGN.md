@@ -685,6 +685,14 @@ Wizard capabilities:
 
 **Writes** are entity-level patches, translated into sheet ops. A `set` on a formula-backed field fails unless `"force": true`.
 
+- A field is written to the cells the sheet's layout gives it: one cell, a struct's sub-columns, or a list's repeated columns. Values are checked as the cells would be read, so a bad value is refused with the same message validation would give. Null clears a field. `{ "$formula": "=…" }` writes a formula, and needs no `force`.
+- `$id` in a `set` renames the entity like `renameId` (§8.2), and `$active` comments it out or back in. `$type`, `$pack` and `$sheet` can't be set.
+- `create` puts the new row after the last entity of its type (on the given sheet or pack, if any), or after another entity (`after`). A type with no entities yet needs a sheet, unless the pack has only one data sheet. Taken IDs are refused, regardless of case.
+- A patch file applies all or nothing, as one undo step. Its lines are `set`, `create`, `commentOut`, `uncomment` and `delete`.
+- Errors carry a stable code (`not-found`, `ambiguous`, `exists`, `formula`, `no-column`, `bad-value`, …) for the CLI and LLMs to act on.
+
+In `@thek42/sapwood-core` this is the `Sapwood` class: reads, writes, validation located by sheet name and A1 address, export, and undo, over one in-memory project. The server adds tasks, branches and landing on top. **Decided.**
+
 **CLI** (`sapwood …`):
 
 | Area | Commands |

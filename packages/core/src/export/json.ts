@@ -8,6 +8,7 @@
 
 import type { PackId } from "../formula/model.ts";
 import type { FieldDef, FieldType } from "../schema/model.ts";
+import type { ResolvedSchema } from "../schema/resolve.ts";
 import { parseCell, Json, Ref, type FieldValue } from "../project/values.ts";
 import type { Entity, Project } from "../project/project.ts";
 import { validate, type Validation } from "../project/validate.ts";
@@ -38,7 +39,49 @@ export class ExportRefused extends Error {
   }
 }
 
-type JsonOut = null | boolean | number | string | JsonOut[] | { [k: string]: JsonOut };
+export type JsonOut = null | boolean | number | string | JsonOut[] | { [k: string]: JsonOut };
+
+/**
+ * A field value as JSON, as export writes it: lists, structs in schema order with a
+ * union's discriminator first, json as is. `ref` shapes a reference; with `defaults`,
+ * blank struct fields that have a default get it.
+ */
+export function valueJson(schema: ResolvedSchema, type: FieldType, x: FieldValue, opts: { ref: (id: string) => JsonOut; defaults: boolean }): JsonOut {
+  const out = (t: FieldType, y: FieldValue): JsonOut => valueJson(schema, t, y, opts);
+  const struct = (fields: FieldDef[], o: Record<string, FieldValue>, tag: { key: string; value: string } | null): JsonOut => {
+    const res: { [k: string]: JsonOut } = {};
+    if (tag) res[tag.key] = tag.value;
+    for (const f of fields) {
+      const val = o[f.name] ?? (opts.defaults ? fieldDefault(schema, f) : undefined);
+      if (val !== undefined) res[f.name] = out(f.type, val);
+    }
+    return res;
+  };
+  if (x instanceof Ref) return opts.ref(x.id);
+  if (x instanceof Json) return x.value as JsonOut;
+  switch (type.kind) {
+    case "list":
+      // Not a list only when the schema has errors (two fields of one name): export as read.
+      return Array.isArray(x) ? x.map((el) => out(type.of, el)) : (x as JsonOut);
+    case "struct":
+      return struct(schema.structs.get(type.name)?.fields ?? [], x as Record<string, FieldValue>, null);
+    case "union": {
+      const u = schema.unions.get(type.name)!;
+      const o = x as Record<string, FieldValue>;
+      const variant = o[u.discriminator] as string;
+      return struct(schema.structs.get(variant)?.fields ?? [], o, { key: u.discriminator, value: variant });
+    }
+    default:
+      return x as JsonOut;
+  }
+}
+
+/** A field's default, parsed as a cell would be; undefined when it has none. */
+export function fieldDefault(schema: ResolvedSchema, f: FieldDef): FieldValue | undefined {
+  if (f.default === undefined) return undefined;
+  const r = parseCell(schema, f.type, f.default, false);
+  return r?.ok ? r.value : undefined;
+}
 
 export function exportJson(project: Project, opts: ExportOptions = {}): ExportFile[] {
   const v = validate(project);
@@ -49,41 +92,9 @@ export function exportJson(project: Project, opts: ExportOptions = {}): ExportFi
   // Ref targets' types, for `{ type, id }`. IDs are unique once validation passes.
   const typeOf = new Map<string, string>();
   for (const e of v.projection.entities) if (e.active && e.id !== null && !typeOf.has(e.id)) typeOf.set(e.id, e.type);
-
-  const out = (type: FieldType, x: FieldValue): JsonOut => {
-    if (x instanceof Ref) return refsAs === "id" ? x.id : { type: typeOf.get(x.id) ?? null, id: x.id };
-    if (x instanceof Json) return x.value as JsonOut;
-    switch (type.kind) {
-      case "list":
-        // Not a list only when the schema has errors (two fields of one name): export as read.
-        return Array.isArray(x) ? x.map((el) => out(type.of, el)) : (x as JsonOut);
-      case "struct":
-        return struct(schema.structs.get(type.name)?.fields ?? [], x as Record<string, FieldValue>, null);
-      case "union": {
-        const u = schema.unions.get(type.name)!;
-        const o = x as Record<string, FieldValue>;
-        const variant = o[u.discriminator] as string;
-        return struct(schema.structs.get(variant)?.fields ?? [], o, { key: u.discriminator, value: variant });
-      }
-      default:
-        return x as JsonOut;
-    }
-  };
-  // Struct and union fields: schema order, the discriminator first, defaults applied.
-  const struct = (fields: FieldDef[], o: Record<string, FieldValue>, tag: { key: string; value: string } | null): JsonOut => {
-    const res: { [k: string]: JsonOut } = {};
-    if (tag) res[tag.key] = tag.value;
-    for (const f of fields) {
-      const val = o[f.name] ?? defaultOf(f);
-      if (val !== undefined) res[f.name] = out(f.type, val);
-    }
-    return res;
-  };
-  const defaultOf = (f: FieldDef): FieldValue | undefined => {
-    if (f.default === undefined) return undefined;
-    const r = parseCell(schema, f.type, f.default, false);
-    return r?.ok ? r.value : undefined;
-  };
+  const ref = (id: string): JsonOut => (refsAs === "id" ? id : { type: typeOf.get(id) ?? null, id });
+  const out = (type: FieldType, x: FieldValue): JsonOut => valueJson(schema, type, x, { ref, defaults: true });
+  const defaultOf = (f: FieldDef): FieldValue | undefined => fieldDefault(schema, f);
 
   // ---- entities by pack, then type, then ID
   const packs = new Map<PackId, Map<string, Map<string, JsonOut>>>();
