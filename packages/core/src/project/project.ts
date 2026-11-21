@@ -108,6 +108,8 @@ export class Project {
   readonly engine: Engine;
   /** Each data sheet's rows as last read (see RowRead). */
   private reads = new Map<SheetId, Map<RowId, RowRead>>();
+  /** Every schema ID this project has held, so none is given out again (see freshSchemaId). */
+  private heldSchemaIds = new Set<Id>();
 
   constructor(schema: ResolvedSchema, rootPack = "root") {
     primeResolved(schema);
@@ -263,6 +265,7 @@ export class Project {
    * may see different columns, so everything recalculates.
    */
   private schemaChanged(): void {
+    for (const id of schemaNodes(this.doc.schema).keys()) this.heldSchemaIds.add(id);
     this.reads.clear();
     for (const s of this.wb.sheets.values()) {
       if (s.kind !== "data") continue;
@@ -382,11 +385,24 @@ export class Project {
   // ------------------------------------------------------------ schema edits (§5.9)
 
   /** A schema ID no node uses yet, with this project's salt: `f1`, `t2`… */
+  /**
+   * A schema ID that isn't in use, numbered past the highest in use, and never one this
+   * project has held before: a removed field's ID given to a new field would make any copy
+   * of the old state read the new field as the old one.
+   */
   freshSchemaId(prefix: string, taken: ReadonlySet<Id> = new Set()): Id {
     const nodes = schemaNodes(this.doc.schema);
-    for (let n = 1; ; n++) {
-      const id = `${prefix}${this.wb.idSalt}${n}`;
-      if (!nodes.has(id) && !taken.has(id)) return id;
+    for (const id of nodes.keys()) this.heldSchemaIds.add(id);
+    const stem = `${prefix}${this.wb.idSalt}`;
+    let n = 0;
+    for (const id of this.heldSchemaIds) {
+      if (!id.startsWith(stem)) continue;
+      const k = Number(id.slice(stem.length));
+      if (Number.isInteger(k) && k > n) n = k;
+    }
+    for (;;) {
+      const id = `${stem}${++n}`;
+      if (!this.heldSchemaIds.has(id) && !taken.has(id)) return id;
     }
   }
 
@@ -405,17 +421,22 @@ export class Project {
    * appended too.
    */
   private schemaEdit(make: () => Op[]): Edit {
-    return this.edit(() => {
-      const ops = make();
-      const after = cloneDoc(this.doc);
-      for (const op of ops) applyOp(after, op);
-      return [...this.pinLayouts(resolvedSchema(after)), ...ops];
-    });
+    return this.edit(() => this.withPinnedLayouts(make()));
+  }
+
+  /** Schema ops (renames included), preceded by the layout pins they need here (see schemaEdit). */
+  withPinnedLayouts(ops: Op[]): Op[] {
+    const after = cloneDoc(this.doc);
+    for (const op of ops) applyOp(after, op);
+    return [...this.pinLayouts(resolvedSchema(after)), ...ops];
   }
 
   private pinLayouts(next: ResolvedSchema): Op[] {
     const out: Op[] = [];
     const now = this.schema;
+    // By ID: a type renamed in the same edit is still the same type. Pins use the name it has
+    // now; the rename moves them.
+    const byId = new Map([...next.types.values()].map((t) => [t.def.id, t]));
     for (const s of this.wb.sheets.values()) {
       if (s.kind !== "data" || s.cols.length < 1) continue;
       const doc = this.doc.sheets.get(s.id)!;
@@ -425,10 +446,12 @@ export class Project {
         const rc = classify(now, String(this.engine.cellById(s.id, row, colA).value ?? ""));
         if (rc.kind === "entity") types.add(rc.type);
       }
+      const extra: ColId[] = [];
+      const pins: Op[] = [];
       for (const type of types) {
-        const t = next.types.get(type);
         const old = now.types.get(type)!;
-        if (!t || t.def.id !== old.def.id) continue;
+        const t = byId.get(old.def.id);
+        if (!t) continue;
         const custom = doc.layouts.has(type);
         const ids = new Set(t.fields.map((f) => f.def.id));
         const layout = this.layout(s.id, type).filter((c) => ids.has(c.field));
@@ -436,13 +459,24 @@ export class Project {
         const known = custom ? new Set(old.fields.map((f) => f.def.id)) : new Set(layout.map((c) => c.field));
         const fresh = t.fields.filter((f) => !known.has(f.def.id));
         const live = s.cols.liveIds();
-        let pos = Math.max(2, ...layout.map((c) => live.indexOf(c.col) + 1)) + 1;
-        for (const f of fresh) layout.push({ col: s.cols.idAt(pos++), field: f.def.id, path: [] });
+        const at = (c: LayoutColumn) => live.indexOf(c.col) + 1;
+        let pos = Math.max(2, ...layout.map(at)) + 1;
+        const freshAt = fresh.map(() => pos++);
         if (custom && !fresh.length) continue; // removed fields already drop out of custom layouts
         // Already the new default: fields in order, one whole column each, from C.
-        const isDefault = !custom && layout.length === t.fields.length && layout.every((c, i) => c.field === t.fields[i]!.def.id && !c.path.length && c.index === undefined && c.col === s.cols.idAt(3 + i));
-        if (!isDefault) out.push({ kind: "setLayout", sheet: s.id, type, layout });
+        const slots = [...layout.map((c) => ({ field: c.field, whole: !c.path.length && c.index === undefined, pos: at(c) })), ...fresh.map((f, i) => ({ field: f.def.id, whole: true, pos: freshAt[i]! }))];
+        const isDefault = !custom && slots.length === t.fields.length && slots.every((c, i) => c.field === t.fields[i]!.def.id && c.whole && c.pos === 3 + i);
+        if (isDefault) continue;
+        // Past the sheet's last column, new fields get columns of their own.
+        fresh.forEach((f, i) => {
+          const p = freshAt[i]!;
+          while (s.cols.length + extra.length < p) extra.push(...s.cols.freshIds(1));
+          layout.push({ col: p <= s.cols.length ? s.cols.idAt(p) : extra[p - s.cols.length - 1]!, field: f.def.id, path: [] });
+        });
+        pins.push({ kind: "setLayout", sheet: s.id, type, layout });
       }
+      if (extra.length) out.push({ kind: "insert", sheet: s.id, axis: "col", after: doc.cols.order.at(-1) ?? null, ids: extra });
+      out.push(...pins);
     }
     return out;
   }

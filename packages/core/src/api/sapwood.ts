@@ -12,11 +12,14 @@ import type { ColId, PackId, RowId, SheetId } from "../formula/model.ts";
 import { numberToCol } from "../formula/parse.ts";
 import { exportJson, valueJson, type ExportFile, type ExportOptions, type JsonOut } from "../export/json.ts";
 import type { Doc } from "../ops/doc.ts";
-import { undoAll, type Op } from "../ops/ops.ts";
-import { renameIdFormulas } from "../ops/rename.ts";
-import { formatSchema } from "../schema/yaml.ts";
+import { cloneDoc, OpError } from "../ops/doc.ts";
+import { applyOp, undoAll, type Op } from "../ops/ops.ts";
+import { renameFieldMentions, renameIdFormulas, renameMemberMentions, renameTypeMentions, type Mention } from "../ops/rename.ts";
+import { isSection, schemaNodes } from "../ops/schema.ts";
+import { schemaChanges, schemaRemovals, schemaRenames } from "../ops/schemaDiff.ts";
+import { formatSchema, parseSchema } from "../schema/yaml.ts";
 import type { FieldDef, FieldType } from "../schema/model.ts";
-import type { ResolvedSchema, ResolvedType } from "../schema/resolve.ts";
+import { resolveSchema, type ResolvedSchema, type ResolvedType } from "../schema/resolve.ts";
 import type { LayoutColumn } from "../project/layout.ts";
 import { loadProject, type ProjectDef } from "../project/load.ts";
 import { Project, type Entity, type Issue, type SingletonEntry } from "../project/project.ts";
@@ -62,7 +65,9 @@ export type ApiErrorCode =
   | "no-column" // the sheet's layout for the type has no column for the field
   | "formula" // the field is computed by a formula; pass force to replace it
   | "bad-value"
-  | "no-sheet"; // a new entity's sheet can't be decided: say which
+  | "no-sheet" // a new entity's sheet can't be decided: say which
+  | "bad-schema" // schema text that doesn't parse or resolve
+  | "confirm"; // the change turns cells holding data into scratch; pass force
 
 export class ApiError extends Error {
   readonly code: ApiErrorCode;
@@ -95,6 +100,16 @@ export interface Change {
   inverse: Op[];
   /** Formulas that mention an ID the change renamed: left as they are, for the caller to review. */
   formulas: CellAddress[];
+}
+
+/** What `applySchema` did, beyond the change itself. `formulas` are those a rename left alone. */
+export interface SchemaChange extends Change {
+  /** Rules (by ID) whose expressions mention a renamed name: left as they are, for review. */
+  rules: string[];
+  /** Cells of removed fields that held data, scratch now (§5.9). */
+  scratch: CellAddress[];
+  /** What the text asked for that isn't applied, such as reordering. */
+  notes: string[];
 }
 
 export interface CellAddress {
@@ -258,6 +273,26 @@ export class Sapwood {
     return this.write(() => this.singletonOps(type, fields, opts.force ?? false));
   }
 
+  /**
+   * Apply an edited schema file (`sapwood schema apply`, §5.8): the differences from the
+   * current schema become schema ops, in one change. Items are matched by ID; one written
+   * without an ID matches the item of the same name in the same place. A name changed under
+   * the same ID is a rename that rewrites cells (§8.2), as is an enum member renamed in
+   * place. Removing fields whose cells hold data needs `force`.
+   */
+  applySchema(yaml: string, opts: { force?: boolean } = {}): SchemaChange {
+    const extra = { rules: [] as string[], scratch: [] as CellAddress[], notes: [] as string[] };
+    const change = this.write(() => {
+      try {
+        return this.schemaPlan(yaml, opts.force ?? false, extra);
+      } catch (e) {
+        if (e instanceof OpError) throw new ApiError("bad-schema", e.message);
+        throw e;
+      }
+    });
+    return { ...change, ...extra };
+  }
+
   commentOut(id: string): Change {
     return this.set(id, { $active: false });
   }
@@ -340,10 +375,10 @@ export class Sapwood {
   }
 
   /** Build ops against the current state, apply them atomically, and record the change. */
-  private write(plan: () => { ops: Op[]; renamed?: string }): Change {
+  private write(plan: () => Planned): Change {
     const grown: { ops: Op[]; inverses: Op[][] } = { ops: [], inverses: [] };
     this.grown = grown;
-    let planned: { ops: Op[]; renamed?: string };
+    let planned: Planned;
     let inverse: Op[];
     try {
       planned = plan();
@@ -355,11 +390,63 @@ export class Sapwood {
       this.grown = null;
     }
     const { renamed } = planned;
-    const formulas = renamed === undefined ? [] : renameIdFormulas(this.project.doc, renamed).map((l) => this.address(l.sheet, l.row, l.col));
+    const formulas = planned.formulas ?? (renamed === undefined ? [] : renameIdFormulas(this.project.doc, renamed).map((l) => this.address(l.sheet, l.row, l.col)));
     const change: Change = { ops: [...grown.ops, ...planned.ops], inverse: [...inverse, ...undoAll(grown.inverses)], formulas };
     this.done.push(change);
     this.undone = [];
     return change;
+  }
+
+  private schemaPlan(yaml: string, force: boolean, extra: { rules: string[]; scratch: CellAddress[]; notes: string[] }): Planned {
+    const doc = this.project.doc;
+    const cur = doc.schema;
+    const { schema: next, issues } = parseSchema(yaml, { existing: cur });
+    const bad = issues.length ? issues : resolveSchema(next).issues;
+    if (bad.length) throw new ApiError("bad-schema", `The schema has problems:\n${bad.map((i) => `- ${i.path ? `${i.path}: ` : ""}${i.message}`).join("\n")}`);
+
+    // Removals, then renames, then the rest, each against what the ones before leave.
+    const work = cloneDoc(doc);
+    const removals = schemaRemovals(cur, next);
+    for (const op of removals) applyOp(work, op);
+    const renames = schemaRenames(work.schema, next);
+    const mentions = new Map<string, Mention>();
+    const rules = new Set<string>();
+    for (const op of renames) {
+      const r =
+        op.kind === "renameType" ? renameTypeMentions(work, op.id)
+        : op.kind === "renameField" ? renameFieldMentions(work, op.id)
+        : renameMemberMentions(work, (op as { from: string }).from);
+      for (const m of r.formulas) mentions.set(`${m.sheet}|${m.row}|${m.col}`, m);
+      for (const id of r.rules) rules.add(id);
+      applyOp(work, op);
+    }
+    const rest = schemaChanges(work.schema, next);
+
+    // Removed fields' cells become scratch: with data in them, that needs confirming.
+    const nodes = schemaNodes(cur);
+    const gone = new Set(removals.map((op) => (op as { id: string }).id).filter((id) => !isSection(nodes.get(id)!.parent)));
+    const cells: { sheet: SheetId; row: RowId; col: ColId }[] = [];
+    const p = this.project.project();
+    for (const e of p.entities)
+      for (const entry of e.fields.values())
+        if (gone.has(entry.field.id) && (entry.value !== undefined || entry.formula || entry.invalid)) for (const c of entry.cells) if (c.col) cells.push({ sheet: c.sheet, row: c.row, col: c.col });
+    for (const s of p.singletons)
+      if (gone.has(s.field.id)) {
+        const sh = this.project.wb.sheet(s.at.sheet);
+        if (sh.cols.length >= 2) cells.push({ sheet: s.at.sheet, row: s.at.row, col: sh.cols.idAt(2) });
+      }
+    extra.scratch = cells.map((c) => this.address(c.sheet, c.row, c.col));
+    if (cells.length && !force) {
+      const names = [...gone].map((id) => `${nodes.get(nodes.get(id)!.parent)!.def.name as string}.${nodes.get(id)!.def.name as string}`);
+      const list = extra.scratch.slice(0, 5).map((a) => `${a.sheet}!${a.cell}`).join(", ");
+      throw new ApiError("confirm", `Removing ${names.join(", ")} turns ${cells.length} cell${cells.length === 1 ? "" : "s"} holding data into scratch (${list}${cells.length > 5 ? ", …" : ""}); pass force to go ahead`);
+    }
+    extra.rules = [...rules];
+    extra.notes = rest.notes;
+    return {
+      ops: this.project.withPinnedLayouts([...removals, ...renames, ...rest.ops]),
+      formulas: [...mentions.values()].map((m) => this.address(m.sheet, m.row, m.col)),
+    };
   }
 
   private setOps(id: string, fields: Record<string, JsonValue>, force: boolean): { ops: Op[]; renamed?: string } {
@@ -791,6 +878,14 @@ export class Sapwood {
     }
     return out;
   }
+}
+
+interface Planned {
+  ops: Op[];
+  /** An entity ID the change renames: the formulas mentioning it are reported. */
+  renamed?: string;
+  /** Or the formulas to report, worked out by the plan. */
+  formulas?: CellAddress[];
 }
 
 interface NewFieldRow {

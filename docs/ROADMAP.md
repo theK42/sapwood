@@ -120,7 +120,11 @@ DESIGN §12's targets at 10k entities are met: an edit with validation in under 
 - `validate()` gives issues by sheet name, A1 address and entity; `export()`, `schemaYaml()`, `doc` and `applyOps` pass through.
 - Singletons (2026-11-21): `singleton(type)` and `setSingleton(type, fields)`, also a patch line. Writes go to a field's row, row by row for a struct split into rows; a new field joins the singleton's block, and a singleton with no block gets one (DESIGN §9.4).
 - A property test applies random patches and checks that every change undoes exactly, a refused patch changes nothing, and a project rebuilt from the document reads the same.
-- Not yet: `schema apply` (turning an edited schema file into schema ops), and a text syntax for `query --where`, which is the CLI's to parse.
+- `schema apply` (2026-11-21): `applySchema(yaml)` turns an edited schema file into schema ops (DESIGN §5.8), in `ops/schemaDiff.ts`. A property test makes random schema edits on a copy of a project and applies the copy's schema text to the original: the schemas, entity reads and validation must agree, and undo must restore the original. It found:
+  - adding a field mid-type on a sheet with no spare columns pinned the layout to a column that didn't exist, in the project's own `addField` too. Pinning now adds the columns;
+  - a new field could be given a removed field's ID, so anything still holding the old state would read the new field as the old one. A project now never gives out an ID it has held, and numbers new ones past the highest.
+- Known limits of the text form: enum members are matched by name, so renaming a member to a name the enum had reads as a removal and an addition. And edits made in another order than apply's (renaming a type, then removing it) can leave cells the text can't show.
+- Not yet: a text syntax for `query --where`, which is the CLI's to parse.
 
 Importing KRBSG showed that its per-tab names collide once IDs are global (`Ship` was both a texture and a sprite, and so on). The fixture prefixes them. Phase 5's importer will need a way to handle this.
 

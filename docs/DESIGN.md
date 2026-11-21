@@ -255,7 +255,13 @@ rules:
 ### 5.8 Schema authoring
 
 - **UI.** A schema editor in the web app.
-- **Text.** `sapwood schema get > schema.yaml` and `sapwood schema apply schema.yaml` (inside a task). The text form includes stable IDs, so renames are detected as renames, not as delete + add. `apply` diffs the text against the current schema and emits schema ops.
+- **Text.** `sapwood schema get > schema.yaml` and `sapwood schema apply schema.yaml` (inside a task). The text form includes stable IDs, so renames are detected as renames, not as delete + add. `apply` diffs the text against the current schema and emits schema ops. **Decided** (2026-11-21):
+  - Items are matched by ID. An item written without one matches the item of the same name in the same place (a rule: the same type and expression), so IDs are needed only to rename; new items get IDs no item has had.
+  - A name changed under the same ID is a rename (`renameType`, `renameField`), which rewrites cells (§8.2). Names can be swapped. Enum members have no IDs: with the same number of members, one renamed in place to a name the enum didn't have is a rename (`renameEnumMember`); any other change to the list is a plain change, matched by name.
+  - The ops are removals, then renames, then additions and property changes. An item moved to another owner or section is removed and added again.
+  - Removing a field whose cells hold data needs `--force`, and the cells that became scratch are listed. Formulas and rules a rename can't rewrite are listed too.
+  - Reordering has no op yet, so an order change is reported and not applied.
+  - Text that doesn't parse or resolve is refused as a whole.
 
 Example, modeled on KRBSG:
 
@@ -689,6 +695,7 @@ Wizard capabilities:
 - `$id` in a `set` renames the entity like `renameId` (§8.2), and `$active` comments it out or back in. `$type`, `$pack` and `$sheet` can't be set.
 - `create` puts the new row after the last entity of its type (on the given sheet or pack, if any), or after another entity (`after`). A type with no entities yet needs a sheet, unless the pack has only one data sheet. If that sheet is named after another type, it belongs to that type, so a new data sheet named after the new type is created, in the same change. Taken IDs are refused, regardless of case.
 - **Singletons** have no ID, so they have their own read and write: `singleton(type)` returns `{ "$type", "$pack", …fields }` from the active field rows, with a struct split into rows (`.cost.amount`) as one object. `setSingleton(type, fields)` writes column B of a field's row, or each sub-field's row for a split struct; formulas need `force` as above. A field with no row gets one, after the last field row of the singleton's first active block in its pack. With no block, a block is added at the end of the pack's only data sheet (unless it's named after another type), or else on the sheet named after the singleton, created if need be (§6.8). Null clears a field's value and keeps its row. Two active rows for a field is refused as `ambiguous` on write; a read shows the first.
+- `applySchema(yaml)` is `schema apply` (§5.8): one change, undone in one step.
 - A patch file applies all or nothing, as one undo step. Its lines are `set`, `create`, `commentOut`, `uncomment`, `delete` and `setSingleton`.
 - Errors carry a stable code (`not-found`, `ambiguous`, `exists`, `formula`, `no-column`, `bad-value`, …) for the CLI and LLMs to act on.
 

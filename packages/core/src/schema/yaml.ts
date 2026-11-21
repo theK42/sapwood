@@ -40,8 +40,18 @@ const FIELD_KEYS = [
 ] as const;
 const PREFIX = { enums: "e", traits: "tr", structs: "s", unions: "u", types: "t", rules: "r", fields: "f" } as const;
 
+export interface ParseOptions {
+  /**
+   * The schema the text was edited from (`schema apply`). An item written without an ID
+   * takes the ID of the item of the same name in the same place there (a rule: the same
+   * type and expression), unless the text gives that ID to something else; fresh IDs never
+   * reuse one of its IDs.
+   */
+  existing?: Schema;
+}
+
 /** Parse schema YAML. Problems with the text itself are issues; the meaning is checked by `resolve`. */
-export function parseSchema(text: string): { schema: Schema; issues: SchemaIssue[] } {
+export function parseSchema(text: string, opts: ParseOptions = {}): { schema: Schema; issues: SchemaIssue[] } {
   const issues: SchemaIssue[] = [];
   const schema = emptySchema();
   let doc: unknown;
@@ -55,20 +65,41 @@ export function parseSchema(text: string): { schema: Schema; issues: SchemaIssue
   for (const k of Object.keys(doc)) if (!(SECTIONS as readonly string[]).includes(k)) issue(k, `Unknown section "${k}"`);
 
   // IDs given in the text are collected first, so fresh ones never collide with them.
-  const used = new Set<Id>();
-  collectIds(doc, used);
+  const inText = new Set<Id>();
+  collectIds(doc, inText);
+  const used = new Set<Id>(inText);
+  const old = opts.existing;
+  const oldIds = new Set<Id>();
+  if (old)
+    for (const k of SECTIONS)
+      for (const d of old[k] as { id: Id; fields?: FieldDef[] }[]) {
+        oldIds.add(d.id);
+        for (const f of d.fields ?? []) oldIds.add(f.id);
+      }
   const counters = new Map<string, number>();
   const fresh = (prefix: string): Id => {
     let n = counters.get(prefix) ?? 0;
     let id: Id;
     do id = `${prefix}${++n}`;
-    while (used.has(id));
+    while (used.has(id) || oldIds.has(id));
     counters.set(prefix, n);
     used.add(id);
     return id;
   };
-  const idOf = (v: Obj, prefix: string, path: string): Id => {
-    if (v.id === undefined) return fresh(prefix);
+  const priorDef = (k: (typeof SECTIONS)[number], name: string): Id | undefined => (old?.[k] as { id: Id; name?: string }[] | undefined)?.find((d) => d.name === name)?.id;
+  const priorField = (owner: Id | undefined, name: string): Id | undefined => {
+    if (!old || owner === undefined) return undefined;
+    const d = [...old.types, ...old.traits, ...old.structs].find((x) => x.id === owner);
+    return d?.fields.find((f) => f.name === name)?.id;
+  };
+  const idOf = (v: Obj, prefix: string, path: string, prior?: Id): Id => {
+    if (v.id === undefined) {
+      if (prior !== undefined && !used.has(prior)) {
+        used.add(prior);
+        return prior;
+      }
+      return fresh(prefix);
+    }
     if (typeof v.id !== "string" || v.id === "") {
       issue(`${path}.id`, "An ID must be a non-empty string");
       return fresh(prefix);
@@ -108,7 +139,7 @@ export function parseSchema(text: string): { schema: Schema; issues: SchemaIssue
     });
   };
 
-  const fields = (v: unknown, path: string): FieldDef[] => {
+  const fields = (v: unknown, path: string, owner?: Id): FieldDef[] => {
     if (v === undefined || v === null) return [];
     if (!isObj(v)) {
       issue(path, "Fields must be a map of names to definitions");
@@ -121,7 +152,7 @@ export function parseSchema(text: string): { schema: Schema; issues: SchemaIssue
       const def: Obj = typeof raw === "string" ? { type: raw } : isObj(raw) ? raw : {};
       if (!isObj(raw) && typeof raw !== "string") issue(p, "Expected a type or a map");
       unknownKeys(def, FIELD_KEYS, p);
-      const f: FieldDef = { id: idOf(def, PREFIX.fields, p), name, type: { kind: "string" } };
+      const f: FieldDef = { id: idOf(def, PREFIX.fields, p, priorField(owner, name)), name, type: { kind: "string" } };
       if (typeof def.type !== "string") issue(`${p}.type`, "Every field needs a type");
       else
         try {
@@ -171,21 +202,23 @@ export function parseSchema(text: string): { schema: Schema; issues: SchemaIssue
           members.push(m.description === undefined ? { name: m.name } : { name: m.name, description: String(m.description) });
         else issue(`${path}.members.${i}`, "A member is a name, or { name, description }");
       }
-    const e: EnumDef = { id: idOf(v, PREFIX.enums, path), name, members };
+    const e: EnumDef = { id: idOf(v, PREFIX.enums, path, priorDef("enums", name)), name, members };
     const d = optString(v, "description", path);
     if (d !== undefined) e.description = d;
     schema.enums.push(e);
   }
   for (const [name, v, path] of section("traits")) {
     unknownKeys(v, ["id", "description", "traits", "fields"], path);
-    const t: TraitDef = { id: idOf(v, PREFIX.traits, path), name, traits: names(v.traits, `${path}.traits`), fields: fields(v.fields, `${path}.fields`) };
+    const id = idOf(v, PREFIX.traits, path, priorDef("traits", name));
+    const t: TraitDef = { id, name, traits: names(v.traits, `${path}.traits`), fields: fields(v.fields, `${path}.fields`, id) };
     const d = optString(v, "description", path);
     if (d !== undefined) t.description = d;
     schema.traits.push(t);
   }
   for (const [name, v, path] of section("structs")) {
     unknownKeys(v, ["id", "description", "fields"], path);
-    const s: StructDef = { id: idOf(v, PREFIX.structs, path), name, fields: fields(v.fields, `${path}.fields`) };
+    const id = idOf(v, PREFIX.structs, path, priorDef("structs", name));
+    const s: StructDef = { id, name, fields: fields(v.fields, `${path}.fields`, id) };
     const d = optString(v, "description", path);
     if (d !== undefined) s.description = d;
     schema.structs.push(s);
@@ -193,7 +226,7 @@ export function parseSchema(text: string): { schema: Schema; issues: SchemaIssue
   for (const [name, v, path] of section("unions")) {
     unknownKeys(v, ["id", "description", "discriminator", "variants"], path);
     const u: UnionDef = {
-      id: idOf(v, PREFIX.unions, path),
+      id: idOf(v, PREFIX.unions, path, priorDef("unions", name)),
       name,
       discriminator: optString(v, "discriminator", path) ?? "kind",
       variants: names(v.variants, `${path}.variants`),
@@ -204,7 +237,8 @@ export function parseSchema(text: string): { schema: Schema; issues: SchemaIssue
   }
   for (const [name, v, path] of section("types")) {
     unknownKeys(v, ["id", "description", "traits", "fields", "singleton", "pack"], path);
-    const t: TypeDef = { id: idOf(v, PREFIX.types, path), name, traits: names(v.traits, `${path}.traits`), fields: fields(v.fields, `${path}.fields`) };
+    const id = idOf(v, PREFIX.types, path, priorDef("types", name));
+    const t: TypeDef = { id, name, traits: names(v.traits, `${path}.traits`), fields: fields(v.fields, `${path}.fields`, id) };
     const d = optString(v, "description", path);
     if (d !== undefined) t.description = d;
     if (v.singleton !== undefined) {
@@ -231,7 +265,7 @@ export function parseSchema(text: string): { schema: Schema; issues: SchemaIssue
         if (typeof v.expr !== "string" || !v.expr.startsWith("=")) issue(`${path}.expr`, 'A rule needs an expression starting with "="');
         if (typeof v.message !== "string") issue(`${path}.message`, "A rule needs a message");
         const r: RuleDef = {
-          id: idOf(v, PREFIX.rules, path),
+          id: idOf(v, PREFIX.rules, path, old?.rules.find((r) => r.expr === v.expr && r.type === v.type)?.id),
           severity: severity === "warning" ? "warning" : "error",
           expr: String(v.expr ?? ""),
           message: String(v.message ?? ""),
