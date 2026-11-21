@@ -275,11 +275,6 @@ function expectedConflicts(base: Doc, T: Doc, M: Doc, theirs: readonly Op[], min
   return out.sort();
 }
 
-const seen = new Map<string, number>();
-const tally = (r: { conflicts: Conflict[] }) => {
-  for (const c of r.conflicts) seen.set(c.kind, (seen.get(c.kind) ?? 0) + 1);
-  if (!r.conflicts.length) seen.set("none", (seen.get("none") ?? 0) + 1);
-};
 const randomChoice = (g: Gen) => (): Side => (int(g, 1) === 0 ? "mine" : "theirs");
 
 describe("rebase (properties)", () => {
@@ -294,11 +289,23 @@ describe("rebase (properties)", () => {
   prop("rebase agrees with a three-way merge of documents, however conflicts are resolved", (g) => {
     const base = genDoc(g);
     const theirs = genOps(g, base, "t"), mine = genOps(g, base, "m");
-    tally(explain({ base, theirs, mine }, () => checkMerge(base, theirs, mine, randomChoice(g))));
+    explain({ base, theirs, mine }, () => checkMerge(base, theirs, mine, randomChoice(g)));
   });
 
+  // A fixed seed: this checks the generator's reach, so it should measure the same cases every
+  // time rather than sit in the tail of a random count. The properties above stay random.
   it("the generator reaches every kind of conflict", () => {
-    for (const kind of ["cell", "deleted", "move", "rename", "none"]) expect(seen.get(kind) ?? 0, kind).toBeGreaterThan(RUNS / 200);
+    const seen = new Map<string, number>();
+    fc.assert(
+      fc.property(fc.gen(), (g) => {
+        const base = genDoc(g);
+        const { conflicts } = rebase(base, genOps(g, base, "t"), genOps(g, base, "m"));
+        for (const c of conflicts) seen.set(c.kind, (seen.get(c.kind) ?? 0) + 1);
+        if (!conflicts.length) seen.set("none", (seen.get("none") ?? 0) + 1);
+      }),
+      { numRuns: 1000, seed: 1 },
+    );
+    for (const kind of ["cell", "deleted", "move", "rename", "none"]) expect(seen.get(kind) ?? 0, kind).toBeGreaterThan(5);
   });
 
   prop("conflict detection is symmetric: landing order doesn't change what conflicts", (g) => {

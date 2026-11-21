@@ -305,7 +305,7 @@ describe("the schema generator", () => {
         applied += t.ops.length;
         for (const c of rebase(start, t.ops, m.ops).conflicts) kinds.set(c.kind, (kinds.get(c.kind) ?? 0) + 1);
       }),
-      { numRuns: 1500 },
+      { numRuns: 1500, seed: 1 }, // fixed: this measures the generator's reach, not a property
     );
     // Two renames of one member to different names need both sides to pick the same one: rarer.
     for (const [k, n] of [["schema", 5], ["schemaDeleted", 5], ["cell", 5], ["enumRename", 1]] as const) expect(kinds.get(k) ?? 0, k).toBeGreaterThan(n);
