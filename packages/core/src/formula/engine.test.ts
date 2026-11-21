@@ -341,6 +341,64 @@ describe("entities", () => {
     e.setAt(weapons, 2, 1, "Weapon"); // un-comment "Old"
     expect(e.get(calc, "A1")).toBe(3);
   });
+
+  it("ENTITIES(type, field) depends on the column, not on each cell", () => {
+    const { e, weapons, calc } = world();
+    e.set(calc, "A1", '=SUM(ENTITIES("Weapon", "damage"))');
+    expect(e.get(calc, "A1")).toBe(40); // Blaster and Cannon; Laser is in dlc, out of reach
+    e.set(weapons, "D1", "0.7"); // a cooldown, not a damage: nothing re-runs
+    expect(e.lastEvaluations).toBe(0);
+    e.set(weapons, "C1", "20"); // Cannon (3 × Blaster's damage), then the sum
+    expect(e.get(calc, "A1")).toBe(80);
+    expect(e.lastEvaluations).toBe(2);
+  });
+
+  it("ENTITIES(type, field) follows layout and type changes", () => {
+    const { e, weapons, calc } = world();
+    e.set(calc, "A1", '=SUM(ENTITIES("Weapon", "cooldown"))');
+    expect(e.get(calc, "A1")).toBe(2.5);
+    e.setLayout(weapons, "Weapon", ["cooldown", "damage", "ammo"]); // cooldown is column C now
+    expect(e.get(calc, "A1")).toBe(11.5); // 10, and Cannon's formula: Blaster's damage (now D1, 0.5) × 3
+    e.setAt(weapons, 3, 1, "Ammo"); // Cannon is no longer a weapon
+    expect(e.get(calc, "A1")).toBe(10);
+  });
+
+  it("a duplicate ID of another type changes what ENTITIES(type, field) reads", () => {
+    const { e, weapons, calc } = world();
+    e.set(calc, "A1", '=SUM(ENTITIES("Weapon", "damage"))');
+    expect(e.get(calc, "A1")).toBe(40);
+    e.insertRows(weapons, 1);
+    e.batch(() => {
+      e.setAt(weapons, 1, 1, "Ammo");
+      e.setAt(weapons, 1, 2, "Blaster"); // first in document order: ENTITY("Blaster") is this Ammo
+    });
+    expect(code(e.get(calc, "A1"))).toBe("#NAME?"); // an Ammo has no damage
+    e.deleteRows(weapons, 1);
+    expect(e.get(calc, "A1")).toBe(40);
+  });
+
+  it("row deletes, restores and moves update the index row by row", () => {
+    const { e, weapons, calc } = world();
+    e.batch(() => {
+      e.set(calc, "A1", '=INDEX(ENTITIES("Weapon"), 1)');
+      e.set(calc, "A2", '=ROWS(ENTITIES("Weapon"))');
+    });
+    e.moveRows(weapons, 1, 1, 6); // Blaster goes to the end
+    expect(e.get(calc, "A1")).toBe("Cannon");
+    const gone = e.deleteRows(weapons, 2, 1); // Cannon
+    expect([e.get(calc, "A1"), e.get(calc, "A2")]).toEqual(["Blaster", 1]);
+    e.restoreRows(weapons, gone);
+    expect([e.get(calc, "A1"), e.get(calc, "A2")]).toEqual(["Cannon", 2]);
+  });
+
+  it("a column inserted before A re-reads every row", () => {
+    const { e, weapons, calc } = world();
+    e.set(calc, "A1", '=ROWS(ENTITIES("Weapon"))');
+    e.insertCols(weapons, 1); // column A is empty now: no row is an entity
+    expect(e.get(calc, "A1")).toBe(0);
+    e.deleteCols(weapons, 1);
+    expect(e.get(calc, "A1")).toBe(2);
+  });
 });
 
 describe("functions", () => {

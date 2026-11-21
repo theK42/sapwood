@@ -13,7 +13,8 @@ export interface Ctx {
   eval(e: Expr): Value;
   entity(id: string): EntityValue | FError;
   entityField(id: string, field: string): Value;
-  entitiesOfType(type: string): string[] | FError;
+  /** Every entity of a type the formula can reach, in document order: their IDs, or one field of each. */
+  entitiesOfType(type: string, field: string | null): Scalar[] | FError;
   /** 1-based position of a reference, or of the formula's own cell when `e` is undefined. */
   position(e: Expr | undefined): { row: number; col: number } | FError;
 }
@@ -404,9 +405,8 @@ export const FUNCTIONS: Record<string, Fn> = {
     const field = args[1] ? toText(ctx.eval(args[1])) : null;
     if (isErr(type)) return type;
     if (isErr(field)) return field;
-    const ids = ctx.entitiesOfType(type);
-    if (isErr(ids)) return ids;
-    return column(ids.map((id) => (field === null ? id : scalar(ctx.entityField(id, field)))));
+    const values = ctx.entitiesOfType(type, field);
+    return isErr(values) ? values : column(values);
   },
   /**
    * REFS(refField, "otherField"): follow a ref or list<ref> field of the current entity

@@ -20,8 +20,27 @@ export function contentKey(c: Content): string {
   return c === null ? "" : stableJson(c);
 }
 
+/** Equal contents: the same as comparing contentKey()s, without building them. */
 export function sameContent(a: Content, b: Content): boolean {
-  return contentKey(a) === contentKey(b);
+  return sameJson(a, b);
+}
+
+function sameJson(x: unknown, y: unknown): boolean {
+  if (x === y) return true;
+  const xo = x !== null && typeof x === "object";
+  const yo = y !== null && typeof y === "object";
+  // Primitives compare as stableJson writes them (NaN and undefined write as null).
+  if (!xo || !yo) return !xo && !yo && (JSON.stringify(x) ?? "null") === (JSON.stringify(y) ?? "null");
+  if (Array.isArray(x) !== Array.isArray(y)) return false;
+  if (Array.isArray(x)) {
+    const ys = y as unknown[];
+    return x.length === ys.length && x.every((v, i) => sameJson(v, ys[i]));
+  }
+  const o = x as Record<string, unknown>;
+  const p = y as Record<string, unknown>;
+  const ok = Object.keys(o).filter((k) => o[k] !== undefined);
+  const pk = Object.keys(p).filter((k) => p[k] !== undefined);
+  return ok.length === pk.length && ok.every((k) => k in p && sameJson(o[k], p[k]));
 }
 
 /** JSON with object keys sorted, so equal values give equal strings. */

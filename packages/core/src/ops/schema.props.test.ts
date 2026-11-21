@@ -132,6 +132,7 @@ function genOps(g: Gen, doc: Doc, salt: string, max = 5): { p: Project; edits: E
   for (let i = int(g, max); i > 0; i--) {
     const e = genEdit(g, p);
     if (e) edits.push(e);
+    if (int(g, 2) === 0) validate(p); // what validation keeps must survive schema edits
   }
   return { p, edits, ops: edits.flatMap((e) => e.ops) };
 }

@@ -14,7 +14,7 @@ import { Workbook, type ColId, type PackId, type RowId, type SheetId, type Sheet
 import { colToNumber, FormulaSyntaxError, parseFormula } from "../formula/parse.ts";
 import { formatNumber, isErr, type Scalar } from "../formula/values.ts";
 import { cellKey, cloneDoc, emptyDoc, primeResolved, resolvedSchema, rootPack, splitCellKey, type Axis, type Doc, type Format } from "../ops/doc.ts";
-import { applyOp, applyPlain, expand, type Op } from "../ops/ops.ts";
+import { applyOp, applyPlain, expand, undoAll, type Op } from "../ops/ops.ts";
 import {
   renameFieldMentions, renameIdFormulas, renameMemberMentions, renameTypeMentions, type RenameReport,
 } from "../ops/rename.ts";
@@ -77,6 +77,14 @@ export interface SingletonEntry {
   invalid?: boolean;
 }
 
+/** A row as last read, kept until one of its cells changes (or the schema, layouts or columns do). */
+type RowRead =
+  | { kind: "skip" }
+  | { kind: "issue"; issue: Issue }
+  | { kind: "header"; type: string; active: boolean }
+  | { kind: "entity"; entity: Entity; issues: Issue[] }
+  | { kind: "field"; type: string | null; path: string[]; active: boolean };
+
 export interface Projection {
   entities: Entity[];
   singletons: SingletonEntry[];
@@ -98,6 +106,8 @@ export class Project {
   readonly doc: Doc;
   readonly wb: Workbook;
   readonly engine: Engine;
+  /** Each data sheet's rows as last read (see RowRead). */
+  private reads = new Map<SheetId, Map<RowId, RowRead>>();
 
   constructor(schema: ResolvedSchema, rootPack = "root") {
     primeResolved(schema);
@@ -161,17 +171,17 @@ export class Project {
    * the ones before it are undone and the error is rethrown. Returns the inverse.
    */
   apply(ops: readonly Op[]): Op[] {
-    const inverse: Op[] = [];
+    const done: Op[][] = [];
     const schema = this.doc.schema;
     this.engine.batch(() => {
       try {
         for (const op of ops)
           for (const plain of expand(this.doc, op)) {
-            inverse.unshift(...applyPlain(this.doc, plain));
+            done.push(applyPlain(this.doc, plain));
             this.mirror(plain);
           }
       } catch (e) {
-        for (const op of inverse) {
+        for (const op of undoAll(done)) {
           applyPlain(this.doc, op);
           this.mirror(op);
         }
@@ -180,7 +190,7 @@ export class Project {
         if (this.doc.schema !== schema) this.schemaChanged();
       }
     });
-    return inverse;
+    return undoAll(done);
   }
 
   /** Bring the workbook and engine in line with an op just applied to the document. */
@@ -212,11 +222,13 @@ export class Project {
       case "removeSheet":
         e.dropSheet(op.sheet);
         this.wb.sheets.delete(op.sheet);
+        this.reads.delete(op.sheet);
         return;
       case "renameSheet":
         this.wb.sheet(op.sheet).name = op.name;
         return;
       case "setSheetPack":
+        this.reads.delete(op.sheet); // entities carry their pack
         return e.setSheetPack(op.sheet, op.pack);
       case "setLayout":
         return this.syncLayouts(op.sheet);
@@ -241,6 +253,8 @@ export class Project {
     }
     // Default layouts follow the columns, so a column change can move fields.
     if (op.axis === "col") this.syncLayouts(op.sheet);
+    // A row whose cells were all empty has nothing to report; one brought back is read again.
+    else if (op.kind === "restore") for (const row of op.ids) this.reads.get(op.sheet)?.delete(row);
   }
 
   /**
@@ -249,6 +263,7 @@ export class Project {
    * may see different columns, so everything recalculates.
    */
   private schemaChanged(): void {
+    this.reads.clear();
     for (const s of this.wb.sheets.values()) {
       if (s.kind !== "data") continue;
       this.engine.clearLayouts(s.id);
@@ -349,6 +364,7 @@ export class Project {
   /** Tell the engine which column holds each single-cell field, for `ENTITY(id).field`. */
   private syncLayouts(sheet: SheetId): void {
     if (this.wb.sheet(sheet).kind !== "data") return;
+    this.reads.delete(sheet); // rows are read through the layouts
     for (const [name, t] of this.schema.types) {
       if (t.def.singleton) continue;
       // Every field is known to formulas; one without a single column of its own reads as blank.
@@ -631,8 +647,15 @@ export class Project {
 
   // ------------------------------------------------------------ projection
 
-  /** Read every data sheet into entities and singleton entries. */
+  /**
+   * Read every data sheet into entities and singleton entries. Rows are read once and kept
+   * until one of their cells changes, so after an edit only its rows are read again. An
+   * entity that wasn't re-read is the same object as last time.
+   */
   project(): Projection {
+    const changed = this.engine.takeChangedRows();
+    if (changed === "all") this.reads.clear();
+    else for (const [row, sheet] of changed) this.reads.get(sheet)?.delete(row);
     const out: Projection = { entities: [], singletons: [], issues: [] };
     for (const s of this.wb.sheets.values()) if (s.kind === "data") this.projectSheet(s.id, out);
     return out;
@@ -643,6 +666,8 @@ export class Project {
     if (s.cols.length < 1) return;
     const colA = s.cols.idAt(1);
     const colB = s.cols.length >= 2 ? s.cols.idAt(2) : null;
+    let reads = this.reads.get(sheet);
+    if (!reads) this.reads.set(sheet, (reads = new Map()));
     let block: { type: string; active: boolean } | null = null;
     const layouts = new Map<string, Map<string, LayoutColumn[]>>(); // per type, by field ID
     const layoutOf = (type: string) => {
@@ -651,29 +676,25 @@ export class Project {
       return l;
     };
     for (const row of s.rows.liveIds()) {
-      const a = this.engine.cellById(sheet, row, colA);
+      let r = reads.get(row);
+      if (!r) reads.set(row, (r = this.readRow(sheet, row, colA, colB, layoutOf)));
       const at: Location = { sheet, row };
-      if (a.formula) {
-        out.issues.push({ level: "error", code: "row.formula-type", message: "Column A holds the row type and can't be a formula", at: { ...at, col: colA } });
-        continue;
-      }
-      const text = a.value === null ? "" : typeof a.value === "string" ? a.value : String(a.value);
-      const rc: RowClass = classify(this.schema, text);
-      switch (rc.kind) {
-        case "scratch":
-        case "comment":
+      switch (r.kind) {
+        case "skip":
           break;
-        case "error":
-          out.issues.push({ level: "error", code: "row.unknown-type", message: rc.message, at: { ...at, col: colA } });
+        case "issue":
+          out.issues.push(r.issue);
           break;
         case "header":
-          block = { type: rc.type, active: rc.active };
+          block = { type: r.type, active: r.active };
           break;
         case "entity":
           block = null;
-          out.entities.push(this.readEntity(sheet, row, colB, rc.type, rc.active, layoutOf(rc.type), out.issues));
+          out.entities.push(r.entity);
+          for (const i of r.issues) out.issues.push(i);
           break;
         case "field": {
+          const rc = r;
           let type = rc.type;
           let active = rc.active;
           if (type === null) {
@@ -689,6 +710,33 @@ export class Project {
           break;
         }
       }
+    }
+  }
+
+  /**
+   * Classify a row and read what doesn't depend on the rows around it: an entity, or the
+   * class of a singleton row (which block a field row belongs to is the walk's business).
+   */
+  private readRow(sheet: SheetId, row: RowId, colA: ColId, colB: ColId | null, layoutOf: (type: string) => Map<string, LayoutColumn[]>): RowRead {
+    const a = this.engine.cellById(sheet, row, colA);
+    const at: Location = { sheet, row, col: colA };
+    if (a.formula) return { kind: "issue", issue: { level: "error", code: "row.formula-type", message: "Column A holds the row type and can't be a formula", at } };
+    const text = a.value === null ? "" : typeof a.value === "string" ? a.value : String(a.value);
+    const rc: RowClass = classify(this.schema, text);
+    switch (rc.kind) {
+      case "scratch":
+      case "comment":
+        return { kind: "skip" };
+      case "error":
+        return { kind: "issue", issue: { level: "error", code: "row.unknown-type", message: rc.message, at } };
+      case "header":
+        return { kind: "header", type: rc.type, active: rc.active };
+      case "entity": {
+        const issues: Issue[] = [];
+        return { kind: "entity", entity: this.readEntity(sheet, row, colB, rc.type, rc.active, layoutOf(rc.type), issues), issues };
+      }
+      case "field":
+        return { kind: "field", type: rc.type, path: rc.path, active: rc.active };
     }
   }
 

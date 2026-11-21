@@ -13,7 +13,8 @@
   "scripts": {
     "typecheck": "tsc -b",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "bench": "node packages/core/bench/engine.bench.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

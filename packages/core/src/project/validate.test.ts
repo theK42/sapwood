@@ -186,3 +186,26 @@ describe("the rest of the pipeline", () => {
 function order(line: string): number {
   return ["field.", "ref.", "rule"].findIndex((p) => line.startsWith(p)) * 1000 + ["Sprites", "Fonts", "Starfield"].findIndex((s) => line.includes(`@${s}!`));
 }
+
+describe("validation after an edit", () => {
+  it("re-reads only the rows the edit changed", () => {
+    const p = krbsg();
+    const before = validate(p).projection.entities;
+    const weapons = p.sheetId("Weapons");
+    p.set(weapons, "F2", "-1");
+    const after = validate(p).projection.entities;
+    const changed = after.filter((e, i) => e !== before[i]);
+    expect(changed.map((e) => e.id)).toEqual(["Blaster"]);
+    expect(changed[0]!.fields.get("damage")?.value).toBe(-1);
+  });
+
+  it("finds what an edit breaks, and forgets it once fixed", () => {
+    const p = krbsg();
+    validate(p);
+    const weapons = p.sheetId("Weapons");
+    p.set(weapons, "B2", "BlasterBolt"); // the Weapon takes its projectile's ID
+    expect(report(p).filter((l) => l.startsWith("id."))).toHaveLength(2);
+    p.set(weapons, "B2", "Blaster");
+    expect(report(p)).toEqual([]);
+  });
+});

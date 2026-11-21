@@ -9,7 +9,12 @@
 // formula is retried after them. Collecting them all keeps a wide reader
 // (SUM(ENTITIES(...)) over 80k rows) linear rather than one retry per precedent.
 // A read of a precedent that is itself waiting further down the stack is a cycle. Long chains therefore cost no
-// stack depth, and a good order is found without a separate topological sort.
+// stack depth, and a good order is found without a separate topological sort: each formula is
+// evaluated at most twice per recalc (once to find its stale precedents, once with them ready).
+//
+// ENTITIES(type, field) depends on the column, not on each cell in it: a reader of every
+// weapon's dps records one dependency, and an edit to one weapon's dps finds it through the
+// row's entity and the sheet's layout.
 
 import { bind, BindError, render, shift, type BoundPoint, type Expr } from "./bind.ts";
 import type { Content } from "./content.ts";
@@ -23,6 +28,13 @@ import {
 
 type Key = string;
 const keyOf = (sheet: SheetId, row: RowId, col: ColId): Key => `${sheet}|${row}|${col}`;
+/** A type's field, as one dependency: ENTITIES(type, field). */
+const fieldKey = (type: string, field: string): string => `${type}\u0000${field}`;
+// Constant cells share these rather than each holding empty sets.
+const NONE: ReadonlySet<never> = new Set();
+const NO_RANGES: readonly RangeDep[] = [];
+/** Past this many changed cells (or rows), readers of changes are told "all" instead. */
+const CHANGE_LIMIT = 20_000;
 
 interface RangeDep {
   owner: Key;
@@ -43,20 +55,27 @@ interface Cell {
   value: Scalar;
   state: State;
   waiting: boolean;
-  deps: Set<Key>;
-  ranges: RangeDep[];
-  ents: Set<string>;
-  types: Set<string>;
+  deps: ReadonlySet<Key>;
+  ranges: readonly RangeDep[];
+  ents: ReadonlySet<string>;
+  types: ReadonlySet<string>;
+  /** Columns read through ENTITIES(type, field), as fieldKey()s. */
+  fields: ReadonlySet<string>;
   /** The value depends, directly or through other cells, on the entity index. */
   usesIndex: boolean;
 }
 
 interface EntityRec {
   id: string;
+  /** The ID in lower case: IDs are unique regardless of case. */
+  lower: string;
   type: string;
   sheet: SheetId;
   row: RowId;
 }
+
+/** A field's column on one sheet, as ENTITIES(type, field) reads it; null when listing IDs. */
+type ColumnOf = null | { k: "value"; v: Value } | { k: "cells"; cells: Map<RowId, Cell> | undefined };
 
 class NotReady {
   readonly keys: Key[];
@@ -70,6 +89,7 @@ interface Collect {
   ranges: RangeDep[];
   ents: Set<string>;
   types: Set<string>;
+  fields: Set<string>;
   usesIndex: boolean;
 }
 
@@ -101,30 +121,39 @@ export class Engine {
   private rangeCache = new Map<SheetId, Map<string, { v: ArrayValue; usesIndex: boolean }>>();
   private rangeUsesIndex = false;
   private dependents = new Map<Key, Set<Key>>();
-  private rowCells = new Map<RowId, Set<Key>>();
-  private colCells = new Map<ColId, Set<Key>>();
+  /** Keys in `dependents`, by row and by column, for structure changes. */
+  private depsByRow = new Map<RowId, Set<Key>>();
+  private depsByCol = new Map<ColId, Set<Key>>();
   // Range watchers: all of them per sheet, plus an index by column (or "*" for whole-row ranges).
   private sheetRanges = new Map<SheetId, Set<RangeDep>>();
   private rangeIndex = new Map<SheetId, Map<ColId | "*", Set<RangeDep>>>();
   private entWatch = new Map<string, Set<Key>>(); // lower-case entity ID -> formulas
   private typeWatch = new Map<string, Set<Key>>(); // type -> formulas using ENTITIES(type)
+  private fieldWatch = new Map<string, Set<Key>>(); // fieldKey -> formulas using ENTITIES(type, field)
   private entities = new Map<string, EntityRec[]>(); // lower-case ID -> records
-  private byType = new Map<string, string[]>(); // cache of typeIds()
+  private dupIds = new Set<string>(); // lower-case IDs with more than one record
+  private byType = new Map<string, EntityRec[]>(); // cache of typeRecs()
   private typeRows = new Map<string, Set<RowId>>();
   private rowEnt = new Map<RowId, EntityRec>();
   /** sheet -> type -> field -> column; null for a field the sheet has no column for (reads as blank). */
   private layouts = new Map<SheetId, Map<string, Map<string, ColId | null>>>();
+  /** The same, the other way: sheet -> type -> column -> fields held there. */
+  private layoutCols = new Map<SheetId, Map<string, Map<ColId, string[]>>>();
   private entitiesDirty = true;
   /** Duplicate IDs -> the row that won at the last rebuild (see rebuildEntities). */
   private dupWinner = new Map<string, string>();
   private dirtyEntityRows = new Map<RowId, SheetId>();
+  /** Each sheet's columns A and B as of the last rebuild of the entity index. */
+  private systemCols = new Map<SheetId, [ColId | undefined, ColId | undefined]>();
 
   private batchDepth = 0;
   private pending: Key[] = [];
   /** Stale precedents met during the current cell evaluation; null outside recalc. */
   private missing: Key[] | null = null;
-  /** Cells written or recalculated since the last takeChanged(). */
-  private changed = new Set<Key>();
+  /** Cells written or recalculated since the last takeChanged(); "all" past CHANGE_LIMIT. */
+  private changed: Set<Key> | "all" = new Set();
+  /** Their rows, since the last takeChangedRows(): a second reader of the same news. */
+  private changedRows: Map<RowId, SheetId> | "all" = new Map();
   /** Formulas that called ROW() or COLUMN(). */
   private positional = new Set<Key>();
   private scope: EvalScope = { owner: null, hostSheet: null, reachFrom: null, ruleEntity: null, collect: null };
@@ -186,22 +215,47 @@ export class Engine {
   /** A cell by stable IDs, without materialising rows or columns. */
   cellById(sheet: SheetId, row: RowId, col: ColId): { value: Scalar; formula: boolean } {
     this.flush();
-    const c = this.cells.get(keyOf(sheet, row, col));
+    const c = this.grid.get(sheet)?.get(col)?.get(row);
     return { value: c?.value ?? null, formula: c?.formula != null || c?.invalidText != null };
   }
 
   /**
    * Cells written or recalculated since the last call, for grids to repaint just those.
    * A value may be unchanged; structure changes are not covered (repaint everything).
+   * After a large change (a load, a paste of thousands of cells) this is "all": repaint
+   * everything, as listing every cell would cost more than it saves.
    */
-  takeChanged(): { sheet: SheetId; row: RowId; col: ColId }[] {
+  takeChanged(): { sheet: SheetId; row: RowId; col: ColId }[] | "all" {
     this.flush();
-    const out = [...this.changed].map((k) => {
+    const was = this.changed;
+    this.changed = new Set();
+    if (was === "all") return "all";
+    return [...was].map((k) => {
       const [sheet, row, col] = k.split("|") as [SheetId, RowId, ColId];
       return { sheet, row, col };
     });
-    this.changed.clear();
+  }
+
+  /**
+   * Rows with a cell written or recalculated since the last call, for a reader that keeps
+   * something per row (the project's projection). Independent of takeChanged().
+   */
+  takeChangedRows(): Map<RowId, SheetId> | "all" {
+    this.flush();
+    const out = this.changedRows;
+    this.changedRows = new Map();
     return out;
+  }
+
+  private noteChanged(k: Key, sheet: SheetId, row: RowId): void {
+    if (this.changed !== "all") {
+      this.changed.add(k);
+      if (this.changed.size > CHANGE_LIMIT) this.changed = "all";
+    }
+    if (this.changedRows !== "all") {
+      this.changedRows.set(row, sheet);
+      if (this.changedRows.size > CHANGE_LIMIT) this.changedRows = "all";
+    }
   }
 
   /** Formula text as the grid would show it now, or null for a constant. */
@@ -238,36 +292,38 @@ export class Engine {
 
   insertRows(sheet: SheetId, pos: number, count = 1): RowId[] {
     const ids = this.wb.sheet(sheet).rows.insert(pos, count);
-    this.structureChanged(sheet, false, []);
+    this.structureChanged(sheet, false, [], { ids, order: false });
     return ids;
   }
 
   deleteRows(sheet: SheetId, pos: number, count = 1): RowId[] {
     const ids = this.wb.sheet(sheet).rows.delete(pos, count);
-    this.structureChanged(sheet, false, [...this.cellsIn(this.rowCells, ids), ...this.readersOf(sheet, "row", ids)]);
+    this.structureChanged(sheet, false, [...this.cellsOn(sheet, "row", ids), ...this.readersOf(sheet, "row", ids)], { ids, order: false });
     return ids;
   }
 
   /** Bring deleted rows back (the inverse op a revert would apply). */
   restoreRows(sheet: SheetId, ids: readonly RowId[]): void {
     this.wb.sheet(sheet).rows.restore(ids);
-    this.structureChanged(sheet, false, [...this.cellsIn(this.rowCells, ids), ...this.readersOf(sheet, "row", ids)]);
+    this.structureChanged(sheet, false, [...this.cellsOn(sheet, "row", ids), ...this.readersOf(sheet, "row", ids)], { ids, order: false });
   }
 
   moveRows(sheet: SheetId, pos: number, count: number, to: number): void {
-    this.wb.sheet(sheet).rows.move(pos, count, to);
-    this.structureChanged(sheet, false, []);
+    const rows = this.wb.sheet(sheet).rows;
+    const ids = rows.liveIds().slice(pos - 1, pos - 1 + count);
+    rows.move(pos, count, to);
+    this.structureChanged(sheet, false, [], { ids, order: true });
   }
 
   insertCols(sheet: SheetId, pos: number, count = 1): ColId[] {
     const ids = this.wb.sheet(sheet).cols.insert(pos, count);
-    this.structureChanged(sheet, true, []);
+    this.structureChanged(sheet, true, [], { ids, order: false });
     return ids;
   }
 
   deleteCols(sheet: SheetId, pos: number, count = 1): ColId[] {
     const ids = this.wb.sheet(sheet).cols.delete(pos, count);
-    this.structureChanged(sheet, true, [...this.cellsIn(this.colCells, ids), ...this.readersOf(sheet, "col", ids)]);
+    this.structureChanged(sheet, true, [...this.cellsOn(sheet, "col", ids), ...this.readersOf(sheet, "col", ids)], { ids, order: false });
     return ids;
   }
 
@@ -276,9 +332,9 @@ export class Engine {
   /** Set a cell's stored content (see content.ts). */
   setContent(sheet: SheetId, row: RowId, col: ColId, content: Content): void {
     if (content === null || "v" in content) return this.setValue(sheet, row, col, content === null ? null : content.v);
-    this.changed.add(keyOf(sheet, row, col));
     if ("f" in content) return this.setFormula(sheet, row, col, "", () => content.f);
     const k = keyOf(sheet, row, col);
+    this.noteChanged(k, sheet, row);
     const c = this.cells.get(k) ?? this.newCell(sheet, row, col);
     this.commitDeps(c, null);
     c.formula = null;
@@ -304,23 +360,23 @@ export class Engine {
 
   insertIds(sheet: SheetId, axis: "row" | "col", after: string | null, ids: readonly string[]): void {
     this.axis(sheet, axis).insertIds(after, ids);
-    this.structureChanged(sheet, axis === "col", []);
+    this.structureChanged(sheet, axis === "col", [], { ids, order: false });
   }
 
   /** Remove IDs entirely. Their cells must already be empty. */
   purgeIds(sheet: SheetId, axis: "row" | "col", ids: readonly string[]): void {
     this.axis(sheet, axis).purgeIds(ids);
-    this.structureChanged(sheet, axis === "col", []);
+    this.structureChanged(sheet, axis === "col", [], { ids, order: false });
   }
 
   killIds(sheet: SheetId, axis: "row" | "col", ids: readonly string[]): void {
     this.axis(sheet, axis).killIds(ids);
-    this.structureChanged(sheet, axis === "col", [...this.cellsIn(axis === "row" ? this.rowCells : this.colCells, ids), ...this.readersOf(sheet, axis, ids)]);
+    this.structureChanged(sheet, axis === "col", [...this.cellsOn(sheet, axis, ids), ...this.readersOf(sheet, axis, ids)], { ids, order: false });
   }
 
   restoreIds(sheet: SheetId, axis: "row" | "col", ids: readonly string[]): void {
     this.axis(sheet, axis).restore(ids);
-    this.structureChanged(sheet, axis === "col", [...this.cellsIn(axis === "row" ? this.rowCells : this.colCells, ids), ...this.readersOf(sheet, axis, ids)]);
+    this.structureChanged(sheet, axis === "col", [...this.cellsOn(sheet, axis, ids), ...this.readersOf(sheet, axis, ids)], { ids, order: false });
   }
 
   /**
@@ -328,18 +384,17 @@ export class Engine {
    * no cell, so nothing else would tell them): a delete turns the read into #REF!.
    */
   private readersOf(sheet: SheetId, axis: "row" | "col", ids: readonly string[]): Key[] {
-    const gone = new Set(ids);
     const out: Key[] = [];
-    for (const [k, readers] of this.dependents) {
-      const [s, row, col] = k.split("|") as [SheetId, RowId, ColId];
-      if (s === sheet && gone.has(axis === "row" ? row : col)) out.push(...readers);
-    }
+    const index = axis === "row" ? this.depsByRow : this.depsByCol;
+    for (const id of ids)
+      for (const k of index.get(id) ?? [])
+        if (k.startsWith(`${sheet}|`)) for (const r of this.dependents.get(k) ?? []) out.push(r);
     return out;
   }
 
   moveIds(sheet: SheetId, axis: "row" | "col", after: string | null, ids: readonly string[]): void {
     this.axis(sheet, axis).moveIds(after, ids);
-    this.structureChanged(sheet, axis === "col", []);
+    this.structureChanged(sheet, axis === "col", [], { ids, order: true });
   }
 
   /** Forget a sheet's layouts (the sheet is being removed; it must be empty). */
@@ -354,6 +409,7 @@ export class Engine {
   /** Forget a sheet's entity layouts (set them again with setLayoutColumns). */
   clearLayouts(sheet: SheetId): void {
     this.layouts.delete(sheet);
+    this.layoutCols.delete(sheet);
     this.entitiesDirty = true;
   }
 
@@ -394,12 +450,20 @@ export class Engine {
   setLayoutColumns(sheet: SheetId, type: string, fields: ReadonlyMap<string, ColId | null>): void {
     let bySheet = this.layouts.get(sheet);
     if (!bySheet) this.layouts.set(sheet, (bySheet = new Map()));
+    const old = bySheet.get(type);
+    if (old && old.size === fields.size && [...fields].every(([f, c]) => old.get(f) === c)) return;
     bySheet.set(type, new Map(fields));
+    let cols = this.layoutCols.get(sheet);
+    if (!cols) this.layoutCols.set(sheet, (cols = new Map()));
+    const byCol = new Map<ColId, string[]>();
+    for (const [f, c] of fields) if (c !== null) byCol.set(c, [...(byCol.get(c) ?? []), f]);
+    cols.set(type, byCol);
     // Formulas reading these entities' fields must re-resolve their columns.
-    for (const [lower, recs] of this.entities) {
-      if (recs.some((r) => r.sheet === sheet && r.type === type)) this.pending.push(...(this.entWatch.get(lower) ?? []));
+    for (const row of this.typeRows.get(type) ?? []) {
+      const rec = this.rowEnt.get(row)!;
+      if (rec.sheet === sheet) this.pending.push(...(this.entWatch.get(rec.id.toLowerCase()) ?? []));
     }
-    this.entitiesDirty = true;
+    this.pending.push(...(this.typeWatch.get(type) ?? []));
     if (this.batchDepth === 0) this.flush();
   }
 
@@ -428,7 +492,6 @@ export class Engine {
   }
 
   private setById(sheet: SheetId, row: RowId, col: ColId, input: string): void {
-    this.changed.add(keyOf(sheet, row, col));
     if (input.startsWith("=") && input.length > 1) {
       this.setFormula(sheet, row, col, input, () => bind(parseFormula(input), { wb: this.wb, sheet }));
       return;
@@ -437,8 +500,8 @@ export class Engine {
   }
 
   private setValue(sheet: SheetId, row: RowId, col: ColId, value: Scalar): void {
-    this.changed.add(keyOf(sheet, row, col));
     const k = keyOf(sheet, row, col);
+    this.noteChanged(k, sheet, row);
     let c = this.cells.get(k);
     if (value === null && c) {
       this.commitDeps(c, null);
@@ -458,6 +521,7 @@ export class Engine {
 
   private setFormula(sheet: SheetId, row: RowId, col: ColId, text: string, make: () => Expr): void {
     const k = keyOf(sheet, row, col);
+    this.noteChanged(k, sheet, row);
     const c = this.cells.get(k) ?? this.newCell(sheet, row, col);
     try {
       c.formula = make();
@@ -480,15 +544,9 @@ export class Engine {
     const k = keyOf(sheet, row, col);
     const c: Cell = {
       key: k, sheet, row, col, formula: null, invalidText: null, value: null, state: "fresh",
-      waiting: false, deps: new Set(), ranges: [], ents: new Set(), types: new Set(), usesIndex: false,
+      waiting: false, deps: NONE, ranges: NO_RANGES, ents: NONE, types: NONE, fields: NONE, usesIndex: false,
     };
     this.cells.set(k, c);
-    let r = this.rowCells.get(row);
-    if (!r) this.rowCells.set(row, (r = new Set()));
-    r.add(k);
-    let cs = this.colCells.get(col);
-    if (!cs) this.colCells.set(col, (cs = new Set()));
-    cs.add(k);
     let g = this.grid.get(sheet);
     if (!g) this.grid.set(sheet, (g = new Map()));
     let gc = g.get(col);
@@ -500,8 +558,6 @@ export class Engine {
   private forget(c: Cell): void {
     this.cells.delete(c.key);
     this.grid.get(c.sheet)?.get(c.col)?.delete(c.row);
-    this.rowCells.get(c.row)?.delete(c.key);
-    this.colCells.get(c.col)?.delete(c.key);
   }
 
   /** Edits in column A or B can change the entity index. */
@@ -516,13 +572,28 @@ export class Engine {
     }
   }
 
-  private cellsIn(index: Map<string, Set<Key>>, ids: readonly string[]): Key[] {
+  /** Keys of the cells in these rows or columns of a sheet. */
+  private cellsOn(sheet: SheetId, axis: "row" | "col", ids: readonly string[]): Key[] {
     const out: Key[] = [];
-    for (const id of ids) for (const k of index.get(id) ?? []) out.push(k);
+    const g = this.grid.get(sheet);
+    if (!g) return out;
+    if (axis === "col") for (const id of ids) for (const c of g.get(id)?.values() ?? []) out.push(c.key);
+    else
+      for (const colMap of g.values())
+        for (const id of ids) {
+          const c = colMap.get(id);
+          if (c) out.push(c.key);
+        }
     return out;
   }
 
-  private structureChanged(sheet: SheetId, cols: boolean, changed: Key[]): void {
+  /**
+   * Rows or columns were inserted, removed, restored or moved. A row change touches only
+   * its rows: their entities appear or go, or (for a move) their order changes. A column
+   * change leaves the entity index alone unless columns A and B are no longer what they
+   * were (ops never move them; the position-based S1 API can).
+   */
+  private structureChanged(sheet: SheetId, cols: boolean, changed: Key[], ids: { ids: readonly string[]; order: boolean }): void {
     this.pending.push(...changed);
     for (const k of changed) {
       const c = this.cells.get(k);
@@ -530,16 +601,40 @@ export class Engine {
     }
     for (const rd of this.sheetRanges.get(sheet) ?? []) this.pending.push(rd.owner);
     for (const k of this.positional) if (this.cells.get(k)?.sheet === sheet) this.pending.push(k);
-    if (cols) this.reindexRanges(sheet);
-    this.entitiesDirty = true;
+    if (cols) {
+      this.reindexRanges(sheet);
+      const live = this.wb.sheet(sheet).cols.liveIds();
+      const sys = this.systemCols.get(sheet);
+      if (!sys || sys[0] !== live[0] || sys[1] !== live[1]) this.entitiesDirty = true;
+    } else if (ids.order) this.rowsReordered(ids.ids);
+    else for (const row of ids.ids) this.dirtyEntityRows.set(row, sheet);
     if (this.batchDepth === 0) this.flush();
+  }
+
+  /**
+   * Moved rows keep their entities, but the order of their types changes, and so may which
+   * of a duplicate ID's rows comes first. Rows that didn't move keep their order among themselves.
+   */
+  private rowsReordered(rows: readonly RowId[]): void {
+    for (const row of rows) {
+      const rec = this.rowEnt.get(row);
+      if (!rec) continue;
+      this.byType.delete(rec.type);
+      this.pending.push(...(this.typeWatch.get(rec.type) ?? []));
+      const lower = rec.id.toLowerCase();
+      const same = this.entities.get(lower)!;
+      if (same.length > 1) {
+        this.pending.push(...(this.entWatch.get(lower) ?? []));
+        this.dupWinner.set(lower, `>${this.firstInDocument(same).row}`);
+      }
+    }
   }
 
   // ------------------------------------------------------------ dependency bookkeeping
 
   private sameDeps(c: Cell, next: Collect): boolean {
     if (c.deps.size !== next.deps.size || c.ranges.length !== next.ranges.length) return false;
-    if (c.ents.size !== next.ents.size || c.types.size !== next.types.size) return false;
+    if (c.ents.size !== next.ents.size || c.types.size !== next.types.size || c.fields.size !== next.fields.size) return false;
     for (const d of next.deps) if (!c.deps.has(d)) return false;
     for (let i = 0; i < c.ranges.length; i++) {
       const x = c.ranges[i]!;
@@ -548,6 +643,7 @@ export class Engine {
     }
     for (const id of next.ents) if (!c.ents.has(id)) return false;
     for (const t of next.types) if (!c.types.has(t)) return false;
+    for (const f of next.fields) if (!c.fields.has(f)) return false;
     return true;
   }
 
@@ -560,13 +656,23 @@ export class Engine {
     }
     for (const id of c.ents) this.entWatch.get(id)?.delete(c.key);
     for (const t of c.types) this.typeWatch.get(t)?.delete(c.key);
-    c.deps = next?.deps ?? new Set();
-    c.ranges = next?.ranges ?? [];
-    c.ents = next?.ents ?? new Set();
-    c.types = next?.types ?? new Set();
+    for (const f of c.fields) this.fieldWatch.get(f)?.delete(c.key);
+    c.deps = next?.deps.size ? next.deps : NONE;
+    c.ranges = next?.ranges.length ? next.ranges : NO_RANGES;
+    c.ents = next?.ents.size ? next.ents : NONE;
+    c.types = next?.types.size ? next.types : NONE;
+    c.fields = next?.fields.size ? next.fields : NONE;
     for (const d of c.deps) {
       let s = this.dependents.get(d);
-      if (!s) this.dependents.set(d, (s = new Set()));
+      if (!s) {
+        this.dependents.set(d, (s = new Set()));
+        const [, row, col] = d.split("|") as [SheetId, RowId, ColId];
+        for (const [index, id] of [[this.depsByRow, row], [this.depsByCol, col]] as const) {
+          let ks = index.get(id);
+          if (!ks) index.set(id, (ks = new Set()));
+          ks.add(d);
+        }
+      }
       s.add(c.key);
     }
     for (const rd of c.ranges) {
@@ -583,6 +689,11 @@ export class Engine {
     for (const t of c.types) {
       let s = this.typeWatch.get(t);
       if (!s) this.typeWatch.set(t, (s = new Set()));
+      s.add(c.key);
+    }
+    for (const f of c.fields) {
+      let s = this.fieldWatch.get(f);
+      if (!s) this.fieldWatch.set(f, (s = new Set()));
       s.add(c.key);
     }
   }
@@ -621,6 +732,7 @@ export class Engine {
 
   private flush(): void {
     if (this.batchDepth > 0) return;
+    if (this.pending.length === 0 && !this.entitiesDirty && this.dirtyEntityRows.size === 0) return; // reads call this often
     const seeds = this.pending;
     this.pending = [];
     if (this.entitiesDirty) seeds.push(...this.rebuildEntities());
@@ -662,6 +774,12 @@ export class Engine {
         queue.push(d);
       };
       for (const d of this.dependents.get(k) ?? []) next(d);
+      // A field of an entity: formulas reading the whole column (ENTITIES(type, field)).
+      const rec = this.rowEnt.get(row);
+      if (rec !== undefined && rec.sheet === sheet && this.fieldWatch.size > 0) {
+        for (const f of this.layoutCols.get(sheet)?.get(rec.type)?.get(col) ?? [])
+          for (const d of this.fieldWatch.get(fieldKey(rec.type, f)) ?? []) next(d);
+      }
       const idx = this.rangeIndex.get(sheet);
       if (idx) {
         for (const bucket of [idx.get(col), idx.get("*")]) {
@@ -691,12 +809,12 @@ export class Engine {
         stack.pop();
         continue;
       }
-      const collect: Collect = { deps: new Set(), ranges: [], ents: new Set(), types: new Set(), usesIndex: false };
+      const collect: Collect = { deps: new Set(), ranges: [], ents: new Set(), types: new Set(), fields: new Set(), usesIndex: false };
       const hostPack = this.wb.sheet(c.sheet).pack;
       this.scope = { owner: k, hostSheet: c.sheet, reachFrom: hostPack, ruleEntity: null, collect };
       c.state = "computing";
       evaluations++;
-      this.changed.add(k);
+      this.noteChanged(k, c.sheet, c.row);
       this.missing = [];
       try {
         const raw = this.eval(c.formula);
@@ -776,7 +894,11 @@ export class Engine {
     this.scope.collect?.deps.add(k); // even when dead, so a restore reaches us
     const s = this.wb.sheet(sheet);
     if (s.rows.isDead(row) || s.cols.isDead(col)) return err("#REF!");
-    const c = this.cells.get(k);
+    return this.cellValue(this.cells.get(k));
+  }
+
+  /** A cell's value for a formula reading it; the caller records the dependency. */
+  private cellValue(c: Cell | undefined): Scalar {
     if (!c) return null;
     if (c.state === "computing") return new FError("#CYCLE!", "Circular reference");
     if (c.state === "stale") return this.notReady(c);
@@ -892,17 +1014,30 @@ export class Engine {
       const cc = col === null ? 1 : s.cols.posOf(col);
       return r === null || cc === null ? err("#REF!") : { row: r, col: cc };
     },
-    entitiesOfType: (type) => {
-      this.scope.collect?.types.add(type);
-      if (this.scope.collect) this.scope.collect.usesIndex = true;
-      const ids = this.typeIds(type);
-      const from = this.scope.reachFrom;
-      if (from === null) return ids;
+    entitiesOfType: (type, field) => {
+      const collect = this.scope.collect;
+      if (collect) {
+        collect.types.add(type);
+        if (field !== null && field !== "id") collect.fields.add(fieldKey(type, field));
+        collect.usesIndex = true;
+      }
       // In a cell, only entities the formula's pack can reach are listed.
-      return ids.filter((id) => {
-        const rec = this.entities.get(id.toLowerCase())?.find((r) => r.id === id);
-        return rec !== undefined && this.wb.canReach(from, this.wb.sheet(rec.sheet).pack);
-      });
+      const from = this.scope.reachFrom;
+      const out: Scalar[] = [];
+      // Per sheet: whether the formula can reach it, and the field's column there.
+      let sheet: SheetId | null = null;
+      let ok = true;
+      let col: ColumnOf = null;
+      for (const rec of this.typeRecs(type)) {
+        if (rec.sheet !== sheet) {
+          sheet = rec.sheet;
+          ok = from === null || this.wb.canReach(from, this.wb.sheet(sheet).pack);
+          col = field === null ? null : this.columnOf(sheet, type, field);
+        }
+        if (!ok) continue;
+        out.push(field === null ? rec.id : scalar(this.columnValue(rec, field, col!)));
+      }
+      return out;
     },
   };
 
@@ -996,21 +1131,48 @@ export class Engine {
     }
     const id = idCell?.value;
     if (typeof id !== "string" || id === "") return null;
-    return { id, type, sheet, row };
+    return { id, lower: id.toLowerCase(), type, sheet, row };
   }
 
-  /** IDs of a type in sheet and row order (cached until the type's membership or order changes). */
-  private typeIds(type: string): string[] {
-    let ids = this.byType.get(type);
-    if (ids) return ids;
-    const recs = [...(this.typeRows.get(type) ?? [])].map((r) => this.rowEnt.get(r)!);
-    const sheetOrder = [...this.wb.sheets.keys()];
+  /** Entities of a type in sheet and row order (cached until the type's membership or order changes). */
+  private typeRecs(type: string): EntityRec[] {
+    let recs = this.byType.get(type);
+    if (recs) return recs;
+    recs = [...(this.typeRows.get(type) ?? [])].map((r) => this.rowEnt.get(r)!);
+    const tabs = new Map([...this.wb.sheets.keys()].map((s, i) => [s, i]));
     recs.sort((a, b) =>
       a.sheet === b.sheet
         ? this.wb.sheet(a.sheet).rows.posOf(a.row)! - this.wb.sheet(b.sheet).rows.posOf(b.row)!
-        : sheetOrder.indexOf(a.sheet) - sheetOrder.indexOf(b.sheet));
-    this.byType.set(type, (ids = recs.map((r) => r.id)));
-    return ids;
+        : tabs.get(a.sheet)! - tabs.get(b.sheet)!);
+    this.byType.set(type, recs);
+    return recs;
+  }
+
+  private typeIds(type: string): string[] {
+    return this.typeRecs(type).map((r) => r.id);
+  }
+
+  /**
+   * One field of an entity listed by ENTITIES(type, field). The reader depends on the whole
+   * column, so the cell is read without a dependency of its own. A duplicate ID reads the
+   * first in document order, as ENTITY(id) would, and depends on that ID.
+   */
+  private columnValue(rec: EntityRec, field: string, col: Exclude<ColumnOf, null>): Value {
+    if (this.dupIds.size > 0 && this.dupIds.has(rec.lower) && this.entities.get(rec.lower)!.filter((r) => r.id === rec.id).length > 1)
+      return this.entityField(rec.id, field);
+    if (field === "id") return rec.id;
+    if (col.k === "value") return col.v;
+    return this.cellValue(col.cells?.get(rec.row));
+  }
+
+  /** Where a field of a type lives on a sheet, for reading it from every entity there. */
+  private columnOf(sheet: SheetId, type: string, field: string): Exclude<ColumnOf, null> {
+    if (field === "id") return { k: "value", v: null }; // columnValue gives each entity's own
+    const col = this.layouts.get(sheet)?.get(type)?.get(field);
+    if (col === undefined) return { k: "value", v: new FError("#NAME?", `${type} has no field '${field}'`) };
+    if (col === null) return { k: "value", v: null };
+    if (this.wb.sheet(sheet).cols.isDead(col)) return { k: "value", v: err("#REF!") };
+    return { k: "cells", cells: this.grid.get(sheet)?.get(col) };
   }
 
   /** Re-read the entity on each row; returns formulas affected by what changed. */
@@ -1018,24 +1180,44 @@ export class Engine {
     const affected: Key[] = [];
     const touch = (rec: EntityRec): void => {
       affected.push(...(this.entWatch.get(rec.id.toLowerCase()) ?? []), ...(this.typeWatch.get(rec.type) ?? []));
-      this.byType.delete(rec.type);
+    };
+    // An ID that gains or loses a duplicate may change which row ENTITIES(type, field) reads
+    // for it (columnValue), and those readers don't depend on the ID itself: wake each type's.
+    const shared = (recs: readonly EntityRec[]): void => {
+      for (const t of new Set(recs.map((r) => r.type))) affected.push(...(this.typeWatch.get(t) ?? []));
     };
     for (const [row, sheet] of rows) {
       const old = this.rowEnt.get(row) ?? null;
       const now = this.readEntityRow(sheet, row);
       if (old?.id === now?.id && old?.type === now?.type) continue;
+      // Only the ID changed: the type's order stands, so its cached list is patched in place.
+      const cached = old && now && old.type === now.type ? this.byType.get(old.type) : undefined;
+      const at = cached ? cached.indexOf(old!) : -1;
+      if (old) this.byType.delete(old.type);
+      if (now) this.byType.delete(now.type);
+      if (cached && at >= 0) {
+        cached[at] = now!;
+        this.byType.set(now!.type, cached);
+      }
       if (old) {
         const lower = old.id.toLowerCase();
         const list = (this.entities.get(lower) ?? []).filter((r) => r.row !== row);
         if (list.length) this.entities.set(lower, list);
         else this.entities.delete(lower);
+        if (list.length < 2) this.dupIds.delete(lower);
+        if (list.length > 0) shared(list);
         this.typeRows.get(old.type)?.delete(row);
         this.rowEnt.delete(row);
         touch(old);
       }
       if (now) {
         const lower = now.id.toLowerCase();
-        this.entities.set(lower, [...(this.entities.get(lower) ?? []), now]);
+        const list = [...(this.entities.get(lower) ?? []), now];
+        this.entities.set(lower, list);
+        if (list.length > 1) {
+          this.dupIds.add(lower);
+          shared(list);
+        }
         let t = this.typeRows.get(now.type);
         if (!t) this.typeRows.set(now.type, (t = new Set()));
         t.add(row);
@@ -1059,11 +1241,17 @@ export class Engine {
     const before = new Map([...this.entities].map(([k, l]) => [k, this.entitySig(l) + (this.dupWinner.get(k) ?? "")]));
     const typesBefore = new Map([...this.typeRows.keys()].map((t) => [t, this.typeIds(t).join("\n")]));
     this.entities = new Map();
+    this.dupIds = new Set();
     this.rowEnt = new Map();
     this.typeRows = new Map();
     this.byType = new Map();
     const all: [RowId, SheetId][] = [];
-    for (const s of this.wb.sheets.values()) for (const row of s.rows.liveIds()) all.push([row, s.id]);
+    this.systemCols = new Map();
+    for (const s of this.wb.sheets.values()) {
+      const live = s.cols.liveIds();
+      this.systemCols.set(s.id, [live[0], live[1]]);
+      for (const row of s.rows.liveIds()) all.push([row, s.id]);
+    }
     this.updateEntityRows(all);
     this.dupWinner = new Map();
     for (const [k, l] of this.entities) if (l.length > 1) this.dupWinner.set(k, `>${this.firstInDocument(l).row}`);

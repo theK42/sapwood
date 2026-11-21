@@ -95,16 +95,29 @@ Pass criteria:
   - rebase bugs: mine renaming a field and back undid theirs' rename of it, and mine removing a member it had added removed theirs' member of the same name.
 - Known limits: enum members, traits and variants are matched by name when lists merge, so a task that removes `fire` and then renames `ice` to `fire` merges as if `fire` had stayed. Reordering fields or definitions has no op of its own yet.
 
+**Engine performance (2026-11-20).** Measured with `npm run bench`, on S2's workload: one Projectile, then four Weapons that use it, repeated; each weapon computes `dps` and `impact` (`=ENTITY(E).speed*C`), and a scratch cell sums every weapon's `dps`. Done:
+
+- `ENTITIES(type, field)` depends on the column, not on each cell in it. A reader of 80k weapons' `dps` records one dependency, and an edit to one weapon's `dps` finds it through the row's entity and the sheet's layout. Before, each evaluation recorded 80k dependencies and compared them with the last 80k.
+- The entity index updates row by row on row inserts, deletes, restores and moves, as it already did for edits; only a column change that alters columns A and B (which ops never do) rebuilds it. An ID edit patches the type's cached order in place.
+- Validation keeps each row's reading and each entity's own checks until a cell in the row changes, so validating after an edit re-reads only that row. Unique IDs, refs, singletons and custom rules are still checked across the project each time.
+- Loading was quadratic: each op's inverse was put at the front of a growing list. 20k rows took 14.6 s; now 1 s.
+- A topological recalc order turned out not to be needed. The retry scheme evaluates each formula at most twice per recalc, and recalculation is about a third of a load; the rest is applying the ops.
+
+| 10k rows (8k weapons) | Before | After |
+|---|---:|---:|
+| Load (every formula computed) | 3.4 s | 0.46 s |
+| Validate, first time / again | 122 / 104 ms | 91 / 9 ms |
+| Edit a weapon's damage, then validate | 107 ms | 13 ms |
+| Edit a weapon's ID, then validate | 110 ms | 13 ms |
+| Insert / delete / move a row, then validate | 137 / 165 / 153 ms | 11 / 10 / 15 ms |
+
+DESIGN §12's targets at 10k entities are met: an edit with validation in under 50 ms, full validation in under 1 s. At 100k rows a weapon edit with validation takes 170–185 ms (1.4 s before), a full validation 0.9 s, and a load 4.9 s; the remaining costs are listed under Phase 2 and Phase 5. Property tests now validate between random edits, so what validation keeps is checked against a fresh project. They found one bug in the new column dependencies, fixed: an ID taken by an entity of another type changes which row `ENTITIES(type, field)` reads for it, and its readers weren't told.
+
 Importing KRBSG showed that its per-tab names collide once IDs are global (`Ship` was both a texture and a sprite, and so on). The fixture prefixes them. Phase 5's importer will need a way to handle this.
 
 Still to do in Phase 1:
 
 - **The project API:** load, apply ops, validate and export all work (`loadProject`, `Project.apply`, `Project.fromDoc`, `validate`, `exportJson`); what remains is a tidy public facade over them.
-- **Engine performance**, from S2:
-  - column-level dependencies for `ENTITIES(type, field)`;
-  - an entity index and validation that update per row;
-  - a topological recalc order;
-  - loading stored values instead of recalculating everything.
 - **Smaller gaps:**
   - the `SINGLETON("T").field` formula function;
   - schema checks for datetime and duration `min`/`max`;
@@ -113,6 +126,7 @@ Still to do in Phase 1:
 ## Phase 2: Server, persistence, CLI
 
 - SQLite storage: commits, ops, tasks, branches, snapshots.
+- Loading from a snapshot that stores computed values and their dependencies, rather than recalculating every formula. At 100k rows recalculation is 1.4 s of a 4.9 s load; formulas' dependencies are found by evaluating them, so values alone aren't enough.
 - Task service: implicit working task, named tasks, auto-rebase, land queue.
 - Branches: create, merge, sync, discard; merge commits.
 - History: commit log, revert commit, read/export at a commit.
@@ -153,7 +167,7 @@ This is already a useful tool for the author.
 
 - Importers: Google Sheets, `.xlsx`, CSV. Map tabs and columns to types and fields.
 - Wizards (declarative templates with interleaved placement).
-- Performance pass to the 100k-entity ceiling.
+- Performance pass to the 100k-entity ceiling. Known costs at 100k rows: the checks that span rows (unique IDs, refs) are rebuilt on every validation (about 120 ms); `SUM(ENTITIES(type, field))` re-reads its whole column on each edit (about 30 ms for 80k); loading applies 700k cell ops (about 3 s besides recalculation).
 
 ## Stretch and later
 

@@ -21,6 +21,8 @@ export interface Validation {
 
 interface RefUse {
   ref: Ref;
+  /** The ID in lower case, as IDs are looked up. */
+  lower: string;
   targets: string[] | "any";
   reach?: "descendants";
   /** The pack the reference lives in: the entity's, or the singleton's. */
@@ -29,22 +31,53 @@ interface RefUse {
   at: Location;
 }
 
+/** What an entity's own values say, kept as long as the projection keeps the entity (its row is unchanged). */
+interface EntityChecks {
+  /** The ID in lower case, as IDs are compared. */
+  lower: string | null;
+  issues: Issue[];
+  refs: RefUse[];
+  /** The ID's formula uses ROW() or COLUMN(). */
+  positional: boolean;
+}
+
+const checked = new WeakMap<Entity, EntityChecks>();
+
+function entityChecks(project: Project, e: Entity): EntityChecks {
+  let c = checked.get(e);
+  if (c) return c;
+  c = { lower: e.id?.toLowerCase() ?? null, issues: [], refs: [], positional: false };
+  const t = project.schema.types.get(e.type)!;
+  for (const f of t.fields) {
+    const entry = e.fields.get(f.def.name);
+    const at = entry?.cells[0] ?? e.at;
+    checkField(project, f.def, entry, at, e.pack, e.type, c.issues, c.refs);
+  }
+  const f = formulaText(project, { ...e.at, ...(colB(project, e.at) ?? {}) });
+  c.positional = f !== null && /\b(ROW|COLUMN)\s*\(/i.test(f);
+  checked.set(e, c);
+  return c;
+}
+
+/**
+ * Validate the project. Rows are read and each entity's own values checked once, then kept
+ * until a cell in the row changes (see Project.project), so validating after an edit re-reads
+ * only the rows it changed. What spans rows (unique IDs, refs, singletons) and custom rules
+ * is checked again each time.
+ */
 export function validate(project: Project): Validation {
   const projection = project.project();
   const issues: Issue[] = [];
   for (const i of project.schema.issues) issues.push({ level: "error", code: "schema", message: `${i.path}: ${i.message}` });
-  issues.push(...projection.issues);
+  for (const i of projection.issues) issues.push(i);
   const refs: RefUse[] = [];
   const active = projection.entities.filter((e) => e.active);
 
   // ---- presence and constraints
-  for (const e of active) {
-    const t = project.schema.types.get(e.type)!;
-    for (const f of t.fields) {
-      const entry = e.fields.get(f.def.name);
-      const at = entry?.cells[0] ?? e.at;
-      checkField(project, f.def, entry, at, e.pack, e.type, issues, refs);
-    }
+  const checks = active.map((e) => entityChecks(project, e));
+  for (const c of checks) {
+    for (const i of c.issues) issues.push(i);
+    for (const r of c.refs) refs.push(r);
   }
 
   // ---- singletons: one active entry per field, in the singleton's pack, required fields present
@@ -79,29 +112,37 @@ export function validate(project: Project): Validation {
 
   // ---- IDs: present, globally unique (case-insensitive, Q3)
   const byId = new Map<string, Entity[]>();
-  for (const e of projection.entities) if (e.id !== null) byId.set(e.id.toLowerCase(), [...(byId.get(e.id.toLowerCase()) ?? []), e]);
-  for (const e of active) {
-    const at = { ...e.at, ...(colB(project, e.at) ?? {}) };
+  for (const e of projection.entities) {
+    if (e.id === null) continue;
+    const k = e.active ? checked.get(e)!.lower! : e.id.toLowerCase();
+    const list = byId.get(k);
+    if (list) list.push(e);
+    else byId.set(k, [e]);
+  }
+  const idIssue = new Set<string>();
+  for (const i of projection.issues) if (i.at && i.code.startsWith("id.")) idIssue.add(`${i.at.sheet}|${i.at.row}`);
+  active.forEach((e, n) => {
+    const at = () => ({ ...e.at, ...(colB(project, e.at) ?? {}) });
     if (e.id === null) {
-      if (!projection.issues.some((i) => i.at?.row === e.at.row && i.code.startsWith("id.")))
-        issues.push({ level: "error", code: "id.missing", message: `This ${e.type} has no ID`, at });
-      continue;
+      if (!idIssue.has(`${e.at.sheet}|${e.at.row}`)) issues.push({ level: "error", code: "id.missing", message: `This ${e.type} has no ID`, at: at() });
+      return;
     }
-    const same = byId.get(e.id.toLowerCase())!.filter((x) => x.active);
+    const list = byId.get(checks[n]!.lower!)!;
+    const same = list.length > 1 ? list.filter((x) => x.active) : list;
     if (same.length > 1) {
       const others = same.filter((x) => x !== e).map((x) => `${x.type} on ${project.wb.sheet(x.at.sheet).name}`);
       const exact = same.every((x) => x.id === e.id);
-      issues.push({ level: "error", code: "id.duplicate", message: `ID "${e.id}" is also used by ${others.join(", ")}${exact ? "" : " (IDs are unique regardless of case)"}`, at });
+      issues.push({ level: "error", code: "id.duplicate", message: `ID "${e.id}" is also used by ${others.join(", ")}${exact ? "" : " (IDs are unique regardless of case)"}`, at: at() });
     }
-    const f = formulaText(project, at);
-    if (f && /\b(ROW|COLUMN)\s*\(/i.test(f))
-      issues.push({ level: "warning", code: "id.positional", message: "This ID uses ROW() or COLUMN(): moving the row renames the entity", at });
-  }
+    if (checks[n]!.positional)
+      issues.push({ level: "warning", code: "id.positional", message: "This ID uses ROW() or COLUMN(): moving the row renames the entity", at: at() });
+  });
 
   // ---- refs and pack reach (§5.3, §7.2)
+  const canReach = new Map<string, boolean>();
   for (const u of refs) {
-    const list = byId.get(u.ref.id.toLowerCase()) ?? [];
-    const exact = list.filter((x) => x.id === u.ref.id);
+    const list = byId.get(u.lower) ?? [];
+    const exact = list.length === 1 ? (list[0]!.id === u.ref.id ? list : []) : list.filter((x) => x.id === u.ref.id);
     const target = exact.find((x) => x.active) ?? exact[0];
     if (!target) {
       const near = list[0];
@@ -117,7 +158,14 @@ export function validate(project: Project): Validation {
       issues.push({ level: "error", code: "ref.type", message: `${u.field}: "${u.ref.id}" is a ${target.type}, not ${want}`, at: u.at });
       continue;
     }
-    if (!reachable(project, u.from, target.pack, u.reach))
+    let ok = u.from === target.pack;
+    if (!ok) {
+      const rk = `${u.from}|${target.pack}|${u.reach ?? ""}`;
+      const known = canReach.get(rk);
+      if (known === undefined) canReach.set(rk, (ok = reachable(project, u.from, target.pack, u.reach)));
+      else ok = known;
+    }
+    if (!ok)
       issues.push({
         level: "error",
         code: "ref.reach",
@@ -153,12 +201,9 @@ export function validate(project: Project): Validation {
       if ((e.type === target || project.schema.types.get(e.type)!.traits.has(target)) && unique(e)) run(e);
   }
 
-  return {
-    projection,
-    issues,
-    errors: issues.filter((i) => i.level === "error").length,
-    warnings: issues.filter((i) => i.level === "warning").length,
-  };
+  let errors = 0;
+  for (const i of issues) if (i.level === "error") errors++;
+  return { projection, issues, errors, warnings: issues.length - errors };
 }
 
 /** Own pack or an ancestor; descendants too when the field allows it. */
@@ -239,7 +284,7 @@ function checkValue(
       return;
     }
     case "ref":
-      refs.push({ ref: v as Ref, targets: type.targets, ...(def.reach ? { reach: def.reach } : {}), from: pack, field: label, at });
+      refs.push({ ref: v as Ref, lower: (v as Ref).id.toLowerCase(), targets: type.targets, ...(def.reach ? { reach: def.reach } : {}), from: pack, field: label, at });
       return;
     case "list": {
       const items = v as FieldValue[];

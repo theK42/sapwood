@@ -76,16 +76,19 @@ export function expand(doc: Doc, op: Op): Op[] {
 export function applyOp(doc: Doc, op: Op): Op[] {
   const prims = expand(doc, op);
   if (prims.length === 1 && prims[0] === op) return applyPlain(doc, op);
-  const inverse: Op[] = [];
-  for (const p of prims) inverse.unshift(...applyPlain(doc, p));
-  return inverse;
+  return undoAll(prims.map((p) => applyPlain(doc, p)));
+}
+
+/** The inverse of a sequence, from each op's inverse in order: the last op's undo comes first. */
+export function undoAll(inverses: readonly (readonly Op[])[]): Op[] {
+  const out: Op[] = [];
+  for (let i = inverses.length - 1; i >= 0; i--) for (const op of inverses[i]!) out.push(op);
+  return out;
 }
 
 /** Apply a sequence in place. The inverse undoes all of it. */
 export function applyOps(doc: Doc, ops: readonly Op[]): Op[] {
-  const inverse: Op[] = [];
-  for (const op of ops) inverse.unshift(...applyOp(doc, op));
-  return inverse;
+  return undoAll(ops.map((op) => applyOp(doc, op)));
 }
 
 function sheetOf(doc: Doc, id: SheetId): SheetDoc {

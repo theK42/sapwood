@@ -4,7 +4,8 @@
 //  - undo: applying the inverses gives back exactly the document we started from;
 //  - replay: the recorded ops, applied to a copy of the base document, give the same document;
 //  - mirror: the engine, updated op by op, agrees with an engine built from scratch
-//    from the final document (values, validation and export).
+//    from the final document (values, validation and export). Validation runs at random
+//    points along the way too, so what it keeps between runs is tested against a fresh one.
 
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
@@ -34,6 +35,8 @@ const IDS = ["a", "b", "c", "d"];
 const CONTENT = [
   "", "1", "2.5", "TRUE", "text", ...IDS, '["a", "b"]', '[ "c" ]', '{"target": "a", "n": 1}',
   "=C2+1", "=SUM(C:C)", '=ENTITY("a").speed', "=T!C2*2", "=#REF!", "=1+", "=Nowhere!A1",
+  '=SUM(ENTITIES("Projectile", "speed"))', '=INDEX(ENTITIES("Projectile", "speed"), 2)', '=ROWS(ENTITIES("Weapon"))',
+  '=INDEX(ENTITIES("Weapon", "damage"), 1)', '=INDEX(ENTITIES("Projectile"), 1)',
 ];
 
 function base(): Project {
@@ -128,6 +131,7 @@ describe("ops on the real model (properties)", () => {
     for (let i = int(g, 8); i >= 0; i--) {
       const e = genEdit(g, p);
       if (e) edits.push(e);
+      if (int(g, 2) === 0) validate(p);
     }
     const ops = edits.flatMap((e) => e.ops);
     explain(() => ({ ops }), () => {

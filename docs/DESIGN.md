@@ -373,7 +373,7 @@ Child rows under a parent are explicitly **not** supported.
 - **Pack reachability.** **Decided.** A formula may only read cells on sheets in its own pack or an ancestor pack. This is the same rule as for refs (§7.2), so the UI only has one rule to explain.
 - **No external I/O functions.** `IMPORTDATA`, `IMPORTRANGE`, web fetches and similar are not provided (§11.5).
 - **Errors:** a formula error in a bound cell is a validation error. In scratch it is only displayed.
-- **Evaluation** is incremental over a dependency graph, in `@thek42/sapwood-core`, and runs on both client and server.
+- **Evaluation** is incremental over a dependency graph, in `@thek42/sapwood-core`, and runs on both client and server. `ENTITIES(type, field)` depends on the column as a whole, so a reader of every entity's field costs one dependency, not one per entity.
 
 ### 6.6 Copy/paste
 
@@ -872,9 +872,11 @@ Loading a branch means: nearest snapshot, then replay ops. This is closer to a g
 
 Performance targets at 10k entities (to be checked as we go):
 
-- Single-cell edit: recompute and validate in under 50 ms.
-- Full validation: under 1 s.
-- Land: under 2 s.
+- Single-cell edit: recompute and validate in under 50 ms. **Met** (2026-11-20): 8–15 ms, including edits that change an ID or move a row.
+- Full validation: under 1 s. **Met:** 91 ms from scratch. Validation keeps what it read per row, so a run after an edit takes about 9 ms.
+- Land: under 2 s. Measured once landing exists (Phase 2).
+
+`npm run bench` measures these on a generated project (`packages/core/bench/engine.bench.ts`).
 
 ## 13. Lessons from KRBSG Data
 
