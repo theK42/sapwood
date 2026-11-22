@@ -13,7 +13,10 @@ CREATE TABLE IF NOT EXISTS branches (
   head TEXT NOT NULL,
   archived INTEGER NOT NULL DEFAULT 0,
   created_by TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  base_commit TEXT,
+  base_point TEXT,
+  net TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS commits (
   id TEXT PRIMARY KEY,
@@ -91,6 +94,10 @@ export class Db {
     this.sql = new DatabaseSync(path);
     this.sql.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
     this.sql.exec(SCHEMA);
+    // Databases made before branches kept their net change (2026-11-21).
+    const cols = new Set(this.all<{ name: string }>("PRAGMA table_info(branches)").map((c) => c.name));
+    if (!cols.has("net"))
+      this.sql.exec("ALTER TABLE branches ADD COLUMN base_commit TEXT; ALTER TABLE branches ADD COLUMN base_point TEXT; ALTER TABLE branches ADD COLUMN net TEXT NOT NULL DEFAULT '[]'; UPDATE branches SET base_commit = fork_commit, base_point = fork_commit WHERE parent IS NOT NULL;");
   }
 
   all<T = Row>(query: string, ...params: Param[]): T[] {

@@ -133,6 +133,32 @@ export function createApp(repo: Repo, auth: Auth): Hono<Env> {
     may(c, "editor", "write", b);
     return c.json(repo.discardBranch(b));
   });
+  /** How the branch stands against its parent: behind, ahead, and what a sync would conflict on. */
+  app.get("/api/branches/:b/compare", (c) => {
+    const b = c.req.param("b");
+    may(c, "viewer", "read", b);
+    return c.json(repo.compare(b));
+  });
+  /** Bring the parent's changes into the branch. Like a land, on the branch. */
+  app.post("/api/branches/:b/sync", async (c) => {
+    const b = c.req.param("b");
+    may(c, "editor", "land", b);
+    const parent = repo.branch(b).parent;
+    if (parent !== null) may(c, "viewer", "read", parent);
+    const body_ = await body(c, true);
+    return c.json(repo.sync(b, me(c).login, { resolutions: resolutions(body_.resolutions) }));
+  });
+  /** Merge the branch into its parent (syncing it first if the parent moved on). Like a land, on the parent. */
+  app.post("/api/branches/:b/merge", async (c) => {
+    const b = c.req.param("b");
+    const parent = repo.branch(b).parent;
+    may(c, "editor", "land", b);
+    if (parent !== null) may(c, "editor", "land", parent);
+    const body_ = await body(c, true);
+    const opts: Parameters<Repo["merge"]>[2] = { resolutions: resolutions(body_.resolutions) };
+    if (body_.message !== undefined) opts.message = str(body_.message, "message");
+    return c.json(repo.merge(b, me(c).login, opts), 201);
+  });
   app.get("/api/branches/:b/commits", (c) => {
     const b = c.req.param("b");
     may(c, "viewer", "read", b);

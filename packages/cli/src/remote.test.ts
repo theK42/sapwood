@@ -182,6 +182,31 @@ describe("the sapwood command, on a server", () => {
     expect((await bob.sw("branch", "list", "--all")).out).toContain("(discarded)");
   });
 
+  it("branch status, sync and merge", async () => {
+    const { loggedIn } = setup();
+    const bob = await loggedIn("bob");
+    const ada = await loggedIn("ada");
+    await bob.sw("branch", "create", "dev");
+    await bob.sw("branch", "switch", "dev");
+    await bob.sw("set", "a1", "speed=1");
+    await bob.sw("task", "land");
+    await ada.sw("set", "a1", "speed=2");
+    await ada.sw("set", "a2", "speed=3");
+    await ada.sw("task", "land");
+    expect((await bob.sw("branch", "status")).out).toBe(
+      "dev: 1 commit to merge into main, 1 commit of main's to sync.\n" +
+        "Conflicts a sync would have (mine is dev), to settle with --resolve <n>=mine|theirs on branch sync or branch merge:\n" +
+        "  1. Ammo!C1: mine 1, theirs 2",
+    );
+    expect((await bob.sw("branch", "sync")).err).toContain("[conflict]");
+    expect((await bob.sw("branch", "sync", "--resolve", "1=mine")).out).toMatch(/^Synced dev from its parent as commit [0-9a-f]{16}\.$/);
+    expect((await bob.json("get", "a2")).speed).toBe(3);
+    expect((await bob.sw("branch", "sync")).out).toBe("dev is up to date with its parent.");
+    expect((await bob.sw("branch", "merge", "-m", "Ship dev")).out).toMatch(/^Merged dev into main as commit [0-9a-f]{16}\.$/);
+    expect((await ada.json("get", "a1")).speed).toBe(1);
+    expect((await bob.sw("branch", "status", "main")).out).toBe("main has no parent: it's the root branch.");
+  });
+
   it("schema, patch files and export", async () => {
     const { loggedIn } = setup();
     const ada = await loggedIn("ada");

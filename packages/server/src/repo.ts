@@ -9,7 +9,7 @@
 
 import { randomBytes } from "node:crypto";
 import {
-  applyOps, cloneDoc, conflictId, docFromJson, docToJson, rebase, Sapwood,
+  applyOps, cloneDoc, conflictId, docFromJson, docsEqual, docToJson, rebase, Sapwood,
   type CellAddress, type Change, type Conflict, type Doc, type ExportFile, type Op, type Side, type ValidationJson,
 } from "@thek42/sapwood-core";
 import { now, type Db } from "./db.ts";
@@ -90,6 +90,31 @@ export interface Landed {
 }
 
 export type Resolutions = Record<string, Side>;
+
+/** How a branch stands against its parent. */
+export interface BranchStatus {
+  branch: BranchInfo;
+  /** Commits on the parent the branch hasn't synced. */
+  behind: number;
+  /** The branch's own commits since it forked or last merged (its syncs aren't counted). */
+  ahead: number;
+  /** What a sync would need settled (mine is the branch, theirs the parent). */
+  conflicts: ConflictJson[];
+}
+
+export interface Synced {
+  /** The sync commit on the branch, or null when it was up to date. */
+  commit: CommitInfo | null;
+  /** Ops of the branch that no longer applied on the parent's head, dropped. */
+  dropped: ConflictJson[];
+}
+
+export interface Merged {
+  /** The sync the merge needed first, if the parent had moved on. */
+  sync: CommitInfo | null;
+  merge: CommitInfo;
+  dropped: ConflictJson[];
+}
 
 interface CommitRow {
   id: string;
@@ -192,8 +217,125 @@ export class Repo {
     if (!BRANCH_NAME.test(name)) throw new RepoError("bad-request", `Branch names are letters, digits and . _ / -, starting with a letter or digit: got ${JSON.stringify(name)}`);
     const parent = this.liveBranch(from);
     if (this.db.one("SELECT 1 FROM branches WHERE name = ?", name)) throw new RepoError("exists", `There is already a branch ${name}`);
-    this.db.run("INSERT INTO branches (name, parent, fork_commit, head, archived, created_by, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)", name, parent.name, parent.head, parent.head, actor, now());
+    this.db.run(
+      "INSERT INTO branches (name, parent, fork_commit, head, archived, created_by, created_at, base_commit, base_point, net) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, '[]')",
+      name, parent.name, parent.head, parent.head, actor, now(), parent.head, parent.head,
+    );
     return this.branch(name);
+  }
+
+  // ------------------------------------------------------------ merge and sync
+  //
+  // A branch keeps its net change: ops that take its base (a commit on its parent: where
+  // it forked, or last synced or merged) to its head. Lands on the branch add to it. A
+  // sync rebases it onto the parent's head; a merge, once synced, is that net change.
+
+  compare(name: string): BranchStatus {
+    const b = this.branch(name);
+    if (b.parent === null) return { branch: b, behind: 0, ahead: 0, conflicts: [] };
+    const base = this.base(name);
+    let ahead = 0; // the branch's own commits since it forked or last merged, not its syncs
+    for (let id: string | null = b.head; id !== null && id !== base.point; ) {
+      const c = this.commitRow(id);
+      if (c.parent2 === null || this.commitRow(c.parent2).branch !== b.parent) ahead++;
+      id = c.parent;
+    }
+    const behind = this.since(b.parent, base.commit).commits;
+    let conflicts: ConflictJson[] = [];
+    if (behind) {
+      const blocking: Conflict[] = [];
+      rebase(this.stateAt(base.commit), this.since(b.parent, base.commit).ops, base.net, (c) => (blocking.push(c), "theirs"));
+      const h = this.head(name);
+      conflicts = blocking.map((c) => conflictJson(c, h));
+    }
+    return { branch: b, behind, ahead, conflicts };
+  }
+
+  /**
+   * Bring the parent's changes into a branch (DESIGN §8.6): the branch's net change is
+   * rebased onto the parent's head and validated, and committed on the branch with the
+   * parent's head as second parent. Conflicts are settled by `resolutions`, with mine
+   * the branch's side.
+   */
+  sync(name: string, actor: string, opts: { resolutions?: Resolutions } = {}): Synced {
+    const b = this.liveBranch(name);
+    if (b.parent === null) throw new RepoError("bad-request", `${name} has no parent to sync from`);
+    const out = this.db.tx(() => this.syncInTx(b, actor, opts.resolutions ?? {}));
+    return { commit: out?.commit ?? null, dropped: out?.dropped ?? [] };
+  }
+
+  /**
+   * Merge a branch into its parent (DESIGN §8.6). If the parent has moved on, the branch
+   * is synced first (in the same step, with the same resolutions). The merge commit, on
+   * the parent with the branch's head as second parent, is then the branch's net change,
+   * and leaves the parent as the branch is. Refused with nothing to merge, unsettled
+   * conflicts or validation errors.
+   */
+  merge(name: string, actor: string, opts: { message?: string; resolutions?: Resolutions } = {}): Merged {
+    const b = this.liveBranch(name);
+    if (b.parent === null) throw new RepoError("bad-request", `${name} has no parent to merge into`);
+    const p = this.liveBranch(b.parent);
+    if (this.base(name).net.length === 0) throw new RepoError("state", `${name} has no changes to merge into ${p.name}`);
+    const out = this.db.tx(() => {
+      const synced = this.syncInTx(b, actor, opts.resolutions ?? {});
+      const head = this.branch(name).head;
+      const { net } = this.base(name);
+      const s = this.head(name);
+      const v = s.validate();
+      if (v.errors) throw new RepoError("invalid", `Merging ${name} would leave ${v.errors} validation error${v.errors === 1 ? "" : "s"} on ${p.name}`, { validation: v });
+      const parentHead = this.branch(p.name).head;
+      const merge = this.addCommit(p.name, parentHead, head, null, actor, opts.message ?? `Merge ${name} into ${p.name}`, net, s.doc);
+      this.setBase(name, merge.id, head, []);
+      return { synced, merge, doc: s.doc };
+    });
+    this.heads.set(p.name, { commit: out.merge.id, s: Sapwood.fromDoc(cloneDoc(out.doc)), exports: new Map() });
+    this.remember(out.merge.id, cloneDoc(out.doc));
+    return { sync: out.synced?.commit ?? null, merge: out.merge, dropped: out.synced?.dropped ?? [] };
+  }
+
+  /** Sync inside a transaction. Null when the branch is up to date with its parent. */
+  private syncInTx(b: BranchInfo, actor: string, resolutions: Resolutions): Synced | null {
+    const parent = this.liveBranch(b.parent!);
+    const base = this.base(b.name);
+    if (base.commit === parent.head) return null;
+    const theirs = this.since(parent.name, base.commit).ops;
+    const blocking: Conflict[] = [];
+    // The branch's net change onto the parent's head: what the branch then holds.
+    const r = rebase(this.stateAt(base.commit), theirs, base.net, (c) => {
+      const side = resolutions[conflictId(c)];
+      if (side === "mine" || side === "theirs") return side;
+      blocking.push(c);
+      return "theirs";
+    });
+    if (blocking.length) throw conflictError(blocking, this.head(b.name));
+    const v = Sapwood.fromDoc(cloneDoc(r.state)).validate();
+    if (v.errors) throw new RepoError("invalid", `Syncing ${b.name} from ${parent.name} would leave ${v.errors} validation error${v.errors === 1 ? "" : "s"}`, { validation: v });
+    // The sync commit applies to the branch's head. Best is the parent's changes rebased
+    // over the branch's, as if they were a task landing on it. That rebase settles ties
+    // (rows placed at one spot, last-write-wins) the other way round, and can drop ops, so
+    // when it doesn't end in the same state, the commit takes the long way instead: undo
+    // the branch's net change, apply the parent's, then the branch's rebased.
+    const flip = (s: Side | undefined): Side => (s === "theirs" ? "mine" : s === "mine" ? "theirs" : "mine");
+    const across = rebase(this.stateAt(base.commit), base.net, theirs, (c) => flip(resolutions[conflictId(c, true)]));
+    let ops = across.ops;
+    if (!docsEqual(across.state, r.state)) {
+      const undo = applyOps(this.stateAt(base.commit), base.net);
+      ops = [...undo, ...theirs, ...r.ops];
+    }
+    const commit = this.addCommit(b.name, b.head, parent.head, null, actor, `Sync ${b.name} from ${parent.name}`, ops, r.state, false);
+    this.setBase(b.name, parent.head, base.point, r.ops);
+    this.heads.set(b.name, { commit: commit.id, s: Sapwood.fromDoc(cloneDoc(r.state)), exports: new Map() });
+    this.remember(commit.id, cloneDoc(r.state));
+    return { commit, dropped: r.conflicts.filter((c) => c.kind === "op").map((c) => conflictJson(c)) };
+  }
+
+  private base(name: string): { commit: string; point: string; net: Op[] } {
+    const r = this.db.one<{ base_commit: string | null; base_point: string | null; net: string }>("SELECT base_commit, base_point, net FROM branches WHERE name = ?", name)!;
+    return { commit: r.base_commit!, point: r.base_point!, net: JSON.parse(r.net) as Op[] };
+  }
+
+  private setBase(name: string, commit: string, point: string, net: Op[]): void {
+    this.db.run("UPDATE branches SET base_commit = ?, base_point = ?, net = ? WHERE name = ?", commit, point, JSON.stringify(net), name);
   }
 
   /** Archive a branch: it is kept, but can't be changed. */
@@ -596,13 +738,18 @@ export class Repo {
     this.views.set(t.id, { base: head, s: taskProject(doc, t.id) });
   }
 
-  private addCommit(branch: string, parent: string, parent2: string | null, task: number | null, author: string, message: string, ops: Op[], state: Doc): CommitInfo {
+  /** Add a commit on a branch, and (unless `addToNet` is false) to the branch's net change. */
+  private addCommit(branch: string, parent: string, parent2: string | null, task: number | null, author: string, message: string, ops: Op[], state: Doc, addToNet = true): CommitInfo {
     const id = newId();
     const depth = this.commitRow(parent).depth + 1;
     this.db.run("INSERT INTO commits (id, branch, depth, parent, parent2, task, author, message, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", id, branch, depth, parent, parent2, task, author, message, now());
     ops.forEach((op, i) => this.db.run("INSERT INTO commit_ops (commit_id, seq, op) VALUES (?, ?, ?)", id, i, JSON.stringify(op)));
     if (depth % this.snapshotEvery === 0) this.db.run("INSERT INTO snapshots (commit_id, doc) VALUES (?, ?)", id, JSON.stringify(docToJson(state)));
     this.db.run("UPDATE branches SET head = ? WHERE name = ?", id, branch);
+    if (addToNet && this.branch(branch).parent !== null) {
+      const b = this.base(branch);
+      this.setBase(branch, b.commit, b.point, [...b.net, ...ops]);
+    }
     return this.commit(id);
   }
 }

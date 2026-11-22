@@ -151,7 +151,7 @@ Still to do in Phase 1:
 - History: commit log, revert commit, read/export at a commit.
 - HTTP API and WebSocket events.
 - GitHub OAuth (web) and device flow (CLI). Users, the four roles, scoped tokens.
-- CLI covering DESIGN §9.4: done against the server, except `login` by GitHub (it takes a token for now) and `branch merge` and `sync`, which come with the server's.
+- CLI covering DESIGN §9.4: done against the server, except `login` by GitHub (it takes a token for now).
 - HTTP export endpoint with ETags.
 - MCP server as a thin wrapper over the API.
 
@@ -161,6 +161,7 @@ Still to do in Phase 1:
 - **Tasks:** an implicit current task per user and branch, named tasks, switching, undo and redo kept in the database, abandon and reopen. A task behind the head is rebased when it's next read or written, if that has no conflicts and nothing to redo. A rebase keeps each change as its own undo step; a property test checks that undoing back to any change gives the same state as rebasing the changes up to it.
 - **Landing:** rebase onto the head with conflicts resolved per ID, validation of the merged result, and an atomic commit. Lands run one at a time.
 - **Branches:** create from a head, list, discard. Reads at any commit.
+- **Merge and sync** (DESIGN §8.6): each branch keeps its net change since its base on the parent. Sync commits the parent's changes onto the branch; merge syncs if need be, then commits the net change on the parent, with two parents. `compare` gives commits to merge, commits to sync, and a sync's conflicts. HTTP routes, and `sapwood branch status`, `sync` and `merge`. A property test lands random changes on `main`, a branch and a branch of it, with random syncs and merges and an open task across them. After every step each branch's base plus net change must rebuild its head exactly, a restarted server must read the same, and a merge must leave the parent equal to the branch.
 - **HTTP API** (DESIGN §9.4), on Hono: reads at a head, a task or a commit; writes into tasks; tasks, landing, branches, history, users and tokens; export with ETags.
 - **Auth:** the four roles, and tokens with `read-only`, `no-land`, branch and role limits. `sapwood-server init`, `user add`, `token` and `serve` set a server up.
 - **Tests:** units for the repo, the HTTP API and the command, and a property test. Three users write random patches to their current tasks and land them in random order, resolving conflicts one way or the other. After every step, a server restarted on the same database must read the same head and tasks, and refused lands must leave the head alone. It found that two tasks creating an entity each made the same row ID; each task's new IDs now carry its number.
@@ -168,7 +169,7 @@ Still to do in Phase 1:
 Still to do in Phase 2:
 
 - GitHub sign-in (OAuth for the web, the device flow for the CLI).
-- Branch merge and sync, with merge commits; revert a commit; restore to a point.
+- Revert a commit; restore to a point.
 - Carry a task's redo stack into a new task, after a land or an explicit rebase (both drop it today). The new task starts on the head with the undone changes rebased onto it, still undone, so redo goes on where it left off; what no longer applies is dropped and reported. Exact when the land didn't rebase; otherwise rebased from the landed commit.
 - WebSocket events.
 - Loading from snapshots that keep computed values (above), and measuring a land against the 2 s target.

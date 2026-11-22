@@ -27,6 +27,9 @@ Working with a server
   login --server <url> --token <token>   Log in (the token comes from sapwood-server token)
   logout  |  whoami
   branch [list]  |  branch create <name> [--from <b>]  |  branch switch <name>  |  branch discard <name>
+  branch status [<name>]          Commits to merge, commits to sync, and conflicts
+  branch sync [<name>] [--resolve <n>=mine|theirs]…            Bring in the parent's changes
+  branch merge [<name>] [-m <message>] [--resolve <n>=mine|theirs]…   Into the parent
   task [status [<id>]]            Your current task: changes, how far behind, conflicts
   task new [<name>]  |  task list [--all]  |  task switch <id>  |  task name <name>
   task rebase [--resolve <n>=mine|theirs]…
@@ -436,6 +439,45 @@ async function branch(args: string[], io: Io): Promise<number> {
       io.out(`Now on branch ${name}.`);
       return 0;
     }
+    case "status": {
+      const p = parse(rest);
+      positionals(p, [], true);
+      const r = remote(p, io);
+      const name = p.positionals[0] ?? r.branch;
+      const s = await r.client.json<{ branch: BranchJson; behind: number; ahead: number; conflicts: ConflictJson[] }>("GET", `${b(name)}/compare`);
+      if (s.branch.parent === null) {
+        io.out(`${name} has no parent: it's the root branch.`);
+        return 0;
+      }
+      io.out(`${name}: ${plural(s.ahead, "commit")} to merge into ${s.branch.parent}, ${plural(s.behind, "commit")} of ${s.branch.parent}'s to sync.`);
+      if (s.conflicts.length) {
+        io.out(`Conflicts a sync would have (mine is ${name}), to settle with --resolve <n>=mine|theirs on branch sync or branch merge:`);
+        for (const line of conflictLines(s.conflicts)) io.out(line);
+      }
+      return 0;
+    }
+    case "sync":
+    case "merge": {
+      const p = parse(rest, { resolve: { type: "string", multiple: true }, message: { type: "string", short: "m" } });
+      positionals(p, [], true);
+      const r = remote(p, io);
+      const name = p.positionals[0] ?? r.branch;
+      const asked = (p.values.resolve as string[] | undefined) ?? [];
+      const body: Record<string, unknown> = {};
+      if (asked.length) body.resolutions = resolveArgs(asked, (await r.client.json<{ conflicts: ConflictJson[] }>("GET", `${b(name)}/compare`)).conflicts, name);
+      if (sub === "sync") {
+        const res = await r.client.json<{ commit: { id: string } | null; dropped: ConflictJson[] }>("POST", `${b(name)}/sync`, body);
+        io.out(res.commit ? `Synced ${name} from its parent as commit ${res.commit.id}.` : `${name} is up to date with its parent.`);
+        for (const d of res.dropped) io.out(`Dropped, no longer applies: ${d.id}`);
+      } else {
+        if (p.values.message !== undefined) body.message = p.values.message;
+        const res = await r.client.json<{ sync: { id: string } | null; merge: { id: string; branch: string }; dropped: ConflictJson[] }>("POST", `${b(name)}/merge`, body);
+        if (res.sync) io.out(`Synced ${name} first, as commit ${res.sync.id}.`);
+        io.out(`Merged ${name} into ${res.merge.branch} as commit ${res.merge.id}.`);
+        for (const d of res.dropped) io.out(`Dropped, no longer applies: ${d.id}`);
+      }
+      return 0;
+    }
     case "discard": {
       const p = parse(rest);
       const [name] = positionals(p, ["name"]);
@@ -477,22 +519,7 @@ async function task(args: string[], io: Io): Promise<number> {
   /** `--resolve 2=mine`, `--resolve all=theirs`, or by conflict ID: `--resolve "cell s1/r1|c3=mine"`. */
   const resolutions = async (p: Parsed, r: Remote, id: number): Promise<Record<string, string>> => {
     const asked = (p.values.resolve as string[] | undefined) ?? [];
-    if (!asked.length) return {};
-    const { conflicts } = await status(r, id);
-    const out: Record<string, string> = {};
-    for (const a of asked) {
-      const i = a.lastIndexOf("=");
-      const key = a.slice(0, i);
-      const side = a.slice(i + 1);
-      if (i < 0 || (side !== "mine" && side !== "theirs")) throw new UsageError(`Expected --resolve <n>=mine or <n>=theirs: got ${a}`);
-      if (key === "all") for (const c of conflicts) out[c.id] ??= side;
-      else if (/^\d+$/.test(key)) {
-        const c = conflicts[Number(key) - 1];
-        if (!c) throw new UsageError(`Task ${id} has ${plural(conflicts.length, "conflict")}: no conflict ${key}`);
-        out[c.id] = side;
-      } else out[key] = side;
-    }
-    return out;
+    return asked.length ? resolveArgs(asked, (await status(r, id)).conflicts, `Task ${id}`) : {};
   };
 
   switch (sub) {
@@ -583,6 +610,24 @@ async function task(args: string[], io: Io): Promise<number> {
     default:
       throw new UsageError(`Unknown command task ${sub}`);
   }
+}
+
+/** `--resolve 2=mine`, `--resolve all=theirs`, or by conflict ID: `--resolve "cell s1/r1|c3=mine"`. */
+function resolveArgs(asked: string[], conflicts: ConflictJson[], what: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const a of asked) {
+    const i = a.lastIndexOf("=");
+    const key = a.slice(0, i);
+    const side = a.slice(i + 1);
+    if (i < 0 || (side !== "mine" && side !== "theirs")) throw new UsageError(`Expected --resolve <n>=mine or <n>=theirs: got ${a}`);
+    if (key === "all") for (const c of conflicts) out[c.id] ??= side;
+    else if (/^\d+$/.test(key)) {
+      const c = conflicts[Number(key) - 1];
+      if (!c) throw new UsageError(`${what} has ${plural(conflicts.length, "conflict")}: no conflict ${key}`);
+      out[c.id] = side;
+    } else out[key] = side;
+  }
+  return out;
 }
 
 // ------------------------------------------------------------ output

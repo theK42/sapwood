@@ -176,6 +176,29 @@ describe("the HTTP API", () => {
     expect((await as(token)("GET /api/me")).status).toBe(401);
   });
 
+  it("merge and sync", async () => {
+    const { bob, vic, as, tokenFor } = setup();
+    await bob("POST /api/branches", { name: "dev" });
+    let t = (await bob("POST /api/branches/dev/patches", [{ op: "set", id: "a1", fields: { speed: 1 } }])).json.task.id;
+    await bob(`POST /api/tasks/${t}/land`);
+    t = (await bob("POST /api/branches/main/patches", [{ op: "set", id: "a1", fields: { speed: 2 } }])).json.task.id;
+    await bob(`POST /api/tasks/${t}/land`);
+    const cmp = (await vic("GET /api/branches/dev/compare")).json;
+    expect(cmp).toMatchObject({ behind: 1, ahead: 1 });
+    expect(cmp.conflicts[0].where).toEqual({ sheet: "Ammo", cell: "C1" });
+    expect((await vic("POST /api/branches/dev/sync")).status).toBe(403);
+    expect((await as(tokenFor("bob", { noLand: true }))("POST /api/branches/dev/merge")).status).toBe(403);
+    const refused = await bob("POST /api/branches/dev/merge");
+    expect([refused.status, refused.json.error.code]).toEqual([409, "conflict"]);
+    const m = await bob("POST /api/branches/dev/merge", { message: "Ship dev", resolutions: { [cmp.conflicts[0].id]: "mine" } });
+    expect(m.status).toBe(201);
+    expect(m.json.sync).not.toBeNull();
+    expect(m.json.merge).toMatchObject({ branch: "main", message: "Ship dev" });
+    expect((await vic("GET /api/branches/main/entities/a1")).json.speed).toBe(1);
+    expect((await vic("POST /api/branches/main/sync", {})).status).toBe(403);
+    expect((await bob("POST /api/branches/main/sync", {})).json.error.code).toBe("bad-request");
+  });
+
   it("branches", async () => {
     const { bob, vic } = setup();
     expect((await bob("POST /api/branches", { name: "qa/build-7" })).status).toBe(201);
