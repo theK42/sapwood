@@ -131,7 +131,7 @@ DESIGN §12's targets at 10k entities are met: an edit with validation in under 
 - `init`, `get`, `query --where`, `set`, `create`, `comment-out`, `uncomment`, `delete`, `apply <patch.jsonl>`, `schema get`, `schema apply`, `validate` and `export`, on `sapwood.json` (the document as JSON, `docToJson`). Values are typed for each field's type.
 - `create` puts a project's first entity on a new sheet named after its type.
 - Tests run each command in a temporary folder. The API's property test now rebuilds the project from the document's JSON form, as a saved file would be.
-- Left for Phase 2: `login`, `token`, `branch` and `task`, which need the server. The local file then gives way to a server connection.
+- Against the server (2026-11-21): `login`, `logout`, `whoami`, `token create`, `branch`, `task`, `undo` and `redo`, and the data, schema, validation and export commands in your current task (DESIGN §9.4). A local `sapwood.json` still works, and comes first when there is one. Tests run the CLI against the real server app in the same process.
 
 Importing KRBSG showed that its per-tab names collide once IDs are global (`Ship` was both a texture and a sprite, and so on). The fixture prefixes them. Phase 5's importer will need a way to handle this.
 
@@ -151,7 +151,7 @@ Still to do in Phase 1:
 - History: commit log, revert commit, read/export at a commit.
 - HTTP API and WebSocket events.
 - GitHub OAuth (web) and device flow (CLI). Users, the four roles, scoped tokens.
-- CLI covering DESIGN §9.4: the data, schema, validation and export commands exist on a local file; add auth, branches and tasks, against the server.
+- CLI covering DESIGN §9.4: done against the server, except `login` by GitHub (it takes a token for now) and `branch merge` and `sync`, which come with the server's.
 - HTTP export endpoint with ETags.
 - MCP server as a thin wrapper over the API.
 
@@ -171,7 +171,6 @@ Still to do in Phase 2:
 - Branch merge and sync, with merge commits; revert a commit; restore to a point.
 - Carry a task's redo stack into a new task, after a land or an explicit rebase (both drop it today). The new task starts on the head with the undone changes rebased onto it, still undone, so redo goes on where it left off; what no longer applies is dropped and reported. Exact when the land didn't rebase; otherwise rebased from the landed commit.
 - WebSocket events.
-- The CLI against the server: `login`, `token`, `branch`, `task`, and the data commands in a task.
 - Loading from snapshots that keep computed values (above), and measuring a land against the 2 s target.
 - The MCP server.
 

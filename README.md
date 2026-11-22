@@ -17,7 +17,7 @@ npx sapwood validate
 npx sapwood export --out build/data
 ```
 
-`npx sapwood help` lists the commands. For now the CLI works on a local `sapwood.json`.
+`npx sapwood help` lists the commands. Without a server, `sapwood init` keeps the project in a local `sapwood.json`.
 
 ## The server
 
@@ -25,7 +25,15 @@ npx sapwood export --out build/data
 npx sapwood-server init --admin <your GitHub login> --schema schema.yaml --from project.yaml
 npx sapwood-server token <your GitHub login> --name laptop
 npx sapwood-server serve
-curl -H "Authorization: Bearer swd_…" http://127.0.0.1:8417/api/branches/main/entities/Blaster
+```
+
+Then, from anywhere:
+
+```bash
+npx sapwood login --server 127.0.0.1:8417 --token swd_…
+npx sapwood set Blaster cooldown=0.25      # goes into your current task
+npx sapwood task                           # its changes, conflicts and validation
+npx sapwood task land -m "Faster Blaster"
 ```
 
 The database is one SQLite file, `sapwood.sqlite` (or `--db`, or `$SAPWOOD_DB`). Edits go into tasks and land onto branches; [DESIGN §9.4](docs/DESIGN.md) lists the HTTP API.

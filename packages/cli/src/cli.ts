@@ -1,26 +1,44 @@
-// The sapwood command (DESIGN §9.4). Every command goes through the Sapwood API in
-// @thek42/sapwood-core, over a project kept in a local file (store.ts) until the server
-// exists. Auth, branch and task commands come with the server (ROADMAP Phase 2).
+// The sapwood command (DESIGN §9.4). The data, schema, validation and export commands go
+// through a Backend: a local project file (sapwood.json, store.ts) or a Sapwood server
+// (remote.ts). Login, branches, tasks and tokens are the server's.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { ApiError, Sapwood, type CellAddress, type Change, type EntityJson, type Patch } from "@thek42/sapwood-core";
+import { ApiError, Sapwood, type CellAddress, type Patch, type ValidationJson } from "@thek42/sapwood-core";
+import { LocalBackend, type Backend, type Written } from "./backend.ts";
+import { Client, configPath, enc, readConfig, RemoteBackend, ServerError, serverUrl, writeConfig, type Config, type Fetch, type ReadAt, type TaskJson } from "./remote.ts";
 import { findProject, loadProjectFile, PROJECT_FILE, saveProjectFile } from "./store.ts";
-import { assignments, parseWhere, UsageError } from "./values.ts";
+import { assignments, UsageError } from "./values.ts";
 
 export interface Io {
   cwd: string;
   out(line: string): void;
   err(line: string): void;
+  /** Environment variables: SAPWOOD_CONFIG, SAPWOOD_SERVER, SAPWOOD_TOKEN, SAPWOOD_BRANCH (default: the process's). */
+  env?: Record<string, string | undefined>;
+  /** For talking to the server (default: the global fetch). */
+  fetch?: Fetch;
 }
 
 const HELP = `Usage: sapwood <command> [options]
 
-Project
+Working with a server
+  login --server <url> --token <token>   Log in (the token comes from sapwood-server token)
+  logout  |  whoami
+  branch [list]  |  branch create <name> [--from <b>]  |  branch switch <name>  |  branch discard <name>
+  task [status [<id>]]            Your current task: changes, how far behind, conflicts
+  task new [<name>]  |  task list [--all]  |  task switch <id>  |  task name <name>
+  task rebase [--resolve <n>=mine|theirs]…
+  task land [-m <message>] [--resolve <n>=mine|theirs]…
+  task abandon [<id>]  |  task reopen <id>
+  undo  |  redo                   In your current task
+  token create --name <n> [--read-only] [--no-land] [--only-branch <b>]… [--role <r>] [--expires <date>]
+
+A local project file
   init [--schema <file>] [--from <project.yaml>] [--force]
                                   Start a project in ${PROJECT_FILE} here
-Data
+Data (on a server: reads show your current task, writes go into it)
   get <id>                        An entity, or a singleton by type name, as JSON
   query <type|trait> [--where <field><op><value>]… [--pack <p>] [--inactive] [--ids]
                                   Entities as JSON lines; ops = != < <= > >= ~
@@ -35,19 +53,23 @@ Schema
   schema apply <file> [--force]   Apply an edited schema file
 Validation and export
   validate [--json]               Exit status 1 when there are errors
-  export --out <dir> [--allow-invalid]
+  export --out <dir> [--allow-invalid]   (on a server: the branch head, unless --task or --commit)
 
 Options for every command
-  --project <path>                The project file, or a folder holding one
-                                  (default: the nearest ${PROJECT_FILE} at or above here)`;
+  --project <path>                A local project file, or a folder holding one
+                                  (default: the nearest ${PROJECT_FILE} at or above here)
+  --server <url>                  A server you've logged in to (default: the last one)
+  --branch <name>                 The branch (default: the one you switched to, else main)
+On a server, reads also take --head, --task <id> or --commit <id>, and writes --task <id>.`;
 
 type Options = NonNullable<Parameters<typeof parseArgs>[0]>["options"];
-
 type Parsed = { values: Record<string, string | boolean | string[] | undefined>; positionals: string[] };
+
+const READ = { head: { type: "boolean" }, task: { type: "string" }, commit: { type: "string" } } as const;
 
 function parse(args: string[], options: Options = {}): Parsed {
   try {
-    return parseArgs({ args, options: { project: { type: "string" }, ...options }, allowPositionals: true, strict: true }) as Parsed;
+    return parseArgs({ args, options: { project: { type: "string" }, server: { type: "string" }, branch: { type: "string" }, ...options }, allowPositionals: true, strict: true }) as Parsed;
   } catch (e) {
     throw new UsageError((e as Error).message);
   }
@@ -60,11 +82,12 @@ function positionals(p: { positionals: string[] }, names: string[], rest = false
 }
 
 const where = (a: CellAddress) => `${a.sheet}!${a.cell}`;
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** Run one command. Returns the exit status: 0 done, 1 failed or invalid, 2 typed wrong. */
-export function run(argv: string[], io: Io): number {
+/** Run one command. Resolves to the exit status: 0 done, 1 failed or invalid, 2 typed wrong. */
+export async function run(argv: string[], io: Io): Promise<number> {
   try {
-    return command(argv, io);
+    return await command(argv, io);
   } catch (e) {
     if (e instanceof UsageError) {
       io.err(`sapwood: ${e.message}`);
@@ -75,22 +98,82 @@ export function run(argv: string[], io: Io): number {
       io.err(`sapwood: ${e.message} [${e.code}]`);
       return 1;
     }
+    if (e instanceof ServerError) {
+      io.err(`sapwood: ${e.message} [${e.code}]`);
+      if (e.status === 401) io.err("Log in again: sapwood login --server <url> --token <token>");
+      const conflicts = e.detail.conflicts as ConflictJson[] | undefined;
+      if (conflicts) for (const line of conflictLines(conflicts)) io.err(line);
+      const validation = e.detail.validation as ValidationJson | undefined;
+      if (validation) for (const line of issueLines(validation)) io.err(line);
+      return 1;
+    }
     io.err(`sapwood: ${(e as Error).message ?? String(e)}`);
     return 1;
   }
 }
 
-function command(argv: string[], io: Io): number {
-  const [cmd, ...args] = argv;
-  const open = (p: { values: { project?: unknown } }) => {
-    const file = findProject(io.cwd, p.values.project as string | undefined);
-    return { file, s: loadProjectFile(file) };
+// ------------------------------------------------------------ where commands go
+
+interface Remote {
+  client: Client;
+  server: string;
+  branch: string;
+  config: Config;
+  configFile: string;
+}
+
+const envOf = (io: Io) => io.env ?? process.env;
+
+function remote(p: Parsed, io: Io): Remote {
+  const env = envOf(io);
+  const configFile = configPath(env);
+  const config = readConfig(configFile);
+  const given = (p.values.server as string | undefined) ?? env.SAPWOOD_SERVER;
+  const server = given !== undefined ? serverUrl(given) : config.default;
+  if (server === undefined) throw new UsageError("Not logged in to a server: run sapwood login --server <url> --token <token>");
+  const token = env.SAPWOOD_TOKEN ?? config.servers[server]?.token;
+  if (token === undefined) throw new UsageError(`Not logged in to ${server}: run sapwood login --server ${server} --token <token>`);
+  const branch = (p.values.branch as string | undefined) ?? env.SAPWOOD_BRANCH ?? config.servers[server]?.branch ?? "main";
+  return { client: new Client(server, token, io.fetch ?? fetch), server, branch, config, configFile };
+}
+
+/** A local project file when one is given or found here, else the server you're logged in to. */
+function backend(p: Parsed, io: Io, defaultAt: ReadAt = { current: true }): { b: Backend; r?: Remote } {
+  const env = envOf(io);
+  const local = (file: string) => {
+    for (const k of ["head", "task", "commit"]) if (p.values[k] !== undefined) throw new UsageError(`--${k} needs a server; this is a local project file (${file})`);
+    return { b: new LocalBackend(file, loadProjectFile(file)) };
   };
-  /** Save after a change, and say what it left for the user to check. */
-  const saved = (file: string, s: Sapwood, change: Change, what: string): number => {
-    saveProjectFile(file, s);
-    io.out(what);
-    if (change.formulas.length) io.out(`Formulas that mention the old name, left as they are: ${change.formulas.map(where).join(", ")}`);
+  if (p.values.project !== undefined) return local(findProject(io.cwd, p.values.project as string));
+  if (p.values.server === undefined && env.SAPWOOD_SERVER === undefined) {
+    let file: string | undefined;
+    try {
+      file = findProject(io.cwd);
+    } catch (e) {
+      if (!(e instanceof UsageError)) throw e;
+    }
+    if (file !== undefined) return local(file);
+    if (readConfig(configPath(env)).default === undefined)
+      throw new UsageError(`No ${PROJECT_FILE} here or in any folder above, and no server logged in to: run sapwood init, or sapwood login`);
+  }
+  const r = remote(p, io);
+  const task = p.values.task === undefined ? undefined : taskId(p.values.task as string);
+  const at: ReadAt = p.values.commit !== undefined ? { commit: p.values.commit as string } : task !== undefined ? { task } : p.values.head ? { head: true } : defaultAt;
+  return { b: new RemoteBackend(r.client, r.branch, at, task), r };
+}
+
+function taskId(text: string): number {
+  const n = Number(text);
+  if (!Number.isInteger(n) || n <= 0) throw new UsageError(`Not a task number: ${text}`);
+  return n;
+}
+
+async function command(argv: string[], io: Io): Promise<number> {
+  const [cmd, ...args] = argv;
+  /** Report a write, and what it left for the user to check. */
+  const wrote = (w: Written, what: string): number => {
+    io.out(w.task === undefined ? what : what.replace(/\.$/, ` (task ${w.task}).`));
+    if (w.formulas.length) io.out(`Formulas that mention the old name, left as they are: ${w.formulas.map(where).join(", ")}`);
     return 0;
   };
 
@@ -114,66 +197,62 @@ function command(argv: string[], io: Io): number {
       mkdirSync(dirname(file), { recursive: true });
       saveProjectFile(file, s);
       const v = s.validate();
-      io.out(`Started a project in ${file}: ${countEntities(s)} entities, ${v.errors} errors, ${v.warnings} warnings.`);
+      io.out(`Started a project in ${file}: ${s.project.project().entities.length} entities, ${v.errors} errors, ${v.warnings} warnings.`);
       return 0;
     }
 
     case "get": {
-      const p = parse(args);
+      const p = parse(args, READ);
       const [id] = positionals(p, ["id"]);
-      const { s } = open(p);
-      io.out(JSON.stringify(readOne(s, id!), null, 2));
+      io.out(JSON.stringify(await backend(p, io).b.get(id!), null, 2));
       return 0;
     }
 
     case "query": {
-      const p = parse(args, { where: { type: "string", multiple: true }, pack: { type: "string" }, inactive: { type: "boolean" }, ids: { type: "boolean" } });
+      const p = parse(args, { ...READ, where: { type: "string", multiple: true }, pack: { type: "string" }, inactive: { type: "boolean" }, ids: { type: "boolean" } });
       const [type] = positionals(p, ["type"]);
-      const conds = ((p.values.where as string[] | undefined) ?? []).map(parseWhere);
-      const { s } = open(p);
-      const opts: Parameters<Sapwood["query"]>[1] = { where: (e) => conds.every((c) => c(e)) };
-      if (p.values.pack !== undefined) opts.pack = p.values.pack as string;
-      if (p.values.inactive) opts.inactive = true;
-      for (const e of s.query(type!, opts)) io.out(p.values.ids ? e.$id : JSON.stringify(e));
+      const q: Parameters<Backend["query"]>[1] = { where: (p.values.where as string[] | undefined) ?? [] };
+      if (p.values.pack !== undefined) q.pack = p.values.pack as string;
+      if (p.values.inactive) q.inactive = true;
+      for (const e of await backend(p, io).b.query(type!, q)) io.out(p.values.ids ? e.$id : JSON.stringify(e));
       return 0;
     }
 
     case "set": {
-      const p = parse(args, { force: { type: "boolean" } });
+      const p = parse(args, { task: { type: "string" }, force: { type: "boolean" } });
       const [id, ...rest] = positionals(p, ["id", "field=value"], true);
-      const { file, s } = open(p);
-      const current = readOne(s, id!);
-      const fields = assignments(s.project.schema, current.$type, rest, current);
+      const { b } = backend(p, io);
+      const current = await b.get(id!);
+      const fields = assignments(await b.schema(), current.$type, rest, current);
       const force = p.values.force === true;
-      const change = "$id" in current ? s.set(id!, fields, { force }) : s.setSingleton(id!, fields, { force });
+      const patch: Patch = "$id" in current && current.$id !== undefined ? { op: "set", id: id!, fields, force } : { op: "setSingleton", type: id!, fields, force };
       const renamed = typeof fields.$id === "string" && fields.$id !== id ? ` (now ${fields.$id})` : "";
-      return saved(file, s, change, `Set ${Object.keys(fields).join(", ")} on ${id}${renamed}.`);
+      return wrote(await b.patch([patch]), `Set ${Object.keys(fields).join(", ")} on ${id}${renamed}.`);
     }
 
     case "create": {
-      const p = parse(args, { sheet: { type: "string" }, pack: { type: "string" }, after: { type: "string" } });
+      const p = parse(args, { task: { type: "string" }, sheet: { type: "string" }, pack: { type: "string" }, after: { type: "string" } });
       const [type, id, ...rest] = positionals(p, ["type", "id"], true);
-      const { file, s } = open(p);
-      const fields = { ...assignments(s.project.schema, type!, rest), $id: id! };
-      const place: Parameters<Sapwood["create"]>[2] = {};
-      for (const k of ["sheet", "pack", "after"] as const) if (p.values[k] !== undefined) place[k] = p.values[k] as string;
-      const change = s.create(type!, fields, place);
-      const e = s.get(id!);
-      return saved(file, s, change, `Created ${type} ${id} on ${e.$sheet}.`);
+      const { b } = backend(p, io);
+      const patch: Patch = { op: "create", type: type!, fields: { ...assignments(await b.schema(), type!, rest), $id: id! } };
+      for (const k of ["sheet", "pack", "after"] as const) if (p.values[k] !== undefined) patch[k] = p.values[k] as string;
+      const w = await b.patch([patch]);
+      const e = await b.get(id!).catch(() => null);
+      return wrote(w, `Created ${type} ${id}${e && "$sheet" in e ? ` on ${e.$sheet}` : ""}.`);
     }
 
     case "comment-out":
     case "uncomment":
     case "delete": {
-      const p = parse(args);
+      const p = parse(args, { task: { type: "string" } });
       const [id] = positionals(p, ["id"]);
-      const { file, s } = open(p);
-      const change = cmd === "delete" ? s.delete(id!) : cmd === "uncomment" ? s.uncomment(id!) : s.commentOut(id!);
-      return saved(file, s, change, `${cmd === "delete" ? "Deleted" : cmd === "uncomment" ? "Uncommented" : "Commented out"} ${id}.`);
+      const op = cmd === "delete" ? "delete" : cmd === "uncomment" ? "uncomment" : "commentOut";
+      const w = await backend(p, io).b.patch([{ op, id: id! }]);
+      return wrote(w, `${cmd === "delete" ? "Deleted" : cmd === "uncomment" ? "Uncommented" : "Commented out"} ${id}.`);
     }
 
     case "apply": {
-      const p = parse(args);
+      const p = parse(args, { task: { type: "string" } });
       const [path] = positionals(p, ["patch.jsonl"]);
       const patches: Patch[] = [];
       for (const [i, line] of readFileSync(resolve(io.cwd, path!), "utf8").split(/\r?\n/).entries()) {
@@ -184,27 +263,25 @@ function command(argv: string[], io: Io): number {
           throw new UsageError(`${path} line ${i + 1}: ${(e as Error).message}`);
         }
       }
-      const { file, s } = open(p);
-      const change = s.apply(patches);
-      return saved(file, s, change, `Applied ${patches.length} patch${patches.length === 1 ? "" : "es"}.`);
+      const w = await backend(p, io).b.patch(patches);
+      return wrote(w, `Applied ${plural(patches.length, "patch", "patches")}.`);
     }
 
     case "schema": {
       const [sub, ...rest] = args;
       if (sub === "get") {
-        const p = parse(rest);
+        const p = parse(rest, READ);
         positionals(p, []);
-        io.out(open(p).s.schemaYaml().trimEnd());
+        io.out((await backend(p, io).b.schemaYaml()).trimEnd());
         return 0;
       }
       if (sub === "apply") {
-        const p = parse(rest, { force: { type: "boolean" } });
+        const p = parse(rest, { task: { type: "string" }, force: { type: "boolean" } });
         const [path] = positionals(p, ["file"]);
         const text = readFileSync(resolve(io.cwd, path!), "utf8");
-        const { file, s } = open(p);
-        const c = s.applySchema(text, { force: p.values.force === true });
-        if (!c.ops.length) io.out("The schema is unchanged.");
-        else saved(file, s, c, "Schema updated.");
+        const c = await backend(p, io).b.applySchema(text, p.values.force === true);
+        if (!c.changed) io.out("The schema is unchanged.");
+        else wrote(c, "Schema updated.");
         if (c.scratch.length) io.out(`Cells of removed fields, scratch now: ${c.scratch.map(where).join(", ")}`);
         if (c.rules.length) io.out(`Rules that mention an old name, left as they are: ${c.rules.join(", ")}`);
         for (const n of c.notes) io.out(`Note: ${n}.`);
@@ -214,34 +291,81 @@ function command(argv: string[], io: Io): number {
     }
 
     case "validate": {
-      const p = parse(args, { json: { type: "boolean" } });
+      const p = parse(args, { ...READ, json: { type: "boolean" } });
       positionals(p, []);
-      const v = open(p).s.validate();
+      const v = await backend(p, io).b.validate();
       if (p.values.json) io.out(JSON.stringify(v, null, 2));
-      else {
-        for (const i of v.issues) {
-          const place = i.sheet === undefined ? "" : ` ${i.sheet}!${i.cell ?? i.row ?? ""}`;
-          const who = i.entity?.id ? ` (${i.entity.id})` : "";
-          io.out(`${i.level}${place}${who} ${i.code}: ${i.message}`);
-        }
-        io.out(`${v.errors} error${v.errors === 1 ? "" : "s"}, ${v.warnings} warning${v.warnings === 1 ? "" : "s"}.`);
-      }
+      else for (const line of issueLines(v)) io.out(line);
       return v.errors ? 1 : 0;
     }
 
     case "export": {
-      const p = parse(args, { out: { type: "string" }, "allow-invalid": { type: "boolean" } });
+      const p = parse(args, { ...READ, out: { type: "string" }, "allow-invalid": { type: "boolean" } });
       positionals(p, []);
       if (p.values.out === undefined) throw new UsageError("Expected --out <dir>");
-      const { s } = open(p);
-      const files = s.export({ allowInvalid: p.values["allow-invalid"] === true });
+      const files = await backend(p, io, { head: true }).b.export(p.values["allow-invalid"] === true);
       const out = resolve(io.cwd, p.values.out as string);
       for (const f of files) {
         const path = join(out, f.path);
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, f.content);
       }
-      io.out(`Exported ${files.length} file${files.length === 1 ? "" : "s"} to ${out}.`);
+      io.out(`Exported ${plural(files.length, "file")} to ${out}.`);
+      return 0;
+    }
+
+    case "login":
+      return login(args, io);
+    case "logout": {
+      const p = parse(args);
+      positionals(p, []);
+      const file = configPath(envOf(io));
+      const config = readConfig(file);
+      const server = p.values.server !== undefined ? serverUrl(p.values.server as string) : config.default;
+      if (server === undefined || !config.servers[server]) throw new UsageError("Not logged in to a server");
+      delete config.servers[server];
+      if (config.default === server) delete config.default;
+      writeConfig(file, config);
+      io.out(`Logged out of ${server}.`);
+      return 0;
+    }
+    case "whoami": {
+      const p = parse(args);
+      positionals(p, []);
+      const r = remote(p, io);
+      const me = await r.client.json<{ login: string; role: string; scopes: Record<string, unknown> }>("GET", "/api/me");
+      const limits = Object.entries(me.scopes).map(([k, v]) => (v === true ? k : `${k} ${Array.isArray(v) ? v.join(",") : String(v)}`));
+      io.out(`${me.login} (${me.role}) on ${r.server}, branch ${r.branch}${limits.length ? `; this token: ${limits.join(", ")}` : ""}.`);
+      return 0;
+    }
+    case "branch":
+      return branch(args, io);
+    case "task":
+      return task(args, io);
+    case "undo":
+    case "redo": {
+      const p = parse(args, { task: { type: "string" } });
+      positionals(p, []);
+      const r = remote(p, io);
+      const t = p.values.task !== undefined ? taskId(p.values.task as string) : (await currentTask(r)).id;
+      const res = await r.client.json<{ done: boolean; task: TaskJson }>("POST", `/api/tasks/${t}/${cmd}`);
+      io.out(res.done ? `${cmd === "undo" ? "Undid" : "Redid"} a change in task ${t}: ${plural(res.task.changes, "change")} now.` : `Nothing to ${cmd} in task ${t}.`);
+      return 0;
+    }
+    case "token": {
+      const [sub, ...rest] = args;
+      if (sub !== "create") throw new UsageError("Expected token create --name <name>");
+      const p = parse(rest, { name: { type: "string" }, role: { type: "string" }, "read-only": { type: "boolean" }, "no-land": { type: "boolean" }, "only-branch": { type: "string", multiple: true }, expires: { type: "string" } });
+      positionals(p, []);
+      if (p.values.name === undefined) throw new UsageError("Expected --name <name>");
+      const scopes: Record<string, unknown> = {};
+      if (p.values.role !== undefined) scopes.role = p.values.role;
+      if (p.values["read-only"]) scopes.readOnly = true;
+      if (p.values["no-land"]) scopes.noLand = true;
+      if (p.values["only-branch"]) scopes.branches = p.values["only-branch"];
+      const r = remote(p, io);
+      const made = await r.client.json<{ token: string }>("POST", "/api/tokens", { name: p.values.name, scopes, expires: p.values.expires });
+      io.out(made.token);
       return 0;
     }
 
@@ -250,16 +374,241 @@ function command(argv: string[], io: Io): number {
   }
 }
 
-/** An entity, or a singleton named by its type (they have no ID). */
-function readOne(s: Sapwood, id: string): EntityJson | (ReturnType<Sapwood["singleton"]> & { $id?: undefined }) {
-  try {
-    return s.get(id);
-  } catch (e) {
-    if (e instanceof ApiError && e.code === "singleton") return s.singleton(id);
-    throw e;
+// ------------------------------------------------------------ server commands
+
+async function login(args: string[], io: Io): Promise<number> {
+  const p = parse(args, { token: { type: "string" } });
+  positionals(p, []);
+  const env = envOf(io);
+  const given = (p.values.server as string | undefined) ?? env.SAPWOOD_SERVER;
+  if (given === undefined) throw new UsageError("Expected --server <url>");
+  const server = serverUrl(given);
+  const token = (p.values.token as string | undefined) ?? env.SAPWOOD_TOKEN;
+  if (token === undefined) throw new UsageError("Expected --token <token>: make one on the server with sapwood-server token <login> --name <name> (signing in with GitHub comes later)");
+  const me = await new Client(server, token, io.fetch ?? fetch).json<{ login: string; role: string }>("GET", "/api/me");
+  const file = configPath(env);
+  const config = readConfig(file);
+  const login: Config["servers"][string] = { ...config.servers[server], token };
+  if (p.values.branch !== undefined) login.branch = p.values.branch as string;
+  config.servers[server] = login;
+  config.default = server;
+  writeConfig(file, config);
+  io.out(`Logged in to ${server} as ${me.login} (${me.role}).`);
+  return 0;
+}
+
+interface BranchJson {
+  name: string;
+  head: string;
+  parent: string | null;
+  archived: boolean;
+}
+
+async function branch(args: string[], io: Io): Promise<number> {
+  const [sub = "list", ...rest] = args;
+  const b = (name: string) => `/api/branches/${enc(name)}`;
+  switch (sub) {
+    case "list": {
+      const p = parse(rest, { all: { type: "boolean" } });
+      positionals(p, []);
+      const r = remote(p, io);
+      for (const x of await r.client.json<BranchJson[]>("GET", `/api/branches${p.values.all ? "?archived=1" : ""}`))
+        io.out(`${x.name === r.branch ? "*" : " "} ${x.name}  head ${x.head.slice(0, 8)}${x.parent ? `  from ${x.parent}` : ""}${x.archived ? "  (discarded)" : ""}`);
+      return 0;
+    }
+    case "create": {
+      const p = parse(rest, { from: { type: "string" } });
+      const [name] = positionals(p, ["name"]);
+      const r = remote(p, io);
+      const from = (p.values.from as string | undefined) ?? r.branch;
+      await r.client.json("POST", "/api/branches", { name, from });
+      io.out(`Created branch ${name} from ${from}. Work on it with sapwood branch switch ${name}.`);
+      return 0;
+    }
+    case "switch": {
+      const p = parse(rest);
+      const [name] = positionals(p, ["name"]);
+      const r = remote(p, io);
+      const x = await r.client.json<BranchJson>("GET", b(name!));
+      if (x.archived) throw new UsageError(`Branch ${name} is discarded`);
+      r.config.servers[r.server] = { ...r.config.servers[r.server]!, branch: name! };
+      writeConfig(r.configFile, r.config);
+      io.out(`Now on branch ${name}.`);
+      return 0;
+    }
+    case "discard": {
+      const p = parse(rest);
+      const [name] = positionals(p, ["name"]);
+      const r = remote(p, io);
+      await r.client.json("DELETE", b(name!));
+      io.out(`Discarded branch ${name}; it is kept, and can still be read.`);
+      return 0;
+    }
+    default:
+      throw new UsageError(`Unknown command branch ${sub}`);
   }
 }
 
-function countEntities(s: Sapwood): number {
-  return s.project.project().entities.length;
+interface ConflictJson {
+  id: string;
+  where?: CellAddress;
+  conflict: { kind: string; mine?: unknown; theirs?: unknown };
+}
+
+interface StatusJson {
+  task: TaskJson;
+  behind: number;
+  conflicts: ConflictJson[];
+  validation: { errors: number; warnings: number };
+}
+
+async function currentTask(r: Remote): Promise<TaskJson> {
+  const t = await r.client.json<TaskJson | null>("GET", `/api/branches/${enc(r.branch)}/tasks/current`);
+  if (!t) throw new UsageError(`You have no current task on ${r.branch}: your first edit starts one, or run sapwood task new`);
+  return t;
+}
+
+async function task(args: string[], io: Io): Promise<number> {
+  const [sub = "status", ...rest] = args;
+  const RESOLVE = { resolve: { type: "string", multiple: true } } as const;
+  /** The task named by a positional ID, else your current one. */
+  const which = async (p: Parsed, r: Remote): Promise<number> => (p.positionals[0] !== undefined ? taskId(p.positionals[0]) : (await currentTask(r)).id);
+  const status = (r: Remote, id: number) => r.client.json<StatusJson>("GET", `/api/tasks/${id}`);
+  /** `--resolve 2=mine`, `--resolve all=theirs`, or by conflict ID: `--resolve "cell s1/r1|c3=mine"`. */
+  const resolutions = async (p: Parsed, r: Remote, id: number): Promise<Record<string, string>> => {
+    const asked = (p.values.resolve as string[] | undefined) ?? [];
+    if (!asked.length) return {};
+    const { conflicts } = await status(r, id);
+    const out: Record<string, string> = {};
+    for (const a of asked) {
+      const i = a.lastIndexOf("=");
+      const key = a.slice(0, i);
+      const side = a.slice(i + 1);
+      if (i < 0 || (side !== "mine" && side !== "theirs")) throw new UsageError(`Expected --resolve <n>=mine or <n>=theirs: got ${a}`);
+      if (key === "all") for (const c of conflicts) out[c.id] ??= side;
+      else if (/^\d+$/.test(key)) {
+        const c = conflicts[Number(key) - 1];
+        if (!c) throw new UsageError(`Task ${id} has ${plural(conflicts.length, "conflict")}: no conflict ${key}`);
+        out[c.id] = side;
+      } else out[key] = side;
+    }
+    return out;
+  };
+
+  switch (sub) {
+    case "status": {
+      const p = parse(rest);
+      positionals(p, [], true);
+      const r = remote(p, io);
+      const s = await status(r, await which(p, r));
+      const t = s.task;
+      io.out(`Task ${t.id}${t.name ? ` "${t.name}"` : ""} on ${t.branch}, ${t.state}, ${t.owner}'s: ${plural(t.changes, "change")}${t.canRedo ? ", some undone" : ""}.`);
+      if (t.state === "open") {
+        io.out(s.behind ? `${plural(s.behind, "commit")} behind ${t.branch}.` : `Up to date with ${t.branch}.`);
+        io.out(`Validation: ${plural(s.validation.errors, "error")}, ${plural(s.validation.warnings, "warning")}.`);
+      }
+      if (s.conflicts.length) {
+        io.out(`Conflicts, to settle with --resolve <n>=mine|theirs on task rebase or task land:`);
+        for (const line of conflictLines(s.conflicts)) io.out(line);
+      }
+      return 0;
+    }
+    case "new": {
+      const p = parse(rest);
+      const name = p.positionals.join(" ");
+      const r = remote(p, io);
+      const t = await r.client.json<TaskJson>("POST", `/api/branches/${enc(r.branch)}/tasks`, name ? { name } : {});
+      io.out(`Started task ${t.id} on ${t.branch}; it's your current task there.`);
+      return 0;
+    }
+    case "list": {
+      const p = parse(rest, { all: { type: "boolean" } });
+      positionals(p, []);
+      const r = remote(p, io);
+      const mine = await r.client.json<TaskJson | null>("GET", `/api/branches/${enc(r.branch)}/tasks/current`);
+      const list = await r.client.json<TaskJson[]>("GET", `/api/branches/${enc(r.branch)}/tasks${p.values.all ? "" : "?state=open"}`);
+      for (const t of list) io.out(`${t.id === mine?.id ? "*" : " "} ${t.id}  ${t.state}  ${t.owner}  ${plural(t.changes, "change")}${t.name ? `  ${t.name}` : ""}`);
+      return 0;
+    }
+    case "switch": {
+      const p = parse(rest);
+      const [id] = positionals(p, ["id"]);
+      const r = remote(p, io);
+      const t = await r.client.json<TaskJson>("POST", `/api/tasks/${taskId(id!)}/switch`);
+      io.out(`Task ${t.id} is now your current task on ${t.branch}.`);
+      return 0;
+    }
+    case "name": {
+      const p = parse(rest, { task: { type: "string" } });
+      positionals(p, ["name"], true);
+      const r = remote(p, io);
+      const id = p.values.task !== undefined ? taskId(p.values.task as string) : (await currentTask(r)).id;
+      await r.client.json("PATCH", `/api/tasks/${id}`, { name: p.positionals.join(" ") });
+      io.out(`Named task ${id}.`);
+      return 0;
+    }
+    case "rebase": {
+      const p = parse(rest, RESOLVE);
+      positionals(p, [], true);
+      const r = remote(p, io);
+      const id = await which(p, r);
+      const res = await r.client.json<{ task: TaskJson; dropped: ConflictJson[] }>("POST", `/api/tasks/${id}/rebase`, { resolutions: await resolutions(p, r, id) });
+      io.out(`Task ${id} is up to date with ${res.task.branch}: ${plural(res.task.changes, "change")}.`);
+      for (const d of res.dropped) io.out(`Dropped, no longer applies: ${d.id}`);
+      return 0;
+    }
+    case "land": {
+      const p = parse(rest, { ...RESOLVE, message: { type: "string", short: "m" } });
+      positionals(p, [], true);
+      const r = remote(p, io);
+      const id = await which(p, r);
+      const body: Record<string, unknown> = { resolutions: await resolutions(p, r, id) };
+      if (p.values.message !== undefined) body.message = p.values.message;
+      const res = await r.client.json<{ commit: { id: string; branch: string }; dropped: ConflictJson[] }>("POST", `/api/tasks/${id}/land`, body);
+      io.out(`Landed task ${id} on ${res.commit.branch} as commit ${res.commit.id}.`);
+      for (const d of res.dropped) io.out(`Dropped, no longer applies: ${d.id}`);
+      return 0;
+    }
+    case "abandon":
+    case "reopen": {
+      const p = parse(rest);
+      positionals(p, [], true);
+      const r = remote(p, io);
+      if (sub === "reopen" && p.positionals[0] === undefined) throw new UsageError("Expected task reopen <id>");
+      const id = await which(p, r);
+      await r.client.json("POST", `/api/tasks/${id}/${sub}`);
+      io.out(sub === "abandon" ? `Abandoned task ${id}; task reopen ${id} brings it back.` : `Reopened task ${id}; it's your current task.`);
+      return 0;
+    }
+    default:
+      throw new UsageError(`Unknown command task ${sub}`);
+  }
+}
+
+// ------------------------------------------------------------ output
+
+function issueLines(v: ValidationJson): string[] {
+  const out = v.issues.map((i) => {
+    const place = i.sheet === undefined ? "" : ` ${i.sheet}!${i.cell ?? i.row ?? ""}`;
+    const who = i.entity?.id ? ` (${i.entity.id})` : "";
+    return `${i.level}${place}${who} ${i.code}: ${i.message}`;
+  });
+  out.push(`${plural(v.errors, "error")}, ${plural(v.warnings, "warning")}.`);
+  return out;
+}
+
+/** A cell's content as typed: a value, or that it's a formula. */
+function shown(c: unknown): string {
+  if (c === null || c === undefined) return "(blank)";
+  if (typeof c === "object" && "v" in c) return JSON.stringify((c as { v: unknown }).v);
+  if (typeof c === "object" && "bad" in c) return String((c as { bad: unknown }).bad);
+  return typeof c === "object" && "f" in c ? "a formula" : JSON.stringify(c);
+}
+
+function conflictLines(cs: ConflictJson[]): string[] {
+  return cs.map((c, i) => {
+    const k = c.conflict;
+    const detail = k.kind === "cell" && c.where ? `${c.where.sheet}!${c.where.cell}: mine ${shown(k.mine)}, theirs ${shown(k.theirs)}` : c.id;
+    return `  ${i + 1}. ${detail}`;
+  });
 }

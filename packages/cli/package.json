@@ -13,5 +13,8 @@
   },
   "dependencies": {
     "@thek42/sapwood-core": "0.0.0"
+  },
+  "devDependencies": {
+    "@thek42/sapwood-server": "0.0.0"
   }
 }

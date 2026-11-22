@@ -711,14 +711,20 @@ In `@thek42/sapwood-core` this is the `Sapwood` class: reads, writes, validation
 
 | Area | Commands |
 |---|---|
-| Auth | `login` (GitHub device flow), `token create` |
-| Branches | `branch list/create/merge/sync/discard` |
-| Tasks | `task new/list/switch/status/rebase/land/abandon` |
+| Auth | `login` (GitHub device flow), `logout`, `whoami`, `token create` |
+| Branches | `branch list/create/switch/merge/sync/discard` |
+| Tasks | `task new/list/switch/status/name/rebase/land/abandon/reopen`, `undo`, `redo` |
 | Data | `get <id>`, `query <type> [--where …]`, `set <id> field=value`, `create <type> --pack <b> [--sheet <s>]`, `comment-out <id>`, `apply <patch.jsonl>` |
 | Schema | `schema get`, `schema apply <file>` |
 | Validation & export | `validate`, `export [--branch] [--commit] --out <dir>` |
 
-Until the server exists, the CLI works on a **local project file**, `sapwood.json`: the whole document as JSON, found in the current folder or the nearest one above it, or given with `--project`. `sapwood init [--schema <file>] [--from <project.yaml>]` starts one. Each command loads the file and a command that changes the project saves it again. Branches, tasks and landing need the server, so they aren't available locally. **Decided** (2026-11-21), as a way to use the data, schema and export commands before Phase 2.
+The data, schema, validation and export commands work on a server or on a **local project file**. **Decided** (2026-11-21):
+
+- **A local project file**, `sapwood.json`, is the whole document as JSON. `sapwood init [--schema <file>] [--from <project.yaml>]` starts one. Each command loads it, and a command that changes the project saves it again. There are no branches or tasks locally.
+- **On a server**, reads show your current task on the branch (your edits so far), or the branch head when you have none; `--head`, `--task <id>` and `--commit <id>` choose otherwise. Export reads the branch head unless told otherwise. Writes go into your current task, made on your first edit, or into `--task <id>`. A write says which task it went into.
+- **Which one:** `--project`, else `--server` (or `$SAPWOOD_SERVER`), else a `sapwood.json` in this folder or one above, else the server you last logged in to.
+- **Login:** `sapwood login --server <url> --token <token>` checks the token and saves it, with the server, in `~/.sapwood/config.json` (or `$SAPWOOD_CONFIG`), readable by you only. `$SAPWOOD_TOKEN` stands in for the saved token, for CI and LLMs. Until GitHub sign-in exists, the token comes from `sapwood-server token`, or from `sapwood token create` with a token you have. `branch switch` saves the branch you work on for that server; `--branch` or `$SAPWOOD_BRANCH` overrides it.
+- **Conflicts:** `task status` numbers them, with the cell and both sides' values. `task land` and `task rebase` take `--resolve <n>=mine|theirs`, `--resolve all=theirs`, or a conflict's ID in place of its number. A refused land prints the conflicts or the validation errors.
 
 How values are typed on the command line:
 
