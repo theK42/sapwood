@@ -1,0 +1,23 @@
+{
+  "name": "@thek42/sapwood-mcp",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "description": "An MCP server for Sapwood: lets an LLM read and edit a project, into your current task.",
+  "type": "module",
+  "bin": {
+    "sapwood-mcp": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/mcp.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@thek42/sapwood-cli": "0.0.0",
+    "@thek42/sapwood-core": "0.0.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@thek42/sapwood-server": "0.0.0"
+  }
+}

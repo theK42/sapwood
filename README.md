@@ -47,6 +47,16 @@ npx sapwood task land -m "Faster Blaster"
 
 The database is one SQLite file, `sapwood.sqlite` (or `--db`, or `$SAPWOOD_DB`). Edits go into tasks and land onto branches; [DESIGN §9.4](docs/DESIGN.md) lists the HTTP API.
 
+## With an LLM
+
+`sapwood-mcp` is an MCP server: an AI tool starts it, and it works where `sapwood` would, with your login. For Claude Code:
+
+```bash
+claude mcp add sapwood -- npx sapwood-mcp
+```
+
+(On Windows: `claude mcp add sapwood -- cmd /c npx sapwood-mcp`.) The LLM can read, query, validate and edit. On a server its edits go into your current task, next to yours; it can't land, so check its work with `sapwood task` and land it yourself.
+
 ## Development
 
 Requires Node.js 24 or newer.

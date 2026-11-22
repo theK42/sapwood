@@ -758,7 +758,13 @@ How values are typed on the command line:
 
 A WebSocket will push validation results, head movement and task events to the web app.
 
-**MCP server:** a thin wrapper over the API. LLM edits always go into a task. Tokens can be issued **without land permission**, so a human reviews and lands LLM work (§11.3).
+**MCP server:** a thin wrapper over the API. LLM edits always go into a task. Tokens can be issued **without land permission**, so a human reviews and lands LLM work (§11.3). **Decided** (2026-11-22):
+
+- **`sapwood-mcp`** (`packages/mcp`, on the official MCP SDK) runs over stdio, started by the AI tool on the person's machine. It works where the CLI would (`--project`, `--server`, a `sapwood.json` here or above, else the last login) and uses the CLI's saved login, or `$SAPWOOD_TOKEN`. It looks again on each call, so `sapwood branch switch` takes effect at once. No remote MCP endpoint on the server yet: that needs MCP's OAuth.
+- **Edits go into your current task** on the branch, the same one the CLI writes to: the LLM's edits and yours are one task, and `undo` takes back the last change of either.
+- **Edit only:** there are no tools to land, merge, sync, revert, restore or discard, whatever the token can do. A person checks the task and lands it.
+- **Tools:** `get`, `query` (the CLI's `--where` syntax, at most 100 unless `limit` says otherwise), `schema`, `validate`, `patch` (the patch-file lines, all or nothing; its input schema lists the ops), `apply_schema`, and on a server `task_status`, `undo`, `redo` and `log`. A write says the task it went into and the validation counts after it. A refusal is a tool error with the API's message and `[code]`, plus any conflicts or validation.
+- **Instructions** sent at connection say how Sapwood works for an LLM: read the schema first, one `patch` with several lines over many, check `validate`, and that a person lands.
 
 ## 10. Export
 

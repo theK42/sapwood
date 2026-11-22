@@ -9,7 +9,11 @@
     "sapwood": "./src/main.ts"
   },
   "exports": {
-    ".": "./src/cli.ts"
+    ".": "./src/cli.ts",
+    "./backend": "./src/backend.ts",
+    "./remote": "./src/remote.ts",
+    "./store": "./src/store.ts",
+    "./values": "./src/values.ts"
   },
   "dependencies": {
     "@thek42/sapwood-core": "0.0.0"
