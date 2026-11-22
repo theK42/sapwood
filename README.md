@@ -17,7 +17,7 @@ npx sapwood validate
 npx sapwood export --out build/data
 ```
 
-`npx sapwood help` lists the commands. Without a server, `sapwood init` keeps the project in a local `sapwood.json`.
+`npx sapwood help` lists the commands. Without a server, `sapwood init` keeps the project in a local `sapwood.json`. On Windows, if PowerShell says running scripts is disabled, type `npx.cmd` instead of `npx`: it is the same command, and needs no change to the policy.
 
 ## The server
 
