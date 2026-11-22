@@ -169,6 +169,7 @@ Still to do in Phase 2:
 
 - GitHub sign-in (OAuth for the web, the device flow for the CLI).
 - Branch merge and sync, with merge commits; revert a commit; restore to a point.
+- Carry a task's redo stack into a new task, after a land or an explicit rebase (both drop it today). The new task starts on the head with the undone changes rebased onto it, still undone, so redo goes on where it left off; what no longer applies is dropped and reported. Exact when the land didn't rebase; otherwise rebased from the landed commit.
 - WebSocket events.
 - The CLI against the server: `login`, `token`, `branch`, `task`, and the data commands in a task.
 - Loading from snapshots that keep computed values (above), and measuring a land against the 2 s target.
