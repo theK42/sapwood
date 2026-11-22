@@ -5,10 +5,11 @@
 //
 // Recalc does not recurse. Stale cells are evaluated off a stack; when a formula
 // reads precedents that are still stale, evaluation carries on with placeholders and
-// collects them all; then it aborts (NotReady), the precedents are pushed, and the
+// collects them all; then its result is dropped, the precedents are pushed, and the
 // formula is retried after them. Collecting them all keeps a wide reader
 // (SUM(ENTITIES(...)) over 80k rows) linear rather than one retry per precedent.
-// A read of a precedent that is itself waiting further down the stack is a cycle. Long chains therefore cost no
+// A read of a precedent that is itself waiting further down the stack means a cycle; every
+// formula on it becomes #CYCLE! (see recalc). Long chains therefore cost no
 // stack depth, and a good order is found without a separate topological sort: each formula is
 // evaluated at most twice per recalc (once to find its stale precedents, once with them ready).
 //
@@ -77,13 +78,6 @@ interface EntityRec {
 /** A field's column on one sheet, as ENTITIES(type, field) reads it; null when listing IDs. */
 type ColumnOf = null | { k: "value"; v: Value } | { k: "cells"; cells: Map<RowId, Cell> | undefined };
 
-class NotReady {
-  readonly keys: Key[];
-  constructor(keys: Key[]) {
-    this.keys = keys;
-  }
-}
-
 interface Collect {
   deps: Set<Key>;
   ranges: RangeDep[];
@@ -150,6 +144,8 @@ export class Engine {
   private pending: Key[] = [];
   /** Stale precedents met during the current cell evaluation; null outside recalc. */
   private missing: Key[] | null = null;
+  /** Precedents met during the current cell evaluation that are waiting further down the stack. */
+  private waitingOn: Key[] | null = null;
   /** Cells written or recalculated since the last takeChanged(); "all" past CHANGE_LIMIT. */
   private changed: Set<Key> | "all" = new Set();
   /** Their rows, since the last takeChangedRows(): a second reader of the same news. */
@@ -798,8 +794,36 @@ export class Engine {
     // Formulas re-dirtied by an ID change wait until the current work is done, so a
     // batch of ID changes (one prefix edit renaming 10k entities) recomputes each reader once.
     let deferred: Key[] = [];
+    // Cycles, found as in Tarjan's algorithm: each waiting formula gets an index in the order
+    // it started waiting, and a low mark, the lowest index it reaches through formulas that
+    // still wait. A formula that can't finish only because of those waits, and reaches
+    // nothing older than itself, closes a loop: it and everything that started waiting after it
+    // are on cycles through it. All of them are #CYCLE!, so the result does not depend on
+    // which formula of a cycle happened to be evaluated first.
+    const index = new Map<Key, number>();
+    const low = new Map<Key, number>();
+    const waits: Key[] = [];
+    let nextIndex = 0;
+    const closeLoop = (root: Key | null): void => {
+      for (;;) {
+        const m = waits.pop();
+        if (m === undefined) return;
+        index.delete(m);
+        low.delete(m);
+        const mc = this.cells.get(m)!;
+        if (mc.waiting) {
+          mc.value = new FError("#CYCLE!", "Circular reference");
+          mc.state = "fresh";
+          mc.waiting = false;
+          mc.usesIndex = false;
+          this.rangeCache.get(mc.sheet)?.clear();
+        }
+        if (m === root) return;
+      }
+    };
     while (stack.length > 0 || deferred.length > 0) {
       if (stack.length === 0) {
+        closeLoop(null); // none should be left; any that are can't finish
         stack = deferred.reverse();
         deferred = [];
         continue;
@@ -816,42 +840,55 @@ export class Engine {
       c.state = "computing";
       evaluations++;
       this.noteChanged(k, c.sheet, c.row);
-      this.missing = [];
+      const missing: Key[] = (this.missing = []);
+      const waitingOn: Key[] = (this.waitingOn = []);
       try {
         const raw = this.eval(c.formula);
-        if (this.missing.length > 0) throw new NotReady(this.missing);
-        c.value = this.classifyColumns(c, this.toCellValue(raw), collect);
-        c.usesIndex = collect.usesIndex;
-        this.rangeCache.get(c.sheet)?.clear(); // a value on this sheet changed
-        c.state = "fresh";
-        c.waiting = false;
-        this.commitDeps(c, collect);
-        stack.pop();
-        if (this.isIdColumn(c)) {
-          // The ID is known only now: update this row of the index and re-dirty its readers.
-          const affected = this.updateEntityRows([[c.row, c.sheet]]);
-          if (affected.length > 0) deferred.push(...this.markStale(affected));
-        }
-      } catch (e) {
-        if (!(e instanceof NotReady)) throw e;
-        if (e.keys.some((key) => this.cells.get(key)!.waiting)) {
-          // p is further down the stack, waiting on a chain that leads back here.
-          c.value = new FError("#CYCLE!", "Circular reference");
+        if (missing.length === 0 && waitingOn.length === 0) {
+          c.value = this.classifyColumns(c, this.toCellValue(raw), collect);
+          c.usesIndex = collect.usesIndex;
+          this.rangeCache.get(c.sheet)?.clear(); // a value on this sheet changed
           c.state = "fresh";
           c.waiting = false;
           this.commitDeps(c, collect);
           stack.pop();
+          if (index.has(k)) {
+            waits.splice(waits.lastIndexOf(k), 1);
+            index.delete(k);
+            low.delete(k);
+          }
+          if (this.isIdColumn(c)) {
+            // The ID is known only now: update this row of the index and re-dirty its readers.
+            const affected = this.updateEntityRows([[c.row, c.sheet]]);
+            if (affected.length > 0) deferred.push(...this.markStale(affected));
+          }
         } else {
           c.state = "stale";
           c.waiting = true;
           this.commitDeps(c, collect); // keep what we learned, so later edits still reach us
-          for (let i = e.keys.length - 1; i >= 0; i--) stack.push(e.keys[i]!);
+          if (!index.has(k)) {
+            index.set(k, nextIndex);
+            low.set(k, nextIndex++);
+            waits.push(k);
+          }
+          let l = low.get(k)!;
+          for (const w of waitingOn) l = Math.min(l, low.get(w) ?? l);
+          low.set(k, l);
+          if (missing.length > 0) {
+            for (let i = missing.length - 1; i >= 0; i--) stack.push(missing[i]!);
+          } else {
+            // Only waits are left: we are done here for now, and maybe a loop is too.
+            stack.pop();
+            if (l === index.get(k)) closeLoop(k);
+          }
         }
       } finally {
         this.missing = null;
+        this.waitingOn = null;
         this.scope = { owner: null, hostSheet: null, reachFrom: null, ruleEntity: null, collect: null };
       }
     }
+    closeLoop(null);
     this.lastEvaluations = evaluations;
   }
 
@@ -973,11 +1010,11 @@ export class Engine {
 
   /**
    * A stale precedent: remember it and carry on with a placeholder, so one pass finds
-   * every precedent. A waiting one is on the stack below us, so stop now (a cycle).
+   * every precedent. A waiting one is on the stack below us: we are on a cycle with it.
    */
   private notReady(c: Cell): Scalar {
-    if (this.missing === null || c.waiting) throw new NotReady([c.key]);
-    this.missing.push(c.key);
+    if (this.missing === null || this.waitingOn === null) throw new Error(`Read of stale cell ${c.key} outside recalc`);
+    (c.waiting ? this.waitingOn : this.missing).push(c.key);
     return null;
   }
 

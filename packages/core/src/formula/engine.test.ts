@@ -86,6 +86,35 @@ describe("references and recalculation", () => {
     expect(e.get(s, "C1")).toBe(8);
   });
 
+  it("every cell on a cycle is #CYCLE!, whichever is evaluated first", () => {
+    // A2 reads A1 through a range but picks another element, so it never sees A1's error:
+    // only finding the cycle itself can make it #CYCLE!.
+    for (const first of ["A1", "A2"]) {
+      const { s, e } = setup();
+      const inputs: Record<string, string> = { A1: "=A2+1", A2: "=INDEX(A1:A3, 3)", A3: "5" };
+      e.batch(() => {
+        e.set(s, first, inputs[first]!);
+        for (const [a1, input] of Object.entries(inputs)) if (a1 !== first) e.set(s, a1, input);
+      });
+      expect(code(e.get(s, "A1")), first).toBe("#CYCLE!");
+      expect(code(e.get(s, "A2")), first).toBe("#CYCLE!");
+      e.set(s, "A1", "1");
+      expect(e.get(s, "A2"), first).toBe(5);
+    }
+  });
+
+  it("a cycle reached from two sides is #CYCLE! all round", () => {
+    // B1 is on two cycles, with A1 and with C1; A1 and C1 pick other elements.
+    for (const order of [["A1", "B1", "C1"], ["C1", "B1", "A1"], ["B1", "A1", "C1"]]) {
+      const { s, e } = setup();
+      const inputs: Record<string, string> = { A1: "=INDEX(B1:B2, 2)", B1: "=A1+C1", B2: "3", C1: "=INDEX(B1:B2, 2)" };
+      e.batch(() => {
+        for (const a1 of [...order, "B2"]) e.set(s, a1, inputs[a1]!);
+      });
+      for (const a1 of ["A1", "B1", "C1"]) expect(code(e.get(s, a1)), `${order} ${a1}`).toBe("#CYCLE!");
+    }
+  });
+
   it("self reference is a cycle", () => {
     const { s, e } = setup();
     e.set(s, "A1", "=A1+1");
