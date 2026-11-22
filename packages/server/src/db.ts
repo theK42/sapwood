@@ -1,0 +1,143 @@
+// The server's SQLite database (DESIGN §12.3), through Node's built-in node:sqlite. One
+// file holds the commit graph, tasks, users and tokens. Everything here is synchronous,
+// so the server's writes, lands among them, happen one at a time.
+
+import { DatabaseSync } from "node:sqlite";
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS branches (
+  name TEXT PRIMARY KEY,
+  parent TEXT,
+  fork_commit TEXT,
+  head TEXT NOT NULL,
+  archived INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS commits (
+  id TEXT PRIMARY KEY,
+  branch TEXT NOT NULL,
+  depth INTEGER NOT NULL,
+  parent TEXT,
+  parent2 TEXT,
+  task INTEGER,
+  author TEXT NOT NULL,
+  message TEXT NOT NULL,
+  at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS commit_ops (
+  commit_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  op TEXT NOT NULL,
+  PRIMARY KEY (commit_id, seq)
+);
+CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  branch TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  name TEXT,
+  base TEXT NOT NULL,
+  state TEXT NOT NULL,
+  landed_commit TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tasks_branch ON tasks (branch, state);
+CREATE TABLE IF NOT EXISTS task_changes (
+  task INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  ops TEXT NOT NULL,
+  inverse TEXT NOT NULL,
+  undone INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (task, seq)
+);
+CREATE TABLE IF NOT EXISTS current_tasks (
+  user TEXT NOT NULL,
+  branch TEXT NOT NULL,
+  task INTEGER NOT NULL,
+  PRIMARY KEY (user, branch)
+);
+CREATE TABLE IF NOT EXISTS snapshots (commit_id TEXT PRIMARY KEY, doc TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS users (login TEXT PRIMARY KEY, role TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user TEXT NOT NULL,
+  name TEXT NOT NULL,
+  hash TEXT NOT NULL UNIQUE,
+  scopes TEXT NOT NULL,
+  expires TEXT,
+  revoked INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  detail TEXT NOT NULL
+);
+`;
+
+export type Row = Record<string, string | number | null>;
+type Param = string | number | null;
+
+export class Db {
+  readonly sql: DatabaseSync;
+  private depth = 0;
+
+  /** Open (or create) the database file; ":memory:" for tests. */
+  constructor(path: string) {
+    this.sql = new DatabaseSync(path);
+    this.sql.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+    this.sql.exec(SCHEMA);
+  }
+
+  all<T = Row>(query: string, ...params: Param[]): T[] {
+    return this.sql.prepare(query).all(...params) as T[];
+  }
+
+  one<T = Row>(query: string, ...params: Param[]): T | undefined {
+    return this.sql.prepare(query).get(...params) as T | undefined;
+  }
+
+  run(query: string, ...params: Param[]): { changes: number; lastInsertRowid: number } {
+    const r = this.sql.prepare(query).run(...params);
+    return { changes: Number(r.changes), lastInsertRowid: Number(r.lastInsertRowid) };
+  }
+
+  /** Run `fn` in one transaction: all of it is written, or none. Nests. */
+  tx<T>(fn: () => T): T {
+    if (this.depth > 0) return fn();
+    this.sql.exec("BEGIN IMMEDIATE");
+    this.depth++;
+    try {
+      const out = fn();
+      this.sql.exec("COMMIT");
+      return out;
+    } catch (e) {
+      this.sql.exec("ROLLBACK");
+      throw e;
+    } finally {
+      this.depth--;
+    }
+  }
+
+  meta(key: string): string | undefined {
+    return this.one<{ value: string }>("SELECT value FROM meta WHERE key = ?", key)?.value;
+  }
+
+  setMeta(key: string, value: string): void {
+    this.run("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", key, value);
+  }
+
+  audit(actor: string, action: string, detail: unknown): void {
+    this.run("INSERT INTO audit (at, actor, action, detail) VALUES (?, ?, ?, ?)", now(), actor, action, JSON.stringify(detail));
+  }
+
+  close(): void {
+    this.sql.close();
+  }
+}
+
+export const now = (): string => new Date().toISOString();

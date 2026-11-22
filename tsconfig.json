@@ -1,6 +1,6 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/core" }, { "path": "packages/cli" }, { "path": "spikes/s1-formula" }, { "path": "spikes/s3-ops" }
+    { "path": "packages/core" }, { "path": "packages/cli" }, { "path": "packages/server" }, { "path": "spikes/s1-formula" }, { "path": "spikes/s3-ops" }
   ]
 }

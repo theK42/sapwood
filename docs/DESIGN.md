@@ -504,7 +504,12 @@ On rebase, the intent is re-applied against the new head, so rows added concurre
 - A task has a **base commit**. When the branch head moves:
   - If the task's ops rebase onto the new head without conflicts, it is **auto-rebased** in the background.
   - Otherwise the conflicts are flagged and block landing until resolved.
-- **States:** `open` → `landing` → `landed`, or `open` → `abandoned`. Abandoned tasks are kept and can be reopened.
+- **States:** `open` → `landing` → `landed`, or `open` → `abandoned`. Abandoned tasks are kept and can be reopened. On the server a land runs start to finish in one call, so `landing` is never seen.
+- **In the server** (2026-11-21):
+  - A task is its changes since its base commit, one per write, kept so undo and redo survive a restart. A new write drops what was undone.
+  - A task behind the head is rebased when it is next read or written, if that has no conflicts. Its changes then become one, so undo takes it back to the new head in one step. With conflicts it stays on its old base, and its status lists them.
+  - Only the owner writes to a task, and abandons or reopens it. Any Editor may land it (§11.2).
+  - Each task's new rows, columns, sheets and schema IDs carry the task's number (`s1r7_1`), so two tasks never make the same ID. Without this, two tasks that each created an entity made the same row, and the rebase saw one insert.
 - **Visibility:** everyone with read access can see the list of other users' open tasks and their diffs. **Decided:** there are no per-cell markers for other people's pending edits. Conflicts surface on rebase.
 
 ### 8.4 Landing
@@ -720,7 +725,16 @@ How values are typed on the command line:
 - `query --where`: `field<op>value` with `=`, `!=`, `<`, `<=`, `>`, `>=` and `~` (contains, ignoring case). Repeated `--where`s must all hold. A list matches `=` when it has the value, and `field=` matches a blank field. Numbers compare as numbers, everything else as text, so ISO dates compare in time order.
 - Output: `get` prints JSON, and `query` prints one JSON object per line (`--ids` for IDs only). Exit status 0 is success, 1 is a refused change, validation errors or a refused export, and 2 is a mistyped command.
 
-**HTTP API:** the same operations as REST/JSON. A WebSocket pushes validation results, head movement and task events to the web app.
+**HTTP API:** the same operations as REST/JSON, under `/api`, with a bearer token on every request. **Decided** (2026-11-21):
+
+- **Reads** work at a branch head (`/api/branches/:branch/…`), in a task (`/api/tasks/:task/…`) and at any commit (`/api/commits/:commit/…`): `entities/:id`, `singletons/:type`, `query/:type?where=…&pack=…&inactive=1` (the CLI's `--where` syntax, repeatable), `schema` (YAML), `validate`, `export` (the files with their ETags) and `export/:path` (one file, `304` when `If-None-Match` matches). Branch names with a slash are URL-encoded.
+- **Writes** go into a task. `POST /api/tasks/:task/patches` takes the patch-file lines as a JSON list, all or nothing, as one change. `POST /api/tasks/:task/schema` takes `{ yaml, force }`. The same two under `/api/branches/:branch/` go into the caller's current task there, made on first edit.
+- **Tasks:** `GET /api/branches/:b/tasks`, `POST` to make one (it becomes current), `GET …/tasks/current`. On a task: `GET` for its status (how far behind, conflicts, validation counts), `GET ops` for its diff, `PATCH` to name it, and `POST` to `undo`, `redo`, `switch`, `rebase`, `land`, `abandon` and `reopen`. `rebase` and `land` take `{ resolutions: { <conflict id>: "mine" | "theirs" } }`, and a conflict comes with its ID and, for a cell, its sheet and A1 address on the head.
+- **Branches and history:** `GET`/`POST /api/branches`, `GET`/`DELETE /api/branches/:b` (delete discards), `GET …/commits` (newest first), `GET /api/commits/:c` with its ops.
+- **Users and tokens:** `GET /api/me`. An Admin manages `/api/users`. `POST /api/tokens` makes a token for yourself, at most as able as the token asking; `DELETE /api/tokens/:id` revokes one.
+- **Errors** are `{ error: { code, message, … } }`. The API's codes keep their meaning, with `404` for `not-found`, `409` for `exists`, `ambiguous`, `formula` and the like, and `400` for bad values. The server adds `unauthenticated` (401), `forbidden` (403), `conflict` (409, with the conflicts), `invalid` (422, with the validation) and `state` (409, such as a landed task).
+
+A WebSocket will push validation results, head movement and task events to the web app.
 
 **MCP server:** a thin wrapper over the API. LLM edits always go into a task. Tokens can be issued **without land permission**, so a human reviews and lands LLM work (§11.3).
 
@@ -818,6 +832,7 @@ Plugins are configured by an Admin and run in-process on the server as **trusted
 - **Web:** the user is redirected to GitHub, approves, and is redirected back. The server checks the GitHub identity against its user list and sets a secure, HTTP-only session cookie. Sapwood never sees a GitHub password and only requests the minimal scope (`read:user`).
 - **CLI/MCP:** the GitHub device flow (the CLI shows a code; the user enters it at github.com) yields a Sapwood **personal access token**. Tokens are stored hashed on the server.
 - **Bootstrap:** the server config lists the initial Admin's GitHub username. Admins add other users by GitHub username. Unknown GitHub users who sign in are refused.
+- **Until GitHub sign-in exists** (2026-11-21): `sapwood-server init --admin <login>` names the first Admin, and `sapwood-server token <login> --name <name>` makes a token on the server's machine. Tokens look like `swd_…` and are kept as SHA-256 hashes.
 
 ### 11.2 Roles
 
@@ -840,6 +855,7 @@ Personal access tokens carry scopes that are at most the user's own role, plus r
 - `no-land` (for LLMs: edit only, a human lands)
 - `branches: [...]`
 - an expiry date
+- `role`: at most this role, below the user's own. A user's role is read on every request, so lowering it takes effect at once.
 
 ### 11.4 Audit
 
@@ -862,11 +878,11 @@ The commit and op log already records who changed what and when. Auth events, ro
 |---|---|---|
 | Language | **TypeScript** everywhere | The browser is non-negotiable. One language lets the formula engine, validation and op logic run identically on client and server. Designed by the creator of C#, so it should feel familiar |
 | Runtime | Node.js LTS | Mature; first-class SQLite bindings |
-| Server framework | Fastify or Hono (pick at setup) | Small, typed, fast |
+| Server framework | **Hono** (MIT), on `@hono/node-server` | Small, typed, fast. Its handlers take web-standard requests, so tests call the app directly with no network |
 | Web | React + Vite | Largest ecosystem for grid components |
 | Grid | **Glide Data Grid** (MIT, canvas; decided by spike S2) | Canvas rendering is needed at 100k rows. Glide never owns data: it reads cells through a callback and reports edits, so our ops stay the truth. Univer (Apache-2.0) also scrolled 100k rows, but it has its own model, undo stack, clipboard and formula engine, and each had to be overridden |
 | Formula engine | **Our own, in TypeScript** (§12.2, decided by spike S1) | Needs incremental recalc, stable-ID references, entity functions and pack reach, none of which an existing engine offers |
-| Database | **SQLite**, behind a thin storage interface | Single file, no server process, trivial to self-host. Our writes are serialized lands, so we don't need Postgres's concurrent writers. A Postgres adapter stays possible later |
+| Database | **SQLite**, through Node's built-in `node:sqlite`, behind a thin storage interface | Single file, no server process, trivial to self-host. Our writes are serialized lands, so we don't need Postgres's concurrent writers. A Postgres adapter stays possible later |
 | Repo | Monorepo: `packages/core`, `server`, `web`, `cli`, `mcp` | `core` has no I/O and is shared by all |
 
 ### 12.2 WebAssembly
@@ -888,7 +904,8 @@ At ≤100k entities, a branch's full state fits comfortably in memory. The serve
 | `commits` | id, branch, parents, task, author, message, timestamp |
 | `commit_ops` | commit id, sequence, op (JSON) |
 | `tasks` | id, branch, owner, name, base commit, state |
-| `task_ops` | task id, sequence, op (JSON) |
+| `task_changes` | task id, sequence, ops and their inverse (JSON), undone. One row per change, for undo and redo |
+| `current_tasks` | user, branch → task: each user's current task per branch |
 | `snapshots` | commit id → serialized full state, taken every N commits for fast checkout of history |
 | `users`, `tokens`, `audit` | as named |
 

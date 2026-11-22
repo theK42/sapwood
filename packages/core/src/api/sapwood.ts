@@ -847,7 +847,8 @@ export class Sapwood {
     return this.project.engine.formula(sheet, this.address(sheet, row, col).cell) ?? "";
   }
 
-  private address(sheet: SheetId, row: RowId, col: ColId): CellAddress {
+  /** A cell by its sheet's name and A1 address, from stable IDs. */
+  address(sheet: SheetId, row: RowId, col: ColId): CellAddress {
     const s = this.project.wb.sheet(sheet);
     return { sheet: s.name, cell: `${numberToCol(s.cols.posOf(col) ?? 0)}${s.rows.posOf(row) ?? 0}` };
   }

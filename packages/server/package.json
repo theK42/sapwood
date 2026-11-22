@@ -1,0 +1,22 @@
+{
+  "name": "@thek42/sapwood-server",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Sapwood server: branches, tasks and landing over SQLite, and the HTTP API.",
+  "type": "module",
+  "bin": {
+    "sapwood-server": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.11",
+    "@thek42/sapwood-core": "0.0.0",
+    "hono": "^4.13.19"
+  },
+  "devDependencies": {
+    "fast-check": "^4.3.0"
+  }
+}

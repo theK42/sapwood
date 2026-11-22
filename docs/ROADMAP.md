@@ -155,6 +155,25 @@ Still to do in Phase 1:
 - HTTP export endpoint with ETags.
 - MCP server as a thin wrapper over the API.
 
+**Status (2026-11-21): started.** `packages/server`, over the `Sapwood` API. Done:
+
+- **Storage:** one SQLite file through `node:sqlite`, with the tables of DESIGN §12.3. A commit holds the ops it applied to its first parent, and the full state is stored every 50 commits. Any commit is read back from the nearest snapshot plus the ops after it.
+- **Tasks:** an implicit current task per user and branch, named tasks, switching, undo and redo kept in the database, abandon and reopen. A task behind the head is rebased when it's next read or written, if that has no conflicts.
+- **Landing:** rebase onto the head with conflicts resolved per ID, validation of the merged result, and an atomic commit. Lands run one at a time.
+- **Branches:** create from a head, list, discard. Reads at any commit.
+- **HTTP API** (DESIGN §9.4), on Hono: reads at a head, a task or a commit; writes into tasks; tasks, landing, branches, history, users and tokens; export with ETags.
+- **Auth:** the four roles, and tokens with `read-only`, `no-land`, branch and role limits. `sapwood-server init`, `user add`, `token` and `serve` set a server up.
+- **Tests:** units for the repo, the HTTP API and the command, and a property test. Three users write random patches to their current tasks and land them in random order, resolving conflicts one way or the other. After every step, a server restarted on the same database must read the same head and tasks, and refused lands must leave the head alone. It found that two tasks creating an entity each made the same row ID; each task's new IDs now carry its number.
+
+Still to do in Phase 2:
+
+- GitHub sign-in (OAuth for the web, the device flow for the CLI).
+- Branch merge and sync, with merge commits; revert a commit; restore to a point.
+- WebSocket events.
+- The CLI against the server: `login`, `token`, `branch`, `task`, and the data commands in a task.
+- Loading from snapshots that keep computed values (above), and measuring a land against the 2 s target.
+- The MCP server.
+
 **Milestone M2:** headless KRBSG round-trip.
 
 1. Create a branch and a task.
