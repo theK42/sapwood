@@ -15,13 +15,14 @@ function setup() {
   dirs.push(dir);
   writeFileSync(join(dir, "schema.yaml"), SCHEMA);
   writeFileSync(join(dir, "project.yaml"), PROJECT);
-  const run = (...argv: string[]) => {
+  const runWith = (env: Record<string, string>, ...argv: string[]) => {
     const out: string[] = [];
     const err: string[] = [];
-    const r = runAdmin(argv, { cwd: dir, env: {}, out: (l) => out.push(l), err: (l) => err.push(l) });
+    const r = runAdmin(argv, { cwd: dir, env, out: (l) => out.push(l), err: (l) => err.push(l) });
     return { r, out: out.join("\n"), err: err.join("\n") };
   };
-  return { dir, run };
+  const run = (...argv: string[]) => runWith({}, ...argv);
+  return { dir, run, runWith };
 }
 
 describe("sapwood-server", () => {
@@ -35,7 +36,9 @@ describe("sapwood-server", () => {
     expect(token).toMatch(/^swd_[\w-]+$/);
     const port = 20000 + Math.floor(Math.random() * 20000);
     const s = run("serve", "--port", String(port));
-    expect(s.out).toBe(`Serving the Sapwood API on http://127.0.0.1:${port}/api`);
+    expect(s.out).toBe(
+      `Serving the Sapwood API on http://127.0.0.1:${port}/api\nGitHub sign-in is off ($SAPWOOD_GITHUB_CLIENT_ID isn't set): people need tokens from sapwood-server token.`,
+    );
     const server = s.r as { close(): void };
     try {
       const res = await fetch(`http://127.0.0.1:${port}/api/branches/main/entities/w1`, { headers: { authorization: `Bearer ${token}` } });
@@ -44,6 +47,22 @@ describe("sapwood-server", () => {
     } finally {
       server.close();
     }
+  });
+
+  it("serve turns GitHub sign-in on from the environment", async () => {
+    const { run, runWith } = setup();
+    run("init", "--admin", "ada", "--schema", "schema.yaml", "--from", "project.yaml");
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    const s = runWith({ SAPWOOD_GITHUB_CLIENT_ID: "Iv1.abc", SAPWOOD_PUBLIC_URL: "https://sapwood.example" }, "serve", "--port", String(port));
+    expect(s.out).toContain("GitHub sign-in is on: sapwood login (the web needs $SAPWOOD_GITHUB_CLIENT_SECRET too).");
+    const server = s.r as { close(): void };
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/healthz`);
+      expect(await res.json()).toMatchObject({ github: true });
+    } finally {
+      server.close();
+    }
+    expect(runWith({ SAPWOOD_PUBLIC_URL: "nope" }, "serve").r).toBe(2);
   });
 
   it("serves only a started project, and says what was typed wrong", () => {

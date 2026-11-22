@@ -93,7 +93,8 @@ export class Client {
   }
 
   async text(method: string, path: string, body?: unknown): Promise<string> {
-    const init: RequestInit = { method, headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json" } };
+    // No token: the sign-in routes, before there is one.
+    const init: RequestInit = { method, headers: { ...(this.token ? { authorization: `Bearer ${this.token}` } : {}), "content-type": "application/json" } };
     if (body !== undefined) init.body = JSON.stringify(body);
     let res: Response;
     try {

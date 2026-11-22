@@ -1,17 +1,21 @@
 // The HTTP API (DESIGN §9.4): the Sapwood API's reads and writes as REST/JSON, plus
-// branches, tasks and landing. Every request carries a bearer token (§11.3).
+// branches, tasks and landing. Every /api request carries a bearer token (§11.3), or the
+// session cookie a web sign-in sets; /auth has the GitHub sign-in routes (§11.1).
 //
 // Reads work at three places: a branch head (/api/branches/:b/…), a task's state
 // (/api/tasks/:t/…) and any commit (/api/commits/:c/…). Writes only go into a task: one
 // named in the path, or the caller's current task on a branch, made on first edit (§8.3).
 // Branch names with a slash are URL-encoded in paths.
 
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import {
   ApiError, ExportRefused, Sapwood, sha256, whereFilter,
   type ApiErrorCode, type ExportFile, type JsonValue, type Patch, type QueryOptions,
 } from "@thek42/sapwood-core";
 import { demand, isRole, type Auth, type Principal, type Role, type Scopes } from "./auth.ts";
+import type { GitHub } from "./github.ts";
 import { RepoError, type Repo, type Resolutions, type TaskState } from "./repo.ts";
 
 type Env = { Variables: { me: Principal } };
@@ -38,9 +42,22 @@ const API_STATUS: Record<ApiErrorCode, number> = {
   confirm: 409,
 };
 
-const REPO_STATUS = { "not-found": 404, exists: 409, conflict: 409, invalid: 422, state: 409, "bad-request": 400, forbidden: 403 } as const;
+const REPO_STATUS = { "not-found": 404, exists: 409, conflict: 409, invalid: 422, state: 409, "bad-request": 400, forbidden: 403, upstream: 502 } as const;
 
-export function createApp(repo: Repo, auth: Auth): Hono<Env> {
+export interface AppOptions {
+  /** GitHub sign-in; without it, only tokens made with sapwood-server token work. */
+  github?: GitHub;
+  /** Where browsers reach the server, for GitHub's redirect back (default: as the request came in). */
+  publicUrl?: string;
+}
+
+const SESSION = "sapwood_session";
+const STATE = "sapwood_oauth_state";
+const SESSION_DAYS = 30;
+/** A write by session cookie must carry this header, which a page on another site can't send. */
+const CSRF_HEADER = "x-sapwood-request";
+
+export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<Env> {
   const app = new Hono<Env>();
 
   app.onError((e, c) => {
@@ -52,11 +69,69 @@ export function createApp(repo: Repo, auth: Auth): Hono<Env> {
   });
   app.notFound((c) => c.json({ error: { code: "not-found", message: `No route ${c.req.method} ${c.req.path}` } }, 404));
 
-  app.get("/healthz", (c) => c.json({ ok: true, initialized: repo.initialized }));
+  app.get("/healthz", (c) => c.json({ ok: true, initialized: repo.initialized, github: !!opts.github }));
+
+  // ------------------------------------------------------------ signing in
+
+  const github = (): GitHub => {
+    if (!opts.github) throw new RepoError("state", "This server has no GitHub sign-in set up: ask its admin for a token instead");
+    return opts.github;
+  };
+  const base = (c: C) => (opts.publicUrl ?? new URL(c.req.url).origin).replace(/\/+$/, "");
+  const callback = (c: C) => `${base(c)}/auth/github/callback`;
+  const secure = (c: C) => base(c).startsWith("https:");
+
+  /** The device flow, for the CLI and MCP: a code to enter at GitHub, then poll for a token. */
+  app.post("/auth/device", async (c) => c.json(await github().startDevice()));
+  app.post("/auth/device/token", async (c) => {
+    const b = await body(c);
+    const device = str(b.device, "device");
+    const name = b.name === undefined ? "sapwood login" : str(b.name, "name");
+    const r = await github().pollDevice(device);
+    if ("pending" in r) return c.json({ pending: true, interval: r.interval ?? null }, 202);
+    const u = auth.signIn(await github().user(r.token), "device");
+    const { token, info } = auth.createToken(u.login, { name }, u.login);
+    return c.json({ token, id: info.id, login: u.login, role: u.role }, 201);
+  });
+  /** The web flow: off to GitHub, and back to a session cookie. */
+  app.get("/auth/github", (c) => {
+    const gh = github();
+    const state = randomBytes(18).toString("base64url");
+    setCookie(c, STATE, state, { httpOnly: true, secure: secure(c), sameSite: "Lax", path: "/auth", maxAge: 600 });
+    return c.redirect(gh.authorizeUrl(state, callback(c)));
+  });
+  app.get("/auth/github/callback", async (c) => {
+    const gh = github();
+    const want = getCookie(c, STATE) ?? "";
+    const got = c.req.query("state") ?? "";
+    deleteCookie(c, STATE, { path: "/auth" });
+    if (!want || want.length !== got.length || !timingSafeEqual(Buffer.from(want), Buffer.from(got)))
+      throw new RepoError("forbidden", "This sign-in didn't start here, or took too long: try again");
+    const code = c.req.query("code");
+    if (!code) throw new RepoError("forbidden", "GitHub didn't sign you in");
+    const u = auth.signIn(await gh.user(await gh.exchangeCode(code, callback(c))), "web");
+    const expires = new Date(Date.now() + SESSION_DAYS * 86_400_000).toISOString();
+    const { token } = auth.createToken(u.login, { name: "Web sign-in", expires }, u.login);
+    setCookie(c, SESSION, token, { httpOnly: true, secure: secure(c), sameSite: "Lax", path: "/", maxAge: SESSION_DAYS * 86_400 });
+    return c.redirect("/");
+  });
+  app.post("/auth/logout", (c) => {
+    const session = getCookie(c, SESSION);
+    const p = session ? auth.authenticate(session) : null;
+    if (p) auth.revokeToken(p.token, p.login);
+    deleteCookie(c, SESSION, { path: "/" });
+    return c.json({ signedOut: !!p });
+  });
 
   app.use("/api/*", async (c, next) => {
     const m = /^Bearer\s+(\S+)$/i.exec(c.req.header("authorization") ?? "");
-    const me = m ? auth.authenticate(m[1]!) : null;
+    let me = m ? auth.authenticate(m[1]!) : null;
+    if (!m) {
+      const session = getCookie(c, SESSION);
+      me = session ? auth.authenticate(session) : null;
+      if (me && !["GET", "HEAD", "OPTIONS"].includes(c.req.method) && c.req.header(CSRF_HEADER) !== "1")
+        return c.json({ error: { code: "forbidden", message: `A write with a session cookie needs the header ${CSRF_HEADER}: 1` } }, 403);
+    }
     if (!me) {
       c.header("WWW-Authenticate", 'Bearer realm="sapwood"');
       return c.json({ error: { code: "unauthenticated", message: "Pass a Sapwood token: Authorization: Bearer swd_…" } }, 401);

@@ -8,7 +8,8 @@ import { serve } from "@hono/node-server";
 import { docFromJson, Sapwood } from "@thek42/sapwood-core";
 import { Auth, isRole, type Scopes } from "./auth.ts";
 import { Db } from "./db.ts";
-import { createApp } from "./http.ts";
+import { GitHub, type GitHubConfig } from "./github.ts";
+import { createApp, type AppOptions } from "./http.ts";
 import { Repo, RepoError } from "./repo.ts";
 
 export interface AdminIo {
@@ -25,10 +26,16 @@ const HELP = `Usage: sapwood-server <command> [options]
   user add <login> --role <viewer|editor|developer|admin>
   token <login> --name <name> [--role <r>] [--read-only] [--no-land] [--branch <b>]… [--expires <date>]
                          Make a personal access token; it is shown once
-  serve [--port <n>] [--host <h>]
+  serve [--port <n>] [--host <h>] [--url <public url>]
                          Serve the HTTP API (default 127.0.0.1:8417)
 
-Every command takes --db <file> (default: $SAPWOOD_DB, else ./sapwood.sqlite).`;
+Every command takes --db <file> (default: $SAPWOOD_DB, else ./sapwood.sqlite).
+
+GitHub sign-in needs a GitHub OAuth app, with its device flow enabled. serve reads:
+  $SAPWOOD_GITHUB_CLIENT_ID      the app's client ID: enough for sapwood login
+  $SAPWOOD_GITHUB_CLIENT_SECRET  its secret, for signing in on the web
+  $SAPWOOD_PUBLIC_URL (or --url) where browsers reach the server; the app's callback
+                                 URL is this plus /auth/github/callback`;
 
 class Usage extends Error {}
 
@@ -137,18 +144,35 @@ function admin(argv: string[], io: AdminIo): number | { close(): void } {
     }
 
     case "serve": {
-      const p = parse(rest, { port: { type: "string" }, host: { type: "string" } });
+      const p = parse(rest, { port: { type: "string" }, host: { type: "string" }, url: { type: "string" } });
       const port = Number(p.values.port ?? io.env.PORT ?? 8417);
       if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Usage(`Not a port: ${p.values.port}`);
       const hostname = (p.values.host as string | undefined) ?? "127.0.0.1";
+      const options: AppOptions = {};
+      const publicUrl = (p.values.url as string | undefined) ?? io.env.SAPWOOD_PUBLIC_URL;
+      if (publicUrl !== undefined) {
+        if (!/^https?:\/\/[^/]+/.test(publicUrl)) throw new Usage(`Not a URL: ${publicUrl}`);
+        options.publicUrl = publicUrl;
+      }
+      const clientId = io.env.SAPWOOD_GITHUB_CLIENT_ID;
+      if (clientId) {
+        const config: GitHubConfig = { clientId };
+        if (io.env.SAPWOOD_GITHUB_CLIENT_SECRET) config.clientSecret = io.env.SAPWOOD_GITHUB_CLIENT_SECRET;
+        options.github = new GitHub(config);
+      }
       const db = open(p.values);
       const repo = new Repo(db);
       if (!repo.initialized) {
         db.close();
         throw new RepoError("state", "This database has no project: run sapwood-server init first");
       }
-      const server = serve({ fetch: createApp(repo, new Auth(db)).fetch, port, hostname });
+      const server = serve({ fetch: createApp(repo, new Auth(db), options).fetch, port, hostname });
       io.out(`Serving the Sapwood API on http://${hostname}:${port}/api`);
+      io.out(
+        !clientId
+          ? "GitHub sign-in is off ($SAPWOOD_GITHUB_CLIENT_ID isn't set): people need tokens from sapwood-server token."
+          : `GitHub sign-in is on: sapwood login${options.github!.clientSecret ? ", and the web" : " (the web needs $SAPWOOD_GITHUB_CLIENT_SECRET too)"}.`,
+      );
       return {
         close() {
           server.close();

@@ -98,6 +98,9 @@ export class Db {
     const cols = new Set(this.all<{ name: string }>("PRAGMA table_info(branches)").map((c) => c.name));
     if (!cols.has("net"))
       this.sql.exec("ALTER TABLE branches ADD COLUMN base_commit TEXT; ALTER TABLE branches ADD COLUMN base_point TEXT; ALTER TABLE branches ADD COLUMN net TEXT NOT NULL DEFAULT '[]'; UPDATE branches SET base_commit = fork_commit, base_point = fork_commit WHERE parent IS NOT NULL;");
+    // The GitHub account a user signed in with first, by its numeric ID (logins can be renamed).
+    if (!this.all<{ name: string }>("PRAGMA table_info(users)").some((c) => c.name === "github_id"))
+      this.sql.exec("ALTER TABLE users ADD COLUMN github_id INTEGER; CREATE UNIQUE INDEX users_github_id ON users (github_id);");
   }
 
   all<T = Row>(query: string, ...params: Param[]): T[] {

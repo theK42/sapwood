@@ -1,6 +1,6 @@
-// Users, roles and personal access tokens (DESIGN §11). GitHub sign-in comes later; for
-// now the first Admin is named when the server is set up, Admins add users by GitHub
-// login, and tokens are made with `sapwood-server token` or over the API.
+// Users, roles, personal access tokens and sign-in (DESIGN §11). The first Admin is named
+// when the server is set up and Admins add users by GitHub login. People sign in with
+// GitHub (github.ts), which gives them a token here; `sapwood-server token` makes one too.
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { now, type Db } from "./db.ts";
@@ -128,6 +128,29 @@ export class Auth {
       this.db.audit(actor, "token.revoke", { id });
     });
     return this.token(id);
+  }
+
+  /**
+   * Who a GitHub account signs in as. The first sign-in binds the user to the account's
+   * numeric ID, and later ones match by it, so a renamed account stays itself and someone
+   * who takes its old login isn't let in. Unknown accounts are refused.
+   */
+  signIn(gh: { login: string; id: number }, how: string): User {
+    const byId = this.db.one<{ login: string }>("SELECT login FROM users WHERE github_id = ?", gh.id);
+    let login: string;
+    if (byId) login = byId.login;
+    else {
+      const key = loginKey(gh.login);
+      const u = this.db.one<{ login: string; github_id: number | null }>("SELECT login, github_id FROM users WHERE login = ?", key);
+      if (!u || u.github_id !== null) {
+        this.db.audit(gh.login.toLowerCase(), "signin.refused", { github: gh, how });
+        throw new RepoError("forbidden", u ? `${key} here belongs to another GitHub account` : `${key} isn't a user of this server: an Admin can add you`);
+      }
+      this.db.run("UPDATE users SET github_id = ? WHERE login = ?", gh.id, key);
+      login = key;
+    }
+    this.db.audit(login, "signin", { github: gh, how });
+    return this.user(login);
   }
 
   /** The principal for a bearer token, or null when it isn't a live token of a known user. */

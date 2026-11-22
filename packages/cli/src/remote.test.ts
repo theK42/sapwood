@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Sapwood } from "@thek42/sapwood-core";
-import { Auth, createApp, Db, Repo } from "@thek42/sapwood-server";
+import { Auth, createApp, Db, FakeGitHub, Repo } from "@thek42/sapwood-server";
 import { run } from "./cli.ts";
 import { serverUrl } from "./remote.ts";
 
@@ -47,9 +47,13 @@ function setup() {
   auth.addUser("ada", "admin", "test");
   auth.addUser("bob", "editor", "test");
   repo.init(Sapwood.load(SCHEMA, PROJECT).doc, "ada");
-  const app = createApp(repo, auth);
+  const gh = new FakeGitHub();
+  const app = createApp(repo, auth, { github: gh.github });
   const fetch = async (url: string, init?: RequestInit) => app.request(url, init);
   const token = (login: string, scopes = {}) => auth.createToken(login, { name: "test", scopes }, "test").token;
+  /** Waiting between sign-in polls: what the person does at GitHub meanwhile, if anything. */
+  let waits: (() => void)[] = [];
+  const sleep = async () => waits.shift()?.();
   const user = (login: string) => {
     const dir = mkdtempSync(join(tmpdir(), `sapwood-${login}-`));
     dirs.push(dir);
@@ -57,7 +61,7 @@ function setup() {
     const sw = async (...argv: string[]) => {
       const out: string[] = [];
       const err: string[] = [];
-      const code = await run(argv, { cwd: dir, env, fetch, out: (l) => out.push(l), err: (l) => err.push(l) });
+      const code = await run(argv, { cwd: dir, env, fetch, sleep, out: (l) => out.push(l), err: (l) => err.push(l) });
       return { code, out: out.join("\n"), err: err.join("\n") };
     };
     const json = async (...argv: string[]) => {
@@ -72,10 +76,33 @@ function setup() {
     expect((await u.sw("login", "--server", URL, "--token", token(login))).code).toBe(0);
     return u;
   };
-  return { repo, auth, token, user, loggedIn };
+  const atGitHub = (...steps: (() => void)[]) => {
+    waits = steps;
+  };
+  return { repo, auth, gh, token, user, loggedIn, atGitHub };
 }
 
 describe("the sapwood command, on a server", () => {
+  it("signs in with GitHub: a code to enter there, then a token kept here", async () => {
+    const { user, gh, auth, atGitHub } = setup();
+    const bob = user("bob");
+    // The first poll finds the code not yet entered; by the second, bob has approved it.
+    atGitHub(() => {}, () => gh.approve("WXYZ-0001", { login: "bob", id: 7 }));
+    const r = await bob.sw("login", "--server", URL, "--name", "laptop");
+    expect(r.out).toBe(
+      ["To sign in, open https://github.test/login/device and enter the code WXYZ-0001", "Waiting for GitHub…", `Logged in to ${URL} as bob (editor).`].join("\n"),
+    );
+    expect((await bob.sw("whoami")).out).toMatch(/^bob \(editor\)/);
+    expect(auth.tokens("bob").map((t) => t.name)).toEqual(["laptop"]);
+    // Someone the server doesn't know is told so.
+    const eve = user("eve");
+    atGitHub(() => gh.approve("WXYZ-0003", { login: "eve", id: 8 }));
+    const refused = await eve.sw("login", "--server", URL);
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain("eve isn't a user of this server: an Admin can add you");
+    expect(existsSync(eve.env.SAPWOOD_CONFIG)).toBe(false);
+  });
+
   it("logs in, and keeps the token to itself", async () => {
     const { user, token } = setup();
     const u = user("bob");

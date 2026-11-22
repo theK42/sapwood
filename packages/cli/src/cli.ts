@@ -3,6 +3,7 @@
 // (remote.ts). Login, branches, tasks and tokens are the server's.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ApiError, Sapwood, type CellAddress, type Patch, type ValidationJson } from "@thek42/sapwood-core";
@@ -19,12 +20,15 @@ export interface Io {
   env?: Record<string, string | undefined>;
   /** For talking to the server (default: the global fetch). */
   fetch?: Fetch;
+  /** For waiting between sign-in polls (default: a timer). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 const HELP = `Usage: sapwood <command> [options]
 
 Working with a server
-  login --server <url> --token <token>   Log in (the token comes from sapwood-server token)
+  login --server <url> [--name <token name>]   Sign in with GitHub: enter the code it shows at github.com
+  login --server <url> --token <token>         Or log in with a token (from sapwood-server token)
   logout  |  whoami
   branch [list]  |  branch create <name> [--from <b>]  |  branch switch <name>  |  branch discard <name>
   branch status [<name>]          Commits to merge, commits to sync, and conflicts
@@ -411,15 +415,41 @@ async function command(argv: string[], io: Io): Promise<number> {
 
 // ------------------------------------------------------------ server commands
 
+interface DeviceJson {
+  device: string;
+  userCode: string;
+  verificationUri: string;
+  interval: number;
+  expiresIn: number;
+}
+
+/** Sign in with GitHub's device flow: a code to enter at GitHub, then a token from the server. */
+async function deviceLogin(server: string, name: string, io: Io): Promise<string> {
+  const anon = new Client(server, "", io.fetch ?? fetch);
+  const sleep = io.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const d = await anon.json<DeviceJson>("POST", "/auth/device");
+  io.out(`To sign in, open ${d.verificationUri} and enter the code ${d.userCode}`);
+  io.out("Waiting for GitHub…");
+  let interval = d.interval;
+  const until = Date.now() + d.expiresIn * 1000;
+  for (;;) {
+    await sleep(interval * 1000);
+    const r = await anon.json<{ token?: string; pending?: boolean; interval?: number | null }>("POST", "/auth/device/token", { device: d.device, name });
+    if (r.token) return r.token;
+    if (r.interval) interval = r.interval;
+    if (Date.now() > until) throw new UsageError("The code expired before it was entered: run sapwood login again");
+  }
+}
+
 async function login(args: string[], io: Io): Promise<number> {
-  const p = parse(args, { token: { type: "string" } });
+  const p = parse(args, { token: { type: "string" }, name: { type: "string" } });
   positionals(p, []);
   const env = envOf(io);
   const given = (p.values.server as string | undefined) ?? env.SAPWOOD_SERVER;
   if (given === undefined) throw new UsageError("Expected --server <url>");
   const server = serverUrl(given);
-  const token = (p.values.token as string | undefined) ?? env.SAPWOOD_TOKEN;
-  if (token === undefined) throw new UsageError("Expected --token <token>: make one on the server with sapwood-server token <login> --name <name> (signing in with GitHub comes later)");
+  const token =
+    (p.values.token as string | undefined) ?? env.SAPWOOD_TOKEN ?? (await deviceLogin(server, (p.values.name as string | undefined) ?? `sapwood login on ${hostname()}`, io));
   const me = await new Client(server, token, io.fetch ?? fetch).json<{ login: string; role: string }>("GET", "/api/me");
   const file = configPath(env);
   const config = readConfig(file);

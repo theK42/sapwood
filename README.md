@@ -23,14 +23,23 @@ npx sapwood export --out build/data
 
 ```bash
 npx sapwood-server init --admin <your GitHub login> --schema schema.yaml --from project.yaml
-npx sapwood-server token <your GitHub login> --name laptop
+npx sapwood-server user add <a teammate's GitHub login> --role editor
 npx sapwood-server serve
 ```
 
-Then, from anywhere:
+People sign in with GitHub. For that, [register a GitHub OAuth app](https://github.com/settings/applications/new) with **Enable Device Flow** ticked and the callback URL `<server url>/auth/github/callback`, then serve with its details in the environment:
 
 ```bash
-npx sapwood login --server 127.0.0.1:8417 --token swd_…
+export SAPWOOD_GITHUB_CLIENT_ID=Iv1.…          # enough for sapwood login
+export SAPWOOD_GITHUB_CLIENT_SECRET=…          # for signing in on the web
+export SAPWOOD_PUBLIC_URL=https://sapwood.example.com
+npx sapwood-server serve
+```
+
+Without an OAuth app, `npx sapwood-server token <login> --name laptop` makes a token instead. Then, from anywhere:
+
+```bash
+npx sapwood login --server 127.0.0.1:8417  # shows a code to enter at github.com
 npx sapwood set Blaster cooldown=0.25      # goes into your current task
 npx sapwood task                           # its changes, conflicts and validation
 npx sapwood task land -m "Faster Blaster"

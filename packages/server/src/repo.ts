@@ -14,7 +14,7 @@ import {
 } from "@thek42/sapwood-core";
 import { now, type Db } from "./db.ts";
 
-export type RepoErrorCode = "not-found" | "exists" | "conflict" | "invalid" | "state" | "bad-request" | "forbidden";
+export type RepoErrorCode = "not-found" | "exists" | "conflict" | "invalid" | "state" | "bad-request" | "forbidden" | "upstream";
 
 export class RepoError extends Error {
   override name = "RepoError";
