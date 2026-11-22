@@ -158,7 +158,7 @@ Still to do in Phase 1:
 **Status (2026-11-21): started.** `packages/server`, over the `Sapwood` API. Done:
 
 - **Storage:** one SQLite file through `node:sqlite`, with the tables of DESIGN §12.3. A commit holds the ops it applied to its first parent, and the full state is stored every 50 commits. Any commit is read back from the nearest snapshot plus the ops after it.
-- **Tasks:** an implicit current task per user and branch, named tasks, switching, undo and redo kept in the database, abandon and reopen. A task behind the head is rebased when it's next read or written, if that has no conflicts.
+- **Tasks:** an implicit current task per user and branch, named tasks, switching, undo and redo kept in the database, abandon and reopen. A task behind the head is rebased when it's next read or written, if that has no conflicts and nothing to redo. A rebase keeps each change as its own undo step; a property test checks that undoing back to any change gives the same state as rebasing the changes up to it.
 - **Landing:** rebase onto the head with conflicts resolved per ID, validation of the merged result, and an atomic commit. Lands run one at a time.
 - **Branches:** create from a head, list, discard. Reads at any commit.
 - **HTTP API** (DESIGN §9.4), on Hono: reads at a head, a task or a commit; writes into tasks; tasks, landing, branches, history, users and tokens; export with ETags.

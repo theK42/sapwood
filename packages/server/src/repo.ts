@@ -124,6 +124,8 @@ interface ChangeRow {
 
 interface Rebased {
   ops: Op[];
+  /** The rebased ops, grouped as the task's changes were, in order (see regroup). */
+  changes: Op[][];
   state: Doc;
   behind: number;
   /** Unresolved conflicts: they block a land. */
@@ -415,8 +417,8 @@ export class Repo {
 
   /**
    * Rebase a task onto its branch's head, settling conflicts by `resolutions`. Refused
-   * while any conflict is unresolved. The task's changes become one change (undo then
-   * takes it back to the new head in one step).
+   * while any conflict is unresolved. Each change stays its own undo step, and the
+   * resolutions make one more; what was undone can't be redone after.
    */
   rebaseTask(id: number, actor: string, resolutions: Resolutions = {}): { task: TaskInfo; dropped: ConflictJson[] } {
     const t = this.openTask(id, actor);
@@ -424,7 +426,7 @@ export class Repo {
     if (t.base === head) return { task: t, dropped: [] };
     const r = this.rebased(t, resolutions);
     if (r.blocking.length) throw conflictError(r.blocking, this.head(t.branch));
-    this.adopt(t, head, r.ops);
+    this.adopt(t, head, r.changes);
     return { task: this.task(id), dropped: r.dropped.map((c) => conflictJson(c)) };
   }
 
@@ -558,28 +560,37 @@ export class Repo {
   private rebased(t: TaskInfo, resolutions: Resolutions): Rebased {
     const theirs = this.since(t.branch, t.base);
     const blocking: Conflict[] = [];
-    const r = rebase(this.stateAt(t.base), theirs.ops, this.taskOps(t.id), (c) => {
+    const changes = this.db.all<{ ops: string }>("SELECT ops FROM task_changes WHERE task = ? AND undone = 0 ORDER BY seq", t.id).map((r) => JSON.parse(r.ops) as Op[]);
+    const r = rebase(this.stateAt(t.base), theirs.ops, changes.flat(), (c) => {
       const side = resolutions[conflictId(c)];
       if (side === "mine" || side === "theirs") return side;
       blocking.push(c);
       return "theirs";
     });
-    return { ops: r.ops, state: r.state, behind: theirs.commits, blocking, dropped: r.conflicts.filter((c) => c.kind === "op") };
+    return { ops: r.ops, changes: regroup(changes, r.ops, r.origins), state: r.state, behind: theirs.commits, blocking, dropped: r.conflicts.filter((c) => c.kind === "op") };
   }
 
+  /**
+   * Bring a task up to the head when nothing is in the way: no conflicts, and nothing to
+   * redo (a rebase would drop it, and the user didn't ask for one).
+   */
   private tryAutoRebase(t: TaskInfo): void {
+    if (t.canRedo) return;
     const head = this.branch(t.branch).head;
     const r = this.rebased(t, {});
-    if (!r.blocking.length) this.adopt(t, head, r.ops);
+    if (!r.blocking.length) this.adopt(t, head, r.changes);
   }
 
-  /** Move a task onto `head` with its rebased ops, as one change. */
-  private adopt(t: TaskInfo, head: string, ops: Op[]): void {
+  /**
+   * Move a task onto `head` with its rebased changes, each still its own undo step, with
+   * its inverse worked out again on the head. What was undone is dropped.
+   */
+  private adopt(t: TaskInfo, head: string, changes: Op[][]): void {
     const doc = this.stateAt(head);
-    const inverse = applyOps(doc, ops);
+    const rows = changes.map((ops) => ({ ops, inverse: applyOps(doc, ops) }));
     this.db.tx(() => {
       this.db.run("DELETE FROM task_changes WHERE task = ?", t.id);
-      if (ops.length) this.db.run("INSERT INTO task_changes (task, seq, ops, inverse, undone) VALUES (?, 1, ?, ?, 0)", t.id, JSON.stringify(ops), JSON.stringify(inverse));
+      rows.forEach((c, i) => this.db.run("INSERT INTO task_changes (task, seq, ops, inverse, undone) VALUES (?, ?, ?, ?, 0)", t.id, i + 1, JSON.stringify(c.ops), JSON.stringify(c.inverse)));
       this.db.run("UPDATE tasks SET base = ?, updated_at = ? WHERE id = ?", head, now(), t.id);
     });
     this.views.set(t.id, { base: head, s: taskProject(doc, t.id) });
@@ -618,6 +629,26 @@ function commitInfo(r: CommitRow): CommitInfo {
     message: r.message,
     at: r.at,
   };
+}
+
+/**
+ * Group rebased ops into the changes they came from. A change keeps its ops in order; one
+ * left with nothing (theirs won all of it) goes. Ops that settle conflicts (no origin) make
+ * a step of their own where they fall: restores before the changes, fix-ups after them.
+ */
+export function regroup(changes: readonly (readonly Op[])[], ops: readonly Op[], origins: readonly (number | null)[]): Op[][] {
+  const changeOf: number[] = [];
+  changes.forEach((c, i) => c.forEach(() => changeOf.push(i)));
+  const out: Op[][] = [];
+  let last: number | null | undefined;
+  ops.forEach((op, i) => {
+    const o = origins[i]!;
+    const key = o === null ? null : changeOf[o]!;
+    if (key !== last || out.length === 0) out.push([]);
+    out.at(-1)!.push(op);
+    last = key;
+  });
+  return out;
 }
 
 /**

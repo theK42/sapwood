@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { docsEqual, Sapwood, type Patch } from "@thek42/sapwood-core";
+import { docsEqual, rebase, Sapwood, type Op, type Patch } from "@thek42/sapwood-core";
 import { Db } from "./db.ts";
 import { PROJECT, SCHEMA } from "./fixtures.ts";
 import { Repo, RepoError } from "./repo.ts";
@@ -90,6 +90,70 @@ describe("the repo", () => {
     expect(repo.head("main").get("a2").speed).toBe(1);
   });
 
+  it("a rebase keeps each change as its own undo step", () => {
+    const { repo } = setup();
+    const a = repo.createTask("main", "ada");
+    const b = repo.createTask("main", "bob");
+    repo.write(b.id, "bob", (s) => s.set("a1", { speed: 1 }));
+    repo.write(b.id, "bob", (s) => s.create("Ammo", { $id: "a3", speed: 3 }));
+    repo.write(b.id, "bob", (s) => s.set("a2", { speed: 2 }));
+    repo.write(a.id, "ada", (s) => s.set("w1", { damage: 20 }));
+    repo.land(a.id, "ada");
+    const read = () => {
+      const v = repo.view(b.id);
+      return [v.get("w1").damage, ...v.query("Ammo").map((e) => `${e.$id}:${e.speed}`)];
+    };
+    expect(read()).toEqual([20, "a1:1", "a2:2", "a3:3"]);
+    expect(repo.task(b.id)).toMatchObject({ base: repo.branch("main").head, changes: 3 });
+    repo.undo(b.id, "bob");
+    expect(read()).toEqual([20, "a1:1", "a2:600", "a3:3"]);
+    repo.undo(b.id, "bob");
+    expect(read()).toEqual([20, "a1:1", "a2:600"]);
+    repo.undo(b.id, "bob");
+    expect(read()).toEqual([20, "a1:900", "a2:600"]);
+    expect(repo.undo(b.id, "bob")).toBe(false);
+    repo.redo(b.id, "bob");
+    expect(read()).toEqual([20, "a1:1", "a2:600"]);
+  });
+
+  it("resolving a conflict is a step of its own", () => {
+    const { repo } = setup();
+    const a = repo.createTask("main", "ada");
+    const b = repo.createTask("main", "bob");
+    repo.write(b.id, "bob", (s) => s.set("a1", { speed: 1 }));
+    repo.write(b.id, "bob", (s) => s.set("w1", { damage: 30 }));
+    repo.write(a.id, "ada", (s) => s.set("w1", { damage: 20 }));
+    repo.land(a.id, "ada");
+    const [c] = repo.status(b.id).conflicts;
+    repo.rebaseTask(b.id, "bob", { [c!.id]: "mine" });
+    const v = () => repo.view(b.id);
+    expect(repo.task(b.id).changes).toBe(2); // a1's change, and the resolution (w1's change lost all it did to it)
+    expect([v().get("w1").damage, v().get("a1").speed]).toEqual([30, 1]);
+    repo.undo(b.id, "bob");
+    expect([v().get("w1").damage, v().get("a1").speed]).toEqual([20, 1]);
+    repo.undo(b.id, "bob");
+    expect([v().get("w1").damage, v().get("a1").speed]).toEqual([20, 900]);
+  });
+
+  it("a task with something to redo waits to be rebased", () => {
+    const { repo } = setup();
+    const a = repo.createTask("main", "ada");
+    const b = repo.createTask("main", "bob");
+    repo.write(b.id, "bob", (s) => s.set("a1", { speed: 1 }));
+    repo.write(b.id, "bob", (s) => s.set("a2", { speed: 2 }));
+    repo.undo(b.id, "bob");
+    repo.write(a.id, "ada", (s) => s.set("w1", { damage: 20 }));
+    repo.land(a.id, "ada");
+    expect(repo.status(b.id)).toMatchObject({ behind: 1, conflicts: [] });
+    expect(repo.view(b.id).get("w1").damage).toBe(10); // still on its base
+    repo.redo(b.id, "bob");
+    expect(repo.view(b.id).get("w1").damage).toBe(20); // nothing to redo now: rebased on read
+    expect(repo.task(b.id).changes).toBe(2);
+    repo.undo(b.id, "bob");
+    repo.rebaseTask(b.id, "bob"); // up to date: keeps the redo
+    expect(repo.task(b.id).canRedo).toBe(true);
+  });
+
   it("conflicts block a land until resolved", () => {
     const { repo } = setup();
     const a = repo.createTask("main", "ada");
@@ -171,6 +235,57 @@ describe("the repo", () => {
 });
 
 describe("the repo, at random", () => {
+  it("after a rebase, undoing back to any change gives what rebasing up to it gives", () => {
+    const edit = fc.oneof(
+      fc.record({ id: fc.constantFrom("w1", "a1", "a2"), n: fc.integer({ min: 0, max: 3 }) }).map(({ id, n }): Patch => ({ op: "set", id, fields: id === "w1" ? { damage: n } : { speed: n } })),
+      fc.constantFrom<Patch>({ op: "create", type: "Ammo", fields: { $id: "a3", speed: 5 } }, { op: "delete", id: "a2" }, { op: "setSingleton", type: "Config", fields: { lives: 7 } }),
+    );
+    const runs = Number(process.env.SAPWOOD_RUNS ?? 100);
+    let rebased = 0;
+    let checked = 0;
+    fc.assert(
+      fc.property(fc.array(edit, { minLength: 1, maxLength: 4 }), fc.array(edit, { minLength: 1, maxLength: 6 }), (theirs, mine) => {
+        const { repo } = setup();
+        const base = repo.branch("main").head;
+        const b = repo.createTask("main", "bob");
+        const a = repo.createTask("main", "ada");
+        const changes: Op[][] = [];
+        for (const p of mine)
+          try {
+            changes.push(repo.write(b.id, "bob", (s) => s.apply([p])).ops);
+          } catch {
+            /* refused */
+          }
+        for (const p of theirs)
+          try {
+            repo.write(a.id, "ada", (s) => s.apply([p]));
+          } catch {
+            /* refused */
+          }
+        if (repo.task(a.id).changes === 0 || changes.length === 0) return;
+        repo.land(a.id, "ada");
+        const head = repo.branch("main").head;
+        repo.view(b.id);
+        if (repo.task(b.id).base !== head) return; // conflicts: not rebased
+        const theirsOps = repo.commitOps(head);
+        const n = repo.task(b.id).changes;
+        for (let m = changes.length; m >= 0; m--) {
+          const r = rebase(repo.stateAt(base), theirsOps, changes.slice(0, m).flat(), () => "theirs");
+          if (n === changes.length && r.conflicts.length === 0) {
+            expect(docsEqual(repo.view(b.id).doc, r.state)).toBe(true);
+            checked++;
+          }
+          if (m > 0) repo.undo(b.id, "bob");
+        }
+        expect(docsEqual(repo.view(b.id).doc, repo.head("main").doc)).toBe(true);
+        rebased++;
+      }),
+      { numRuns: runs },
+    );
+    expect(rebased).toBeGreaterThan(runs / 3); // most runs get as far as a rebase
+    expect(checked).toBeGreaterThan(runs);
+  }, 600_000);
+
   it("lands random concurrent tasks, and a restarted server reads the same", () => {
     const patch = fc.oneof(
       fc.record({ op: fc.constant("set" as const), id: fc.constantFrom("w1", "w2", "a1"), n: fc.integer({ min: 0, max: 3 }) }),

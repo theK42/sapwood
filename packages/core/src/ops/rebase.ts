@@ -264,6 +264,12 @@ export function conflictId(c: Conflict, swap = false): string {
 export interface RebaseResult {
   /** Mine, rewritten to apply on top of theirs. */
   ops: Op[];
+  /**
+   * For each of `ops`, the index in `mine` of the op it came from, or null for an op that
+   * settles a conflict (a restored row, a fix-up for a cell resolved as mine). They are in
+   * order, so a caller can regroup the ops into the changes mine was written as.
+   */
+  origins: (number | null)[];
   conflicts: Conflict[];
   /** The head with the rebased ops applied. */
   state: Doc;
@@ -279,9 +285,12 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
   const conflicts = detect(M, T, base);
   const cur = cloneDoc(T.final);
   const out: Op[] = [];
+  const origins: (number | null)[] = [];
+  let origin: number | null = null; // the op of mine being replayed, if any
   const emit = (op: Op) => {
     applyOp(cur, op);
     out.push(op);
+    origins.push(origin);
   };
   const sheetOf = (id: SheetId): SheetDoc | undefined => cur.sheets.get(id);
 
@@ -368,7 +377,8 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
     for (const id of moving) mineMoved.add(axisKey(sh, axis, id));
     return at;
   };
-  for (const op of mine) {
+  for (const [i, op] of mine.entries()) {
+    origin = i;
     switch (op.kind) {
       case "setCell": {
         // Cells theirs changed are settled by the fix-ups, unless theirs deleted the row or
@@ -496,6 +506,7 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
     if (op.kind === "move") for (const id of op.ids) ctxMoved.add(axisKey(op.sheet, op.axis, id));
     applyOp(ctx, op);
   }
+  origin = null;
 
   // Settle conflicted cells explicitly: a re-run rename may have touched them.
   for (const c of fixups) {
@@ -516,7 +527,7 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
     if (!n || stableJson(n.def[c.key]) === stableJson(c.mine)) continue;
     emit(c.mine === undefined ? { kind: "setSchema", id: c.id, key: c.key } : { kind: "setSchema", id: c.id, key: c.key, value: c.mine });
   }
-  return { ops: out, conflicts, state: cur };
+  return { ops: out, origins, conflicts, state: cur };
 }
 
 const asList = (x: unknown): unknown[] => (Array.isArray(x) ? x : []);
