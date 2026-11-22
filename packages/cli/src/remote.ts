@@ -2,7 +2,7 @@
 // data commands use. Reads come from your current task on the branch (your edits so
 // far), or the branch head when you have none; writes go into your current task.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -10,6 +10,7 @@ import {
   type EntityJson, type ExportFile, type Patch, type ResolvedSchema, type ValidationJson,
 } from "@thek42/sapwood-core";
 import type { Backend, QueryArgs, Readable, SchemaWritten, Written } from "./backend.ts";
+import { saveFile } from "./fsutil.ts";
 import { UsageError } from "./values.ts";
 
 export type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
@@ -45,9 +46,7 @@ export function readConfig(path: string): Config {
 /** Saved readable by you only: it holds tokens. */
 export function writeConfig(path: string, c: Config): void {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
-  renameSync(tmp, path);
+  saveFile(path, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
 }
 
 /** `host:8417`, `http://host:8417/`, `http://host:8417/api` all mean http://host:8417. */

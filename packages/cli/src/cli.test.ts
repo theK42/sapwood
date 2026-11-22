@@ -66,7 +66,7 @@ async function setup(init = true) {
   return { dir, env, sw, json, file };
 }
 
-describe("the sapwood command", async () => {
+describe("the sapwood command", () => {
   it("init, get and query", async () => {
     const { sw, json } = (await setup());
     expect((await json("get", "w1"))).toMatchObject({ $type: "Weapon", damage: 10, element: "fire", shots: ["a1"], price: { amount: 5, currency: "gold" } });
@@ -90,7 +90,7 @@ describe("the sapwood command", async () => {
     const r = (await sw("set", "w1", "damage=1"));
     expect([r.code, r.err]).toEqual([1, expect.stringContaining("pass force to replace it [formula]")]);
     expect((await sw("set", "w1", "damage=1", "--force")).code).toBe(0);
-    (await sw("set", "Config", "lives=5"));
+    expect(await sw("set", "Config", "lives=5")).toMatchObject({ code: 0, err: "" });
     expect((await json("get", "Config")).lives).toBe(5);
   });
 
@@ -112,7 +112,7 @@ describe("the sapwood command", async () => {
   it("a project's first entity gets a sheet of its own", async () => {
     const { sw, json } = (await setup(false));
     expect((await sw("init", "--schema", "schema.yaml")).out).toContain("0 entities, 0 errors");
-    (await sw("create", "Ammo", "a1", "speed=1"));
+    expect(await sw("create", "Ammo", "a1", "speed=1")).toMatchObject({ code: 0, err: "" });
     expect((await json("get", "a1")).$sheet).toBe("Ammo");
   });
 

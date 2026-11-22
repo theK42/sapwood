@@ -131,7 +131,7 @@ DESIGN §12's targets at 10k entities are met: an edit with validation in under 
 - `init`, `get`, `query --where`, `set`, `create`, `comment-out`, `uncomment`, `delete`, `apply <patch.jsonl>`, `schema get`, `schema apply`, `validate` and `export`, on `sapwood.json` (the document as JSON, `docToJson`). Values are typed for each field's type.
 - `create` puts a project's first entity on a new sheet named after its type.
 - Tests run each command in a temporary folder. The API's property test now rebuilds the project from the document's JSON form, as a saved file would be.
-- Against the server (2026-11-21): `login`, `logout`, `whoami`, `token create`, `branch`, `task`, `undo` and `redo`, and the data, schema, validation and export commands in your current task (DESIGN §9.4). A local `sapwood.json` still works, and comes first when there is one. Tests run the CLI against the real server app in the same process.
+- Against the server (2026-11-21): `login`, `logout`, `whoami`, `token create`, `branch`, `task`, `undo` and `redo`, and the data, schema, validation and export commands in your current task (DESIGN §9.4). A local `sapwood.json` still works, and comes first when there is one. Tests run the CLI against the real server app in the same process. Running the suite in a loop showed saves failing now and then on Windows: renaming the new file over the old one is refused while something (a virus scanner, the indexer) has it open for a moment. Saves now try the rename again for up to about two seconds.
 
 Importing KRBSG showed that its per-tab names collide once IDs are global (`Ship` was both a texture and a sprite, and so on). The fixture prefixes them. Phase 5's importer will need a way to handle this.
 

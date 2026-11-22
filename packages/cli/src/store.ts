@@ -1,10 +1,11 @@
 // A project kept in a local file, `sapwood.json`: the whole document as JSON (docToJson).
-// Until the server exists (ROADMAP Phase 2) this is where the CLI reads and writes; each
-// command loads the file, and a command that changes the project saves it again.
+// Without a server this is where the CLI reads and writes; each command loads the file,
+// and a command that changes the project saves it again.
 
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { docFromJson, docToJson, Sapwood } from "@thek42/sapwood-core";
+import { saveFile } from "./fsutil.ts";
 import { UsageError } from "./values.ts";
 
 export const PROJECT_FILE = "sapwood.json";
@@ -36,7 +37,5 @@ export function loadProjectFile(file: string): Sapwood {
 
 /** Save, replacing the file in one step so an interrupted save leaves the old one whole. */
 export function saveProjectFile(file: string, s: Sapwood): void {
-  const tmp = `${file}.tmp`;
-  writeFileSync(tmp, JSON.stringify(docToJson(s.doc), null, 1) + "\n");
-  renameSync(tmp, file);
+  saveFile(file, JSON.stringify(docToJson(s.doc), null, 1) + "\n");
 }
