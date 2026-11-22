@@ -1,8 +1,9 @@
-// The few ops that take one document to another that differs from it only in contents:
-// schema properties (names, types, enum members), row and column order, which rows and
-// columns are deleted, cells, formats, layouts, sheet names and packs. For when two ways of getting to one state disagree a
-// little (a rebase in each direction around a move or a rename): the difference, said
-// plainly, instead of undoing one way and redoing the other.
+// The ops that take one document to another with the same schema shape, packs and sheets:
+// schema properties (names, types, enum members), rows and columns (added, removed, moved,
+// deleted), cells, formats, layouts, sheet names and packs. The difference, said plainly:
+// for when two ways of getting to one state disagree a little (a rebase in each direction
+// around a move or a rename), and for restoring an earlier state without undoing every
+// change since, one by one.
 
 import { contentKey, stableJson } from "../formula/content.ts";
 import { axisOf, cloneDoc, isLive, splitCellKey, type Doc } from "./doc.ts";
@@ -10,8 +11,8 @@ import { applyOp, OpError, type Op } from "./ops.ts";
 import { propsOf, schemaNodes, siblings, type SchemaParent } from "./schema.ts";
 
 /**
- * Ops taking `from` to exactly `to`, or null when they differ in more than contents: in
- * which schema nodes there are or their order, packs, sheets, or rows and columns.
+ * Ops taking `from` to exactly `to`, or null when they differ in which schema nodes there
+ * are or their order, in packs, or in which sheets there are.
  */
 export function reconcile(from: Doc, to: Doc): Op[] | null {
   const fromNodes = schemaNodes(from.schema), toNodes = schemaNodes(to.schema);
@@ -43,21 +44,29 @@ export function reconcile(from: Doc, to: Doc): Op[] | null {
       const s = () => doc.sheets.get(sh)!;
       if (s().name !== t.name) emit({ kind: "renameSheet", sheet: sh, name: t.name });
       if (s().pack !== t.pack) emit({ kind: "setSheetPack", sheet: sh, pack: t.pack });
+      // Rows and columns `to` has that this doesn't come back with their own IDs; ones it
+      // doesn't have are removed at the end, once they're empty.
+      const extra = { row: new Set<string>(), col: new Set<string>() };
       for (const axis of ["row", "col"] as const) {
         const want = axisOf(t, axis).order;
-        const have = axisOf(s(), axis).order;
-        if (have.length !== want.length || [...have].sort().join() !== [...want].sort().join()) return null;
+        const wanted = new Set(want);
+        want.forEach((id, i) => {
+          if (!axisOf(s(), axis).order.includes(id)) emit({ kind: "insert", sheet: sh, axis, after: i ? want[i - 1]! : null, ids: [id] });
+        });
+        for (const id of axisOf(s(), axis).order) if (!wanted.has(id)) extra[axis].add(id);
         // Keep the longest run already in order; move the rest, each after its predecessor.
+        const have = axisOf(s(), axis).order.filter((id) => wanted.has(id));
         const pos = new Map(want.map((id, i) => [id, i]));
         const keep = new Set(longestRising(have.map((id) => pos.get(id)!)).map((i) => want[i]!));
         want.forEach((id, i) => {
           if (!keep.has(id)) emit({ kind: "move", sheet: sh, axis, after: i ? want[i - 1]! : null, ids: [id] });
         });
       }
-      // Restores and deletes first, so cell writes know whether they are seen.
+      // Restores and deletes before cell writes, so they know whether they are seen. Extra
+      // rows come back too, to be emptied and removed.
       for (const axis of ["row", "col"] as const) {
         const a = axisOf(t, axis);
-        const back = axisOf(s(), axis).order.filter((id) => axisOf(s(), axis).dead.has(id) && !a.dead.has(id));
+        const back = axisOf(s(), axis).order.filter((id) => axisOf(s(), axis).dead.has(id) && (extra[axis].has(id) || !a.dead.has(id)));
         if (back.length) emit({ kind: "restore", sheet: sh, axis, ids: back });
       }
       for (const axis of ["row", "col"] as const) {
@@ -85,6 +94,7 @@ export function reconcile(from: Doc, to: Doc): Op[] | null {
         const want = t.layouts.get(type) ?? null;
         if (stableJson(s().layouts.get(type) ?? null) !== stableJson(want)) emit({ kind: "setLayout", sheet: sh, type, layout: want });
       }
+      for (const axis of ["row", "col"] as const) if (extra[axis].size) emit({ kind: "purge", sheet: sh, axis, ids: [...extra[axis]] });
     }
   } catch (e) {
     if (e instanceof OpError) return null; // a move the sheet doesn't allow, say

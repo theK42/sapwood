@@ -199,6 +199,29 @@ describe("the HTTP API", () => {
     expect((await bob("POST /api/branches/main/sync", {})).json.error.code).toBe("bad-request");
   });
 
+  it("revert and restore", async () => {
+    const { bob, vic } = setup();
+    const point = (await vic("GET /api/branches/main/commits")).json[0].id as string;
+    let t = (await bob("POST /api/branches/main/patches", [{ op: "set", id: "a1", fields: { speed: 1 } }])).json.task.id;
+    const c = (await bob(`POST /api/tasks/${t}/land`)).json.commit;
+    expect((await vic(`GET /api/commits/${c.id.slice(0, 6)}`)).json.id).toBe(c.id); // a start of the ID will do
+    expect((await vic(`POST /api/commits/${c.id}/revert`)).status).toBe(403);
+    const r = await bob(`POST /api/commits/${c.id.slice(0, 8)}/revert`);
+    expect(r.status).toBe(201);
+    expect(r.json).toMatchObject({ task: { branch: "main", owner: "bob", state: "open" }, conflicts: [] });
+    expect((await bob(`GET /api/tasks/${r.json.task.id}/entities/a1`)).json.speed).toBe(900);
+    await bob(`POST /api/tasks/${r.json.task.id}/land`);
+    expect((await vic("GET /api/branches/main/entities/a1")).json.speed).toBe(900);
+    t = (await bob("POST /api/branches/main/patches", [{ op: "delete", id: "a2" }])).json.task.id;
+    await bob(`POST /api/tasks/${t}/land`);
+    const back = await bob("POST /api/branches/main/restore", { commit: point });
+    expect(back.status).toBe(201);
+    await bob(`POST /api/tasks/${back.json.task.id}/land`);
+    expect((await vic("GET /api/branches/main/entities/a2")).json.speed).toBe(600);
+    expect((await bob("POST /api/branches/main/restore", {})).status).toBe(400);
+    expect((await bob("POST /api/commits/zzzz/revert")).status).toBe(404);
+  });
+
   it("branches", async () => {
     const { bob, vic } = setup();
     expect((await bob("POST /api/branches", { name: "qa/build-7" })).status).toBe(201);

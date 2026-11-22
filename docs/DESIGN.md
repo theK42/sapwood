@@ -572,6 +572,11 @@ To resolve a conflict, the user picks *mine*, *theirs*, or edits the cell, per c
 - Views: per-branch commit log, per-task diff, **per-cell history** (blame), and per-entity history (following the entity across row moves).
 - **Revert a commit** creates a task containing the inverse ops, rebased onto head and validated like any other task.
 - **Restore to a point** reverts every commit after a chosen one, as one task.
+- **How the server does it** (2026-11-21):
+  - **Revert** makes a new task, the actor's current one on the branch, based on the reverted commit, with one change: the commit's inverse. Rebasing it onto the head is a task rebase like any other, so a later change to the same cells is a conflict, settled on land (mine is the revert). It is named `Revert "<message>"`, and so is the commit it lands as. The commit must be on the branch's line of first parents; by default the branch is the commit's own. Reverting a commit that changed nothing, or the first commit, is refused.
+  - **Restore** makes a new task on the head whose one change takes the branch back to the earlier commit's state exactly. The change is the difference said plainly (`reconcile`: rows added since are removed, deleted ones restored, cells set back), not every commit since undone one by one; only when schema nodes or sheets were added or removed since does it fall back to the full inverse. Named `Restore to <id> "<message>"`. Refused when the branch is already as it was then.
+  - When two sides both bring back the same row (a revert and a restore, say), the rebase keeps the one already on the head.
+  - A commit can be named by a unique start of its ID, 4 characters or more, as `sapwood log` shows it.
 - **Read any commit:** browse and export the state at any commit.
 
 ## 9. Views
@@ -722,6 +727,7 @@ In `@thek42/sapwood-core` this is the `Sapwood` class: reads, writes, validation
 | Auth | `login` (GitHub device flow), `logout`, `whoami`, `token create` |
 | Branches | `branch list/create/switch/merge/sync/discard` |
 | Tasks | `task new/list/switch/status/name/rebase/land/abandon/reopen`, `undo`, `redo` |
+| History | `log [<branch>] [-n <count>]`, `revert <commit>`, `restore <commit>` |
 | Data | `get <id>`, `query <type> [--where …]`, `set <id> field=value`, `create <type> --pack <b> [--sheet <s>]`, `comment-out <id>`, `apply <patch.jsonl>` |
 | Schema | `schema get`, `schema apply <file>` |
 | Validation & export | `validate`, `export [--branch] [--commit] --out <dir>` |
@@ -746,7 +752,7 @@ How values are typed on the command line:
 - **Reads** work at a branch head (`/api/branches/:branch/…`), in a task (`/api/tasks/:task/…`) and at any commit (`/api/commits/:commit/…`): `entities/:id`, `singletons/:type`, `query/:type?where=…&pack=…&inactive=1` (the CLI's `--where` syntax, repeatable), `schema` (YAML), `validate`, `export` (the files with their ETags) and `export/:path` (one file, `304` when `If-None-Match` matches). Branch names with a slash are URL-encoded.
 - **Writes** go into a task. `POST /api/tasks/:task/patches` takes the patch-file lines as a JSON list, all or nothing, as one change. `POST /api/tasks/:task/schema` takes `{ yaml, force }`. The same two under `/api/branches/:branch/` go into the caller's current task there, made on first edit.
 - **Tasks:** `GET /api/branches/:b/tasks`, `POST` to make one (it becomes current), `GET …/tasks/current`. On a task: `GET` for its status (how far behind, conflicts, validation counts), `GET ops` for its diff, `PATCH` to name it, and `POST` to `undo`, `redo`, `switch`, `rebase`, `land`, `abandon` and `reopen`. `rebase` and `land` take `{ resolutions: { <conflict id>: "mine" | "theirs" } }`, and a conflict comes with its ID and, for a cell, its sheet and A1 address on the head.
-- **Branches and history:** `GET`/`POST /api/branches`, `GET`/`DELETE /api/branches/:b` (delete discards), `GET …/compare` (commits to merge, commits to sync, a sync's conflicts), `POST …/sync` and `POST …/merge` (both take `resolutions`; merge takes `message`), `GET …/commits` (newest first), `GET /api/commits/:c` with its ops.
+- **Branches and history:** `GET`/`POST /api/branches`, `GET`/`DELETE /api/branches/:b` (delete discards), `GET …/compare` (commits to merge, commits to sync, a sync's conflicts), `POST …/sync` and `POST …/merge` (both take `resolutions`; merge takes `message`), `GET …/commits` (newest first), `GET /api/commits/:c` with its ops, `POST /api/commits/:c/revert` (`branch` optional) and `POST …/restore` (`commit`), each making a task.
 - **Users and tokens:** `GET /api/me`. An Admin manages `/api/users`. `POST /api/tokens` makes a token for yourself, at most as able as the token asking; `DELETE /api/tokens/:id` revokes one.
 - **Errors** are `{ error: { code, message, … } }`. The API's codes keep their meaning, with `404` for `not-found`, `409` for `exists`, `ambiguous`, `formula` and the like, and `400` for bad values. The server adds `unauthenticated` (401), `forbidden` (403), `conflict` (409, with the conflicts), `invalid` (422, with the validation) and `state` (409, such as a landed task).
 

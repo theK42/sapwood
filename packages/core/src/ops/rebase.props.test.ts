@@ -345,23 +345,14 @@ describe("rebase (properties)", () => {
     expect(docDiff(after, x.state), ctx()).toEqual([]);
   });
 
-  it("reconcile takes a document to another with the same rows and columns, exactly", () => {
-    let reached = 0;
-    fc.assert(
-      fc.property(fc.gen(), (g) => {
-        const base = genDoc(g);
-        const noInserts = (ops: Op[]) => ops.filter((op) => op.kind !== "insert" && !JSON.stringify(op).includes('"x_') && !JSON.stringify(op).includes('"y_'));
-        const x = final(base, noInserts(genOps(g, base, "x", 10))), y = final(base, noInserts(genOps(g, base, "y", 10)));
-        const rc = reconcile(x, y);
-        expect(rc).not.toBeNull();
-        applyOps(x, rc!);
-        expect(docDiff(x, y)).toEqual([]);
-        if (rc!.length) reached++;
-      }),
-      { numRuns: RUNS },
-    );
-    expect(reached).toBeGreaterThan(RUNS / 2);
-  }, 600_000);
+  prop("reconcile takes any document to another made from the same base, exactly", (g) => {
+    const base = genDoc(g);
+    const x = final(base, genOps(g, base, "x", 10)), y = final(base, genOps(g, base, "y", 10));
+    const rc = reconcile(x, y);
+    expect(rc).not.toBeNull();
+    applyOps(x, rc!);
+    expect(docDiff(x, y)).toEqual([]);
+  });
 
   prop("reverting a commit after later commits agrees with the three-way merge", (g) => {
     const base = genDoc(g);

@@ -36,6 +36,9 @@ Working with a server
   task land [-m <message>] [--resolve <n>=mine|theirs]…
   task abandon [<id>]  |  task reopen <id>
   undo  |  redo                   In your current task
+  log [<branch>] [-n <count>]     Commits, newest first
+  revert <commit>                 A new task that undoes the commit, to check and land
+  restore <commit>                A new task that takes the branch back to that commit's state
   token create --name <n> [--read-only] [--no-land] [--only-branch <b>]… [--role <r>] [--expires <date>]
 
 A local project file
@@ -345,6 +348,35 @@ async function command(argv: string[], io: Io): Promise<number> {
       return branch(args, io);
     case "task":
       return task(args, io);
+    case "log": {
+      const p = parse(args, { count: { type: "string", short: "n" } });
+      positionals(p, [], true);
+      const r = remote(p, io);
+      const name = p.positionals[0] ?? r.branch;
+      const n = p.values.count === undefined ? 20 : Number(p.values.count);
+      if (!Number.isInteger(n) || n < 1) throw new UsageError("-n takes a whole number of commits");
+      for (const c of await r.client.json<CommitJson[]>("GET", `/api/branches/${enc(name)}/commits?limit=${n}`))
+        io.out(`${c.id.slice(0, 8)}  ${c.at.slice(0, 16).replace("T", " ")}  ${c.author}  ${c.message}${c.parents.length > 1 ? "  (two parents)" : ""}`);
+      return 0;
+    }
+    case "revert":
+    case "restore": {
+      const p = parse(args);
+      const [commit] = positionals(p, ["commit"]);
+      const r = remote(p, io);
+      const s =
+        cmd === "revert"
+          ? await r.client.json<StatusJson>("POST", `/api/commits/${enc(commit!)}/revert`, { branch: r.branch })
+          : await r.client.json<StatusJson>("POST", `/api/branches/${enc(r.branch)}/restore`, { commit });
+      const t = s.task;
+      io.out(`Task ${t.id}: ${t.name}. It's now your current task on ${t.branch}.`);
+      if (s.conflicts.length) {
+        io.out(`Later changes conflict with it; settle them with --resolve <n>=mine|theirs on task land (mine is the ${cmd}):`);
+        for (const line of conflictLines(s.conflicts)) io.out(line);
+      } else if (s.validation.errors) io.out(`It would leave ${plural(s.validation.errors, "validation error")}; fix them in the task, then land it.`);
+      else io.out("Check it with sapwood task status, then land it with sapwood task land.");
+      return 0;
+    }
     case "undo":
     case "redo": {
       const p = parse(args, { task: { type: "string" } });
@@ -489,6 +521,14 @@ async function branch(args: string[], io: Io): Promise<number> {
     default:
       throw new UsageError(`Unknown command branch ${sub}`);
   }
+}
+
+interface CommitJson {
+  id: string;
+  parents: string[];
+  author: string;
+  message: string;
+  at: string;
 }
 
 interface ConflictJson {

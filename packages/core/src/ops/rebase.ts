@@ -408,9 +408,13 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
         if (M.formats.has(k) && !(mineFirst && T.formats.has(k)) && live(op.sheet, op.row, op.col)) emit(op);
         break;
       }
-      case "insert":
-        if (sheetOf(op.sheet)) emit({ ...op, after: place(op.sheet, op.axis, op.after, []) });
+      case "insert": {
+        // Rows theirs already has (both brought one back, by revert or restore) stay as theirs has them.
+        const s = sheetOf(op.sheet);
+        const ids = s ? op.ids.filter((id) => !hasId(axisOf(s, op.axis), id)) : [];
+        if (ids.length) emit({ ...op, ids, after: place(op.sheet, op.axis, op.after, []) });
         break;
+      }
       case "move": {
         const s = sheetOf(op.sheet);
         // A row theirs deleted still moves, as a tombstone: where it lies doesn't show, but

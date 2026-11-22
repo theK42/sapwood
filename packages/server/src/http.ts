@@ -169,6 +169,22 @@ export function createApp(repo: Repo, auth: Auth): Hono<Env> {
     may(c, "viewer", "read", info.branch);
     return c.json({ ...info, ops: repo.commitOps(info.id) });
   });
+  /** Revert a commit: a new task, your current one, with the commit's inverse. On the commit's branch unless `branch` says. */
+  app.post("/api/commits/:c/revert", async (c) => {
+    const info = repo.commit(c.req.param("c"));
+    may(c, "viewer", "read", info.branch);
+    const b = await body(c, true);
+    const branch = b.branch === undefined ? info.branch : str(b.branch, "branch");
+    may(c, "editor", "write", branch);
+    return c.json(repo.revert(info.id, me(c).login, { branch }), 201);
+  });
+  /** Restore the branch to an earlier commit on it: a new task, your current one, taking it back to that state. */
+  app.post("/api/branches/:b/restore", async (c) => {
+    const branch = c.req.param("b");
+    may(c, "editor", "write", branch);
+    const b = await body(c);
+    return c.json(repo.restore(branch, str(b.commit, "commit"), me(c).login), 201);
+  });
 
   // ------------------------------------------------------------ tasks
 

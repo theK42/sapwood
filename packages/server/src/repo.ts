@@ -363,7 +363,17 @@ export class Repo {
   // ------------------------------------------------------------ commits
 
   commit(id: string): CommitInfo {
-    return commitInfo(this.commitRow(id));
+    return commitInfo(this.commitRow(this.resolveCommit(id)));
+  }
+
+  /** A commit's full ID from its ID or a unique start of it (4 characters or more), as a log shows it. */
+  resolveCommit(id: string): string {
+    if (this.db.one("SELECT 1 FROM commits WHERE id = ?", id)) return id;
+    if (!/^[0-9a-f]{4,}$/.test(id)) throw new RepoError("not-found", `No commit ${id}`);
+    const rows = this.db.all<{ id: string }>("SELECT id FROM commits WHERE id LIKE ? LIMIT 2", `${id}%`);
+    if (!rows.length) throw new RepoError("not-found", `No commit ${id}`);
+    if (rows.length > 1) throw new RepoError("bad-request", `Commit ${id} is ambiguous: give more of its ID`);
+    return rows[0]!.id;
   }
 
   /** A branch's commits, newest first, following first parents. */
@@ -426,7 +436,7 @@ export class Repo {
 
   /** The project at any commit, for reading. */
   at(commit: string): Sapwood {
-    return Sapwood.fromDoc(this.stateAt(commit));
+    return Sapwood.fromDoc(this.stateAt(this.resolveCommit(commit)));
   }
 
   // ------------------------------------------------------------ tasks
@@ -639,6 +649,63 @@ export class Repo {
     return this.task(id);
   }
 
+  // ------------------------------------------------------------ revert and restore
+
+  /**
+   * Revert a commit (DESIGN §8.7): a new task, the actor's current one on the branch, whose
+   * one change is the commit's inverse. It is based on the commit itself and rebased onto
+   * the head like any task, so later changes to the same cells come up as conflicts to
+   * settle before it lands. The commit must be on the branch (its first parents).
+   */
+  revert(commitId: string, actor: string, opts: { branch?: string } = {}): TaskStatus {
+    const c = this.commitRow(this.resolveCommit(commitId));
+    const branch = opts.branch ?? c.branch;
+    this.liveBranch(branch);
+    if (c.parent === null) throw new RepoError("bad-request", "The first commit can't be reverted");
+    this.onBranch(branch, c.id);
+    const inverse = applyOps(this.stateAt(c.parent), this.commitOps(c.id));
+    if (!inverse.length) throw new RepoError("state", `Commit ${short(c.id)} changed nothing`);
+    const t = this.taskWith(branch, actor, `Revert "${c.message}"`, c.id, inverse);
+    return this.status(t.id);
+  }
+
+  /**
+   * Restore a branch to an earlier commit on it (DESIGN §8.7): a new task, the actor's
+   * current one there, whose one change takes the head back to that commit's state
+   * exactly. The change says the difference plainly (rows removed, cells set back) rather
+   * than undoing every commit since, one by one, when it can.
+   */
+  restore(branch: string, commitId: string, actor: string): TaskStatus {
+    const b = this.liveBranch(branch);
+    const c = this.commitRow(this.resolveCommit(commitId));
+    this.onBranch(branch, c.id);
+    if (c.id === b.head) throw new RepoError("state", `${branch} is already at ${short(c.id)}`);
+    const target = this.stateAt(c.id);
+    const ops = reconcile(this.stateAt(b.head), target) ?? applyOps(this.stateAt(c.id), this.since(branch, c.id).ops);
+    if (!ops.length) throw new RepoError("state", `${branch} is already as it was at ${short(c.id)}`);
+    const t = this.taskWith(branch, actor, `Restore to ${short(c.id)} "${c.message}"`, b.head, ops);
+    return this.status(t.id);
+  }
+
+  /** A new open task on a branch, based on `base`, with one change. The owner's current task there. */
+  private taskWith(branch: string, owner: string, name: string, base: string, ops: Op[]): TaskInfo {
+    const inverse = applyOps(this.stateAt(base), ops);
+    const id = this.db.tx(() => {
+      const at = now();
+      const { lastInsertRowid: id } = this.db.run("INSERT INTO tasks (branch, owner, name, base, state, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?)", branch, owner, name, base, at, at);
+      this.db.run("INSERT INTO task_changes (task, seq, ops, inverse, undone) VALUES (?, 1, ?, ?, 0)", id, JSON.stringify(ops), JSON.stringify(inverse));
+      this.setCurrent(owner, branch, id);
+      return id;
+    });
+    return this.task(id);
+  }
+
+  /** Refuse a commit that isn't on the branch's line of first parents. */
+  private onBranch(branch: string, id: string): void {
+    for (let c: string | null = this.branch(branch).head; c !== null; c = this.commitRow(c).parent) if (c === id) return;
+    throw new RepoError("bad-request", `Commit ${short(id)} isn't on ${branch}`);
+  }
+
   // ------------------------------------------------------------ inside
 
   private commitRow(id: string): CommitRow {
@@ -833,3 +900,6 @@ function conflictError(cs: Conflict[], head: Sapwood): RepoError {
 }
 
 export type { ValidationJson };
+
+/** A commit ID, shortened for messages. */
+const short = (id: string): string => id.slice(0, 8);

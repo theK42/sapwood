@@ -207,6 +207,29 @@ describe("the sapwood command, on a server", () => {
     expect((await bob.sw("branch", "status", "main")).out).toBe("main has no parent: it's the root branch.");
   });
 
+  it("log, revert and restore", async () => {
+    const { loggedIn } = setup();
+    const ada = await loggedIn("ada");
+    await ada.sw("set", "a1", "speed=1");
+    await ada.sw("task", "land", "-m", "Faster a1");
+    await ada.sw("delete", "a2");
+    await ada.sw("task", "land", "-m", "No a2");
+    const log = (await ada.sw("log")).out.split("\n");
+    expect(log).toHaveLength(3);
+    expect(log[0]).toMatch(/^[0-9a-f]{8}  \d{4}-\d\d-\d\d \d\d:\d\d  ada  No a2$/);
+    expect((await ada.sw("log", "-n", "1")).out.split("\n")).toHaveLength(1);
+    const [faster, first] = [log[1]!.slice(0, 8), log[2]!.slice(0, 8)];
+    expect((await ada.sw("revert", faster)).out).toBe(
+      `Task 3: Revert "Faster a1". It's now your current task on main.\nCheck it with sapwood task status, then land it with sapwood task land.`,
+    );
+    await ada.sw("task", "land");
+    expect((await ada.json("get", "a1")).speed).toBe(900);
+    expect((await ada.sw("restore", first)).out).toMatch(/^Task 4: Restore to [0-9a-f]{8} "/);
+    await ada.sw("task", "land");
+    expect((await ada.json("get", "a2")).speed).toBe(600);
+    expect((await ada.sw("revert", "nothing")).err).toContain("[not-found]");
+  });
+
   it("schema, patch files and export", async () => {
     const { loggedIn } = setup();
     const ada = await loggedIn("ada");
