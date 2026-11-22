@@ -527,6 +527,7 @@ On rebase, the intent is re-applied against the new head, so rows added concurre
 |---|---|
 | Both sides set the same cell to different contents | Conflict |
 | One side edits a row the other deleted (a cell in it, or moves it); the same for columns | Conflict |
+| A deletion stands (unconflicted, or settled for the deleting side) | Under it, the row keeps what the deleting side left there, which is what a restore brings back. Deleted by both, the earlier-landed side's. A move of it still moves its tombstone |
 | Both sides move the same row to different places | Conflict. Moving it to the same place is not |
 | Both sides rename the same ID to different names | Conflict |
 | Both sides insert after the same anchor row | No conflict. Deterministic order: the earlier-landed side goes first, including rows it then inserted after those |
@@ -536,7 +537,7 @@ On rebase, the intent is re-applied against the new head, so rows added concurre
 | Formatting on the same cell | Last write wins |
 | Sheet, pack and layout changes (rename, move to a pack, set a layout) | Last write wins. One that no longer applies on the head, such as a sheet name the other side took, is dropped and reported |
 | Both sides set one schema property (a field's type, a type's name) to different values | Conflict. Different properties of the same field are not |
-| One side removes a schema definition or field the other changed or added fields to | Conflict. Keeping the change brings it back as it was in the base |
+| One side removes a schema definition or field the other changed or added fields to | Conflict. Keeping the change brings it back as it was in the base, with the keeping side's changes; the removing side's changes to it go with the removal |
 | Both sides add enum members, traits or union variants | No conflict. Lists of names merge item by item; the earlier-landed side's additions go first |
 | Both sides add fields at the same place | No conflict. The earlier-landed side's go first |
 | One side's new schema value names a definition the other side renamed | No conflict. It gets the new name |
@@ -559,7 +560,9 @@ To resolve a conflict, the user picks *mine*, *theirs*, or edits the cell, per c
 - All Editors can create, merge, sync and discard branches. Protected branches are later work (§11).
 - **How the server does it** (2026-11-21):
   - Each branch keeps its **net change**: ops that take its **base** (a commit on its parent: where it forked, or last synced or merged) to its head. Lands on the branch, and merges into it from its own branches, add to it.
-  - **Sync** rebases the net change onto the parent's head; mine is the branch, theirs the parent. The result is validated and committed on the branch, with the parent's head as second parent. The commit holds the parent's changes rebased over the branch's, as if they were a task landing on it, so open tasks on the branch rebase across it like any other commit. That rebase settles ties the other way round (rows placed at one spot, last-write-wins) and can drop ops, so when it doesn't reach the same state, the commit undoes the net change, applies the parent's changes, and redoes the net change rebased. That is exact, but a long commit. In random tests about 2% of syncs take that way.
+  - **Sync** rebases the net change onto the parent's head; mine is the branch, theirs the parent. The result is validated and committed on the branch, with the parent's head as second parent.
+  - **The sync commit** is the parent's changes rebased over the branch's, as if they were a task landing on it, so open tasks on the branch rebase across it like any other commit, and history shows just what came in. That rebase runs with `mineFirst`: the parent counts as landed first though it's rebased second, so ties go as they did the other way round (its rows first at one spot, the branch winning last-write-wins, a row both deleted keeping the parent's contents). Ties then agree exactly. Moves and renames can still come out a little different that way round (a rename re-run meets the other side's writes in one order and not the other); then **reconcile** adds the few ops that say what's left: a row moved, a cell or schema property set. Only if it can't (schema nodes added or removed differently) does the commit undo the branch's net change, apply the parent's, and redo the branch's. In random tests: of syncs over data edits, 1 in about 1,900 needs reconciling and none the long way; of schema-heavy random edits on both sides, about 5% need reconciling, usually by one or two ops, and 0.24% the long way, all with renames or removed fields.
+  - **Hidden cell writes.** `setCell` and `setFormat` can carry `hidden: true`, for a cell under a deleted row or column. Only a rebase or reconcile writes them, so that both directions keep the same contents under a deletion; a history view should leave them out.
   - **Merge** syncs first when the parent has moved on, in the same step and with the same resolutions. The merge commit, on the parent with the branch's head as second parent, is then exactly the branch's net change, so afterwards the two are the same and the branch's net change starts again from the merge commit. Merging again brings only what's new.
   - Sync and merge are refused with unsettled conflicts or validation errors, and a merge with no changes. They need the Editor role and a token that may land, on the branch (and, for a merge, the parent).
 

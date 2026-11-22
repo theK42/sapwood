@@ -1,4 +1,5 @@
 import fc from "fast-check";
+import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { applyOps, docsEqual, Sapwood, type Op, type Patch } from "@thek42/sapwood-core";
 import { Db } from "./db.ts";
@@ -161,6 +162,8 @@ describe("merge and sync, at random", () => {
         { op: "delete", id: "a2" },
         { op: "commentOut", id: "a1" },
         { op: "setSingleton", type: "Config", fields: { lives: 7 } },
+        { op: "set", id: "a1", fields: { $id: "a5" } }, // a rename: refs to a1 follow it
+        { op: "set", id: "w1", fields: { shots: ["a1"] } },
       ),
     );
     const step = fc.oneof(
@@ -171,6 +174,7 @@ describe("merge and sync, at random", () => {
     );
     const runs = Number(process.env.SAPWOOD_RUNS ?? 80);
     const seen: Record<string, number> = {};
+    const routes = { clean: 0, reconciled: 0, long: 0 };
     fc.assert(
       fc.property(fc.array(step, { minLength: 5, maxLength: 25 }), (steps) => {
         const { db, repo } = setup();
@@ -205,9 +209,15 @@ describe("merge and sync, at random", () => {
           for (const b of ["main", "dev", "feat"]) expect(docsEqual(fresh.head(b).doc, repo.head(b).doc)).toBe(true);
           if (repo.task(task.id).state === "open") expect(docsEqual(fresh.view(task.id).doc, repo.view(task.id).doc)).toBe(true);
         }
+        for (const k of ["clean", "reconciled", "long"] as const) routes[k] += repo.syncRoutes[k];
       }),
       { numRuns: runs },
     );
+    // A sync commit holds the parent's changes, plus at most a few reconciling ops: never
+    // the long way round.
+    expect(routes.long).toBe(0);
+    expect(routes.clean).toBeGreaterThan(runs / 4);
+    if (process.env.SAPWOOD_ROUTES) writeFileSync(process.env.SAPWOOD_ROUTES, JSON.stringify(routes));
     expect(seen.sync ?? 0).toBeGreaterThan(runs / 4);
     expect(seen.merge ?? 0).toBeGreaterThan(runs / 4);
     expect(seen.conflicts ?? 0).toBeGreaterThan(0);

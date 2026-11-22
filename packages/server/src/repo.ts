@@ -9,7 +9,7 @@
 
 import { randomBytes } from "node:crypto";
 import {
-  applyOps, cloneDoc, conflictId, docFromJson, docsEqual, docToJson, rebase, Sapwood,
+  applyOps, cloneDoc, conflictId, docFromJson, docsEqual, docToJson, rebase, reconcile, Sapwood,
   type CellAddress, type Change, type Conflict, type Doc, type ExportFile, type Op, type Side, type ValidationJson,
 } from "@thek42/sapwood-core";
 import { now, type Db } from "./db.ts";
@@ -90,6 +90,8 @@ export interface Landed {
 }
 
 export type Resolutions = Record<string, Side>;
+/** How a sync commit was made: the parent's changes alone, plus a few reconciling ops, or undo and redo. */
+export type SyncRoute = "clean" | "reconciled" | "long";
 
 /** How a branch stands against its parent. */
 export interface BranchStatus {
@@ -173,6 +175,8 @@ export class Repo {
   private readonly heads = new Map<string, { commit: string; s: Sapwood; exports: Map<string, ExportFile[]> }>();
   private readonly views = new Map<number, { base: string; s: Sapwood }>();
   private readonly docs = new Map<string, Doc>();
+  /** How this process's syncs were made, for tests and diagnostics. */
+  readonly syncRoutes: Record<SyncRoute, number> = { clean: 0, reconciled: 0, long: 0 };
 
   readonly db: Db;
 
@@ -310,18 +314,27 @@ export class Repo {
     if (blocking.length) throw conflictError(blocking, this.head(b.name));
     const v = Sapwood.fromDoc(cloneDoc(r.state)).validate();
     if (v.errors) throw new RepoError("invalid", `Syncing ${b.name} from ${parent.name} would leave ${v.errors} validation error${v.errors === 1 ? "" : "s"}`, { validation: v });
-    // The sync commit applies to the branch's head. Best is the parent's changes rebased
-    // over the branch's, as if they were a task landing on it. That rebase settles ties
-    // (rows placed at one spot, last-write-wins) the other way round, and can drop ops, so
-    // when it doesn't end in the same state, the commit takes the long way instead: undo
-    // the branch's net change, apply the parent's, then the branch's rebased.
+    // The sync commit applies to the branch's head: the parent's changes rebased over the
+    // branch's, as if they were a task landing on it, with the parent counted as landed
+    // first, so ties go as they did above. Moves and renames can still come out a little
+    // different that way round; reconcile adds the few ops that say what's left. Only if
+    // it can't (the schema differs) does the commit take the long way: undo the branch's
+    // net change, apply the parent's, then the branch's rebased.
     const flip = (s: Side | undefined): Side => (s === "theirs" ? "mine" : s === "mine" ? "theirs" : "mine");
-    const across = rebase(this.stateAt(base.commit), base.net, theirs, (c) => flip(resolutions[conflictId(c, true)]));
+    const across = rebase(this.stateAt(base.commit), base.net, theirs, (c) => flip(resolutions[conflictId(c, true)]), { mineFirst: true });
     let ops = across.ops;
+    let route: SyncRoute = "clean";
     if (!docsEqual(across.state, r.state)) {
-      const undo = applyOps(this.stateAt(base.commit), base.net);
-      ops = [...undo, ...theirs, ...r.ops];
+      const rest = reconcile(across.state, r.state);
+      if (rest) {
+        ops = [...ops, ...rest];
+        route = "reconciled";
+      } else {
+        ops = [...applyOps(this.stateAt(base.commit), base.net), ...theirs, ...r.ops];
+        route = "long";
+      }
     }
+    this.syncRoutes[route]++;
     const commit = this.addCommit(b.name, b.head, parent.head, null, actor, `Sync ${b.name} from ${parent.name}`, ops, r.state, false);
     this.setBase(b.name, parent.head, base.point, r.ops);
     this.heads.set(b.name, { commit: commit.id, s: Sapwood.fromDoc(cloneDoc(r.state)), exports: new Map() });

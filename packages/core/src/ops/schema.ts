@@ -209,13 +209,21 @@ const itemKey = (x: unknown): string => (typeof x === "string" ? x : String((x a
  * still has the same items as `was`. Items in `keep` (ones the other side added, when a
  * task removes something it had added itself) are never removed.
  */
-export function mergeList(was: readonly unknown[], next: readonly unknown[], now: readonly unknown[], keep: ReadonlySet<string> = new Set()): unknown[] {
+export function mergeList(was: readonly unknown[], next: readonly unknown[], now: readonly unknown[], keep: ReadonlySet<string> = new Set(), nextFirst = false): unknown[] {
   const wasKeys = new Map(was.map((x) => [itemKey(x), x]));
   const nextKeys = new Set(next.map(itemKey));
   const sameItems = was.length === next.length && next.every((x) => wasKeys.has(itemKey(x)));
   if (sameItems && was.length === now.length && now.every((x) => wasKeys.has(itemKey(x)))) {
-    // A pure reorder (or description change) against an unchanged set of items.
+    // A pure reorder (or description change) against an unchanged set of items. Last write
+    // wins the order, unless next counts as landed first and now was reordered too.
     const nowByKey = new Map(now.map((x) => [itemKey(x), x]));
+    const order = (xs: readonly unknown[]) => JSON.stringify(xs.map(itemKey));
+    if (nextFirst && order(now) !== order(was))
+      return now.map((x) => {
+        const k = itemKey(x);
+        const mine = next.find((y) => itemKey(y) === k);
+        return mine !== undefined && stableJson(mine) !== stableJson(wasKeys.get(k)) ? mine : x;
+      });
     return next.map((x) => (stableJson(x) !== stableJson(wasKeys.get(itemKey(x))) ? x : nowByKey.get(itemKey(x))));
   }
   const out = now.filter((x) => !wasKeys.has(itemKey(x)) || nextKeys.has(itemKey(x)) || keep.has(itemKey(x)));
@@ -233,8 +241,8 @@ export function mergeList(was: readonly unknown[], next: readonly unknown[], now
       pos = out.findIndex((y) => itemKey(y) === itemKey(next[j]));
       if (pos >= 0) break;
     }
-    // Past items the other side added here, so the earlier-landed side comes first (ง8.5).
-    while (pos + 1 < out.length && !wasKeys.has(itemKey(out[pos + 1])) && !nextKeys.has(itemKey(out[pos + 1]))) pos++;
+    // Past items the other side added here, so the earlier-landed side comes first (ยง8.5).
+    while (!nextFirst && pos + 1 < out.length && !wasKeys.has(itemKey(out[pos + 1])) && !nextKeys.has(itemKey(out[pos + 1]))) pos++;
     out.splice(pos + 1, 0, x);
   });
   return out;

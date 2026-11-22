@@ -15,8 +15,10 @@ import { addNode, removeNode, setNodeProp, type SchemaDef, type SchemaParent } f
 
 export type Op =
   // cells
-  | { kind: "setCell"; sheet: SheetId; row: RowId; col: ColId; content: Content }
-  | { kind: "setFormat"; sheet: SheetId; row: RowId; col: ColId; format: Format | null }
+  // `hidden`: the cell is under a deleted row or column, and stays so. A rebase writes these so
+  // both landing orders keep the same contents under a deletion (what comes back on restore).
+  | { kind: "setCell"; sheet: SheetId; row: RowId; col: ColId; content: Content; hidden?: true }
+  | { kind: "setFormat"; sheet: SheetId; row: RowId; col: ColId; format: Format | null; hidden?: true }
   // structure
   | { kind: "insert"; sheet: SheetId; axis: Axis; after: string | null; ids: string[] }
   | { kind: "delete"; sheet: SheetId; axis: Axis; ids: string[] }
@@ -117,7 +119,8 @@ export function applyPlain(doc: Doc, op: Op): Op[] {
     case "setCell":
     case "setFormat": {
       const s = sheetOf(doc, op.sheet);
-      if (!isLive(s.rows, op.row) || !isLive(s.cols, op.col)) throw new OpError(`${op.kind}: no cell ${op.row}|${op.col} on ${s.name}`);
+      const here = op.hidden ? hasId(s.rows, op.row) && hasId(s.cols, op.col) && !(isLive(s.rows, op.row) && isLive(s.cols, op.col)) : isLive(s.rows, op.row) && isLive(s.cols, op.col);
+      if (!here) throw new OpError(`${op.kind}: no ${op.hidden ? "hidden " : ""}cell ${op.row}|${op.col} on ${s.name}`);
       const k = cellKey(op.row, op.col);
       if (op.kind === "setCell") {
         const prev = s.cells.get(k) ?? null;
@@ -191,7 +194,7 @@ export function applyPlain(doc: Doc, op: Op): Op[] {
       if (!op.ids.length) throw new OpError("move: no IDs");
       if (new Set(op.ids).size !== op.ids.length) throw new OpError("move: an ID is listed twice");
       for (const id of op.ids) {
-        if (!isLive(a, id)) throw new OpError(`move: ${id} is not there`);
+        if (!hasId(a, id)) throw new OpError(`move: ${id} is not there`); // tombstones move too, unseen
         if (sys.includes(id)) throw new OpError("move: columns A and B of a data sheet can't be moved");
       }
       if (op.after !== null && op.ids.includes(op.after)) throw new OpError("move: the anchor is one of the moving IDs");

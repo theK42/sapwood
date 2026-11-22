@@ -13,6 +13,7 @@ import { axisOf, canonDoc, cellKey, cloneDoc, emptyDoc, isLive, liveIds, splitCe
 import { applyOps, type Op } from "./ops.ts";
 import { applyOp } from "./ops.ts";
 import { conflictId, rebase, type Conflict, type Side } from "./rebase.ts";
+import { reconcile } from "./reconcile.ts";
 
 const RUNS = Number(process.env.RUNS ?? 1000);
 type Gen = fc.GeneratorValue;
@@ -320,6 +321,48 @@ describe("rebase (properties)", () => {
     explain({ base, a, b }, () => converge(base, a, b));
   });
 
+  prop("rebasing the earlier side over the later, with mineFirst, gives the same document", (g) => {
+    const base = genDoc(g);
+    const a = genOps(g, base, "a"), b = genOps(g, base, "b");
+    const chosen = new Map<string, Side>();
+    const choose = (id: string): Side => {
+      if (!chosen.has(id)) chosen.set(id, int(g, 1) === 0 ? "mine" : "theirs");
+      return chosen.get(id)!;
+    };
+    const flip = (s: Side): Side => (s === "mine" ? "theirs" : "mine");
+    // a landed first and b rebased onto it; and from b's head, a rebased onto it, still first.
+    const x = rebase(base, a, b, (c) => choose(conflictId(c)));
+    const y = rebase(base, b, a, (c) => flip(choose(conflictId(c, true))), { mineFirst: true });
+    const ctx = () => JSON.stringify({ base: canonDoc(base), a, b, chosen: [...chosen], xOps: x.ops, yOps: y.ops });
+    // Ties (rows placed at one spot, last-write-wins, what a deleted row keeps) agree exactly.
+    // Moves and renames can still differ a little: reconcile says what's left, exactly.
+    const plain = ![...a, ...b].some((op) => op.kind === "move" || op.kind === "renameId");
+    if (plain) expect(docDiff(x.state, y.state), ctx()).toEqual([]);
+    const rc = reconcile(y.state, x.state);
+    expect(rc, ctx()).not.toBeNull();
+    const after = cloneDoc(y.state);
+    applyOps(after, rc!);
+    expect(docDiff(after, x.state), ctx()).toEqual([]);
+  });
+
+  it("reconcile takes a document to another with the same rows and columns, exactly", () => {
+    let reached = 0;
+    fc.assert(
+      fc.property(fc.gen(), (g) => {
+        const base = genDoc(g);
+        const noInserts = (ops: Op[]) => ops.filter((op) => op.kind !== "insert" && !JSON.stringify(op).includes('"x_') && !JSON.stringify(op).includes('"y_'));
+        const x = final(base, noInserts(genOps(g, base, "x", 10))), y = final(base, noInserts(genOps(g, base, "y", 10)));
+        const rc = reconcile(x, y);
+        expect(rc).not.toBeNull();
+        applyOps(x, rc!);
+        expect(docDiff(x, y)).toEqual([]);
+        if (rc!.length) reached++;
+      }),
+      { numRuns: RUNS },
+    );
+    expect(reached).toBeGreaterThan(RUNS / 2);
+  }, 600_000);
+
   prop("reverting a commit after later commits agrees with the three-way merge", (g) => {
     const base = genDoc(g);
     const commit = genOps(g, base, "c");
@@ -329,6 +372,24 @@ describe("rebase (properties)", () => {
     explain({ base: c, commit, later, revert: inverse }, () => checkMerge(c, later, inverse, randomChoice(g)));
   });
 });
+
+/** Where two documents differ, briefly: the order of each axis, then each cell and format. */
+function docDiff(x: Doc, y: Doc): string[] {
+  const out: string[] = [];
+  const cx = canonDoc(x) as { sheets: { id: string; [k: string]: unknown }[] }, cy = canonDoc(y) as typeof cx;
+  if (JSON.stringify({ ...cx, sheets: 0 }) !== JSON.stringify({ ...cy, sheets: 0 })) out.push("schema or packs");
+  for (const sx of cx.sheets) {
+    const sy = cy.sheets.find((s) => s.id === sx.id);
+    if (!sy) { out.push(`sheet ${sx.id} only in x`); continue; }
+    for (const k of ["name", "pack", "rows", "cols"]) if (JSON.stringify(sx[k]) !== JSON.stringify(sy[k])) out.push(`${sx.id}.${k}: ${JSON.stringify(sx[k])} vs ${JSON.stringify(sy[k])}`);
+    for (const k of ["cells", "formats", "layouts"]) {
+      const mx = new Map(sx[k] as [string, unknown][]), my = new Map(sy[k] as [string, unknown][]);
+      for (const key of new Set([...mx.keys(), ...my.keys()]))
+        if (JSON.stringify(mx.get(key)) !== JSON.stringify(my.get(key))) out.push(`${sx.id}.${k} ${key}: ${JSON.stringify(mx.get(key))} vs ${JSON.stringify(my.get(key))}`);
+    }
+  }
+  return out;
+}
 
 function converge(base: Doc, a: Op[], b: Op[]) {
   const x = rebase(base, a, b);

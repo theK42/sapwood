@@ -25,3 +25,4 @@ export {
 } from "./ops/rename.ts";
 export * from "./ops/schema.ts";
 export * from "./ops/rebase.ts";
+export * from "./ops/reconcile.ts";

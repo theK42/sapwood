@@ -17,6 +17,7 @@ import { validate } from "../project/validate.ts";
 import { canonDoc, cloneDoc, type Doc } from "./doc.ts";
 import { applyOp, OpError, type Op } from "./ops.ts";
 import { conflictId, rebase, type Conflict, type Side } from "./rebase.ts";
+import { reconcile } from "./reconcile.ts";
 import { isSection, LIST_KEYS, propsOf, schemaNodes } from "./schema.ts";
 
 const RUNS = Number(process.env.RUNS ?? 300);
@@ -292,6 +293,41 @@ describe("schema ops (properties)", () => {
         if (sx !== sy && !touched(sx) && !touched(sy)) throw new Error(JSON.stringify({ id, k, x: sx, y: sy, a, b }, null, 1).slice(0, 5000));
       }
     }
+  });
+});
+
+describe("schema rebase with mineFirst", () => {
+  const seen = { total: 0, differ: 0, reconciled: 0 };
+  prop("rebasing the earlier side over the later, with mineFirst, gives the same document, or reconcile says what's left", (g) => {
+    const a = genOps(g, start, "a").ops, b = genOps(g, start, "b").ops;
+    const chosen = new Map<string, Side>();
+    const choose = (id: string): Side => {
+      if (!chosen.has(id)) chosen.set(id, int(g, 1) === 0 ? "mine" : "theirs");
+      return chosen.get(id)!;
+    };
+    const flip = (s: Side): Side => (s === "mine" ? "theirs" : "mine");
+    const x = rebase(start, a, b, (c) => choose(conflictId(c)));
+    const y = rebase(start, b, a, (c) => flip(choose(conflictId(c, true))), { mineFirst: true });
+    const same = (p: Doc, q: Doc) => JSON.stringify(canonDoc(p)) === JSON.stringify(canonDoc(q));
+    seen.total++;
+    if (same(x.state, y.state)) return;
+    seen.differ++;
+    // Without renames, only fields added after a field one side removed can come out in a
+    // different order (there's no tombstone to anchor them); reconcile can't say that.
+    const renames = [...a, ...b].some((op) => op.kind === "renameType" || op.kind === "renameField" || op.kind === "renameEnumMember" || op.kind === "renameId");
+    const rc = reconcile(y.state, x.state);
+    if (!rc) {
+      expect(renames || [...a, ...b].some((op) => op.kind === "removeSchema"), JSON.stringify({ a, b, chosen: [...chosen] })).toBe(true);
+      return;
+    }
+    seen.reconciled++;
+    const after = cloneDoc(y.state);
+    for (const op of rc) applyOp(after, op);
+    expect(same(after, x.state)).toBe(true);
+  });
+  it("mostly agrees, and reconcile covers most of the rest", () => {
+    expect(seen.differ).toBeLessThan(seen.total / 10);
+    expect(seen.reconciled).toBeGreaterThan(seen.differ * 0.8);
   });
 });
 

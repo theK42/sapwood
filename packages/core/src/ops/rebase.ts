@@ -40,7 +40,7 @@ export type Conflict =
   | { kind: "deleted"; sheet: SheetId; axis: Axis; id: string; deletedBy: Side }
   | { kind: "move"; sheet: SheetId; axis: Axis; id: string; mine: string | null; theirs: string | null }
   | { kind: "rename"; from: string; mine: string; theirs: string }
-  /** Both sides set one property of a schema node (a field's type, a type's name…) differently. */
+  /** Both sides set one property of a schema node (a field's type, a type's nameâ€¦) differently. */
   | { kind: "schema"; id: Id; key: string; base: unknown; mine: unknown; theirs: unknown }
   /** One side removed a schema definition or field that the other changed (or added fields to). */
   | { kind: "schemaDeleted"; id: Id; deletedBy: Side }
@@ -275,11 +275,22 @@ export interface RebaseResult {
   state: Doc;
 }
 
+export interface RebaseOptions {
+  /**
+   * Count mine as the side that landed first, though it is rebased over theirs: its rows
+   * go before theirs' at the same spot, theirs wins last-write-wins ties, and a row both
+   * deleted keeps mine's contents. With conflicts settled the same way, rebasing B over A
+   * and rebasing A over B with this set end in exactly the same document.
+   */
+  mineFirst?: boolean;
+}
+
 /**
  * Rebase `mine` onto `theirs`; both were written against `base`. Each conflict is
  * settled by `resolve` (default: keep theirs, i.e. the head as landed).
  */
-export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], resolve: Resolve = () => "theirs"): RebaseResult {
+export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], resolve: Resolve = () => "theirs", opts: RebaseOptions = {}): RebaseResult {
+  const mineFirst = opts.mineFirst ?? false;
   const T = analyze(base, theirs);
   const M = analyze(base, mine);
   const conflicts = detect(M, T, base);
@@ -332,13 +343,15 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
     if (s && axisOf(s, r.axis).dead.has(r.id)) emit({ kind: "restore", sheet: r.sheet, axis: r.axis, ids: [r.id] });
   }
 
-  // Schema nodes theirs removed that mine resolved to keep come back as they were in the base.
+  // Schema nodes theirs removed that mine resolved to keep come back as they were in the base,
+  // in their old place: after nodes theirs added there, whichever side landed first, as a
+  // node never removed would be.
   const curHas = (id: Id) => schemaNodes(cur.schema).has(id);
   const parentHere = (p: SchemaParent) => isSection(p) || curHas(p);
   const ctx = cloneDoc(base); // the document as mine saw it when writing each op
   for (const id of schemaRestore) {
     const n = schemaNodes(base.schema).get(id)!;
-    if (!curHas(id) && parentHere(n.parent)) emit({ kind: "addSchema", parent: n.parent, def: n.def, after: placeSchema(cur, ctx, T, n.parent, before(base, n.parent, id)) });
+    if (!curHas(id) && parentHere(n.parent)) emit({ kind: "addSchema", parent: n.parent, def: n.def, after: placeSchema(cur, ctx, T, false, n.parent, before(base, n.parent, id)) });
   }
   const swappedSchema = new Set<string>();
   const mineRenamed = new Map<Id, "renameType" | "renameField">(); // replayed renames, by node
@@ -373,7 +386,7 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
   const mineMoved = new Set<string>(); // rows mine' really moved on the head
   const ctxMoved = new Set<string>(); // rows mine moved as written
   const place = (sh: SheetId, axis: Axis, after: string | null, moving: string[]) => {
-    const at = anchor(cur, ctx, T, (k) => (T.moved.has(k) || ctxMoved.has(k)) && !mineMoved.has(k), sh, axis, after, moving);
+    const at = anchor(cur, ctx, T, mineFirst, (k) => (T.moved.has(k) || ctxMoved.has(k)) && !mineMoved.has(k), sh, axis, after, moving);
     for (const id of moving) mineMoved.add(axisKey(sh, axis, id));
     return at;
   };
@@ -389,16 +402,20 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
         if (live(op.sheet, op.row, op.col)) emit(op);
         break;
       }
-      case "setFormat":
+      case "setFormat": {
         // Last write wins, but only for a real change: a format set and then cleared must not wipe theirs.
-        if (M.formats.has(cellAt(op.sheet, op.row, op.col)) && live(op.sheet, op.row, op.col)) emit(op);
+        const k = cellAt(op.sheet, op.row, op.col);
+        if (M.formats.has(k) && !(mineFirst && T.formats.has(k)) && live(op.sheet, op.row, op.col)) emit(op);
         break;
+      }
       case "insert":
         if (sheetOf(op.sheet)) emit({ ...op, after: place(op.sheet, op.axis, op.after, []) });
         break;
       case "move": {
         const s = sheetOf(op.sheet);
-        const ids = s ? op.ids.filter((id) => isLive(axisOf(s, op.axis), id) && !noMove.has(axisKey(op.sheet, op.axis, id))) : [];
+        // A row theirs deleted still moves, as a tombstone: where it lies doesn't show, but
+        // both landing orders must leave it in the same place.
+        const ids = s ? op.ids.filter((id) => hasId(axisOf(s, op.axis), id) && !noMove.has(axisKey(op.sheet, op.axis, id))) : [];
         if (ids.length) emit({ ...op, ids, after: place(op.sheet, op.axis, op.after, ids) });
         break;
       }
@@ -446,12 +463,15 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
         // Gone on the head: theirs removed it (a conflict, if mine changed it).
         const now = schemaNodes(cur.schema).get(op.id);
         if (!now) break;
+        // Mine removed it, but theirs kept it: mine's changes to it go with the removal, as
+        // theirs' would if it were the other way round (it comes back as it was in the base).
+        if (schemaKeep.has(op.id)) break;
         if (LIST_KEYS.has(op.key)) {
           const was = schemaNodes(ctx.schema).get(op.id)?.def[op.key];
           // Mine removing an item it added itself mustn't take away the same item theirs added.
           const baseList = asList(schemaNodes(base.schema).get(op.id)?.def[op.key]).map(itemName);
           const theirsAdded = new Set(asList(schemaNodes(T.final.schema).get(op.id)?.def[op.key]).map(itemName).filter((k) => !baseList.includes(k)));
-          const merged = mergeList(asList(was), asList(op.value), asList(now.def[op.key]), theirsAdded);
+          const merged = mergeList(asList(was), asList(op.value), asList(now.def[op.key]), theirsAdded, mineFirst);
           if (stableJson(merged) !== stableJson(now.def[op.key] ?? [])) emit({ kind: "setSchema", id: op.id, key: op.key, value: merged });
           break;
         }
@@ -462,14 +482,14 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
       }
       case "addSchema":
         if (parentHere(op.parent))
-          tryEmit({ ...op, def: nowNamed(op.parent, null, op.def) as typeof op.def, after: placeSchema(cur, ctx, T, op.parent, op.after) });
+          tryEmit({ ...op, def: nowNamed(op.parent, null, op.def) as typeof op.def, after: placeSchema(cur, ctx, T, mineFirst, op.parent, op.after) });
         break;
       case "removeSchema":
         if (curHas(op.id) && !schemaKeep.has(op.id)) emit(op);
         break;
       case "renameType":
       case "renameField": {
-        if (!curHas(op.id)) break;
+        if (!curHas(op.id) || schemaKeep.has(op.id)) break;
         const k = `${op.id}#name`;
         const side = schemaSide.get(k);
         if (side === "theirs") break;
@@ -501,7 +521,7 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
       }
       default:
         // Sheet, pack and layout ops: last write wins, if they still apply.
-        tryEmit(op);
+        if (!(mineFirst && theirsSet(base, T.final, op))) tryEmit(op);
     }
     if (op.kind === "move") for (const id of op.ids) ctxMoved.add(axisKey(op.sheet, op.axis, id));
     applyOp(ctx, op);
@@ -527,7 +547,56 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
     if (!n || stableJson(n.def[c.key]) === stableJson(c.mine)) continue;
     emit(c.mine === undefined ? { kind: "setSchema", id: c.id, key: c.key } : { kind: "setSchema", id: c.id, key: c.key, value: c.mine });
   }
+  // Under a deletion that stands, the cells keep what the deleting side left there (what a
+  // restore brings back); deleted by both, the side that landed first. Ops can't write
+  // there, so without this they'd hold whichever side's state the rebase started from.
+  for (const [sh, s] of cur.sheets) {
+    const owner = new Map<string, Analysis>(); // `${axis}/${id}` -> the side whose contents it keeps
+    for (const axis of ["row", "col"] as const)
+      for (const id of axisOf(s, axis).dead) {
+        const k = axisKey(sh, axis, id);
+        const t = T.deleted.has(k), m = M.deleted.has(k);
+        if (t || m) owner.set(`${axis}/${id}`, t && m ? (mineFirst ? M : T) : t ? T : M);
+      }
+    if (!owner.size) continue;
+    const ownerOf = (k: string) => {
+      const [r, c] = splitCellKey(k);
+      return owner.get(`row/${r}`) ?? owner.get(`col/${c}`);
+    };
+    const sheetIn = (a: Analysis) => a.final.sheets.get(sh);
+    const keys = (f: (d: SheetDoc) => Map<string, unknown>) => new Set([s, sheetIn(T), sheetIn(M)].flatMap((d) => (d ? [...f(d).keys()] : [])));
+    for (const k of keys((d) => d.cells)) {
+      const o = ownerOf(k);
+      if (!o) continue;
+      const want = sheetIn(o)?.cells.get(k) ?? null;
+      const [row, col] = splitCellKey(k);
+      if (contentKey(s.cells.get(k) ?? null) !== contentKey(want)) emit({ kind: "setCell", sheet: sh, row, col, content: want, hidden: true });
+    }
+    for (const k of keys((d) => d.formats)) {
+      const o = ownerOf(k);
+      if (!o) continue;
+      const want = sheetIn(o)?.formats.get(k) ?? null;
+      const [row, col] = splitCellKey(k);
+      if (stableJson(s.formats.get(k) ?? null) !== stableJson(want)) emit({ kind: "setFormat", sheet: sh, row, col, format: want, hidden: true });
+    }
+  }
   return { ops: out, origins, conflicts, state: cur };
+}
+
+/** Theirs changed what this sheet, pack or layout op sets (for last-write-wins ties). */
+function theirsSet(base: Doc, final: Doc, op: Op): boolean {
+  switch (op.kind) {
+    case "renameSheet":
+      return base.sheets.has(op.sheet) && base.sheets.get(op.sheet)!.name !== final.sheets.get(op.sheet)?.name;
+    case "setSheetPack":
+      return base.sheets.has(op.sheet) && base.sheets.get(op.sheet)!.pack !== final.sheets.get(op.sheet)?.pack;
+    case "setLayout":
+      return stableJson(base.sheets.get(op.sheet)?.layouts.get(op.type) ?? null) !== stableJson(final.sheets.get(op.sheet)?.layouts.get(op.type) ?? null);
+    case "renamePack":
+      return base.packs.has(op.pack) && base.packs.get(op.pack)!.name !== final.packs.get(op.pack)?.name;
+    default:
+      return false;
+  }
 }
 
 const asList = (x: unknown): unknown[] => (Array.isArray(x) ? x : []);
@@ -543,9 +612,9 @@ function before(doc: Doc, parent: SchemaParent, id: Id): Id | null {
 /**
  * Where a schema node added after `after` goes on the head: after the same sibling if it
  * is still there, else after the sibling before it as mine saw them. Then past nodes
- * theirs added at the same place, so the earlier-landed side comes first (§8.5).
+ * theirs added at the same place, so the earlier-landed side comes first (Â§8.5).
  */
-function placeSchema(cur: Doc, ctx: Doc, T: Analysis, parent: SchemaParent, after: Id | null): Id | null {
+function placeSchema(cur: Doc, ctx: Doc, T: Analysis, mineFirst: boolean, parent: SchemaParent, after: Id | null): Id | null {
   const list = siblings(cur.schema, parent).map((d) => d.id);
   const ctxList = siblings(ctx.schema, parent).map((d) => d.id);
   let a = after;
@@ -555,7 +624,7 @@ function placeSchema(cur: Doc, ctx: Doc, T: Analysis, parent: SchemaParent, afte
   }
   const skipped = new Set<string>([a ?? START]);
   let i = a === null ? -1 : list.indexOf(a);
-  for (;;) {
+  while (!mineFirst) {
     const next = list[i + 1];
     if (next === undefined || !T.schemaPlaced.has(next) || !skipped.has(T.schemaPlaced.get(next) ?? START)) break;
     skipped.add(next);
@@ -579,6 +648,8 @@ function anchor(
   cur: Doc,
   ctx: Doc,
   T: Analysis,
+  /** Mine landed first: it goes before theirs' rows placed at the same spot. */
+  mineFirst: boolean,
   /** The row is not where mine saw it: theirs moved it, or mine's own move of it was dropped. */
   movedAway: (k: string) => boolean,
   sh: SheetId,
@@ -602,7 +673,7 @@ function anchor(
   }
   const skipped = new Set<string>([a ?? START]);
   let i = a === null ? -1 : ord.indexOf(a);
-  for (;;) {
+  while (!mineFirst) {
     const next = ord[i + 1];
     if (next === undefined || moving.includes(next)) break;
     const k = axisKey(sh, axis, next);
