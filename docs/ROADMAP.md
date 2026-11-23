@@ -197,6 +197,16 @@ This is already a useful tool for the author.
 - Type views, find references.
 - Commit log and task diff views.
 
+**Plan (2026-11-22),** in this order, each step usable before the next:
+
+1. **Foundation:** `packages/web` (React, Vite, Glide Data Grid), served by `sapwood-server serve`. The browser keeps its own copy of the task's document and project, as DESIGN §4.2 says, so formulas and validation answer as you type; it sends ops to the task and the server applies them again as the authority. New routes: a task's document, and ops written into a task, refused if the task moved on since the client last saw it (another client, an LLM, a rebase), so the client reloads instead of diverging. Sign-in through GitHub.
+2. **Home:** the pack tree with validation badges, the branch selector, the task bar (status, name, new and switch, Land), recent commits and other people's tasks, kept current by the WebSocket events.
+3. **Spreadsheet:** the grid from spike S2 over the real project: formula bar, selection, editing, undo and redo through the task, the sticky per-type header, the type gutter, scratch sheets, formatting.
+4. **Sheet editing:** copy/paste (spike S2's clipboard), fill, inserting, deleting and moving rows and columns.
+5. **Validation:** the overlay (§6.7) and the issue panel, with click-to-jump.
+6. **Type views and find references.**
+7. **History:** the commit log, and a task's diff.
+
 **Milestone M3:** a designer can do all KRBSG editing in the browser, with two people working in parallel tasks.
 
 ## Phase 4: Forms and schema UI
