@@ -760,7 +760,17 @@ How values are typed on the command line:
 - **Users and tokens:** `GET /api/me`. An Admin manages `/api/users`. `POST /api/tokens` makes a token for yourself, at most as able as the token asking; `DELETE /api/tokens/:id` revokes one.
 - **Errors** are `{ error: { code, message, … } }`. The API's codes keep their meaning, with `404` for `not-found`, `409` for `exists`, `ambiguous`, `formula` and the like, and `400` for bad values. The server adds `unauthenticated` (401), `forbidden` (403), `conflict` (409, with the conflicts), `invalid` (422, with the validation) and `state` (409, such as a landed task).
 
-A WebSocket will push validation results, head movement and task events to the web app.
+**Events:** a WebSocket pushes validation results, head movement and task events to the web app. **Decided** (2026-11-22):
+
+- **`GET /api/events`**, upgraded to a WebSocket, sends JSON messages about every branch the caller may read, or only the ones named by `?branch=` (repeatable; one it can't read, or that doesn't exist, is refused before the socket opens). A plain request gets `426`.
+- **Signing in:** a bearer token, or the session cookie, since a browser can't set headers on a WebSocket. With the cookie, the request's `Origin` must be the server itself, so a page on another site can't listen as you. Tokens never go in the URL, where logs would keep them. Every 30 s the server checks each socket's token again: one that stopped working (signed out, revoked, expired) is closed with code `4401`, and a changed role takes effect.
+- **Messages**, each with `type` and `at`:
+  - `hello`, first: your login, role, and the branches you'll hear about.
+  - `head`: a branch's head moved (a land, a sync, a merge into it), with the commit and who did it.
+  - `branch`: one was `created` or `discarded`.
+  - `task`: one was `created`, `changed` (an edit, undo or redo), `named`, `switched` to, `rebased`, `landed`, `abandoned` or `reopened`, with the task and who did it; `by` is null when the server did it on its own, as when a task is rebased as it's read.
+  - `validation`: error and warning counts for a branch head that moved, or a task that changed, worked out once a burst of changes is over (50 ms) rather than after each one, and only while someone is listening. The issues themselves come from `GET …/validate`.
+- **Only what's committed:** the repo announces a change once its transaction commits, and never one that was rolled back, such as a refused land. Messages come in the order things were committed. There's no replay: a client that reconnects reads what it needs again.
 
 **MCP server:** a thin wrapper over the API. LLM edits always go into a task. Tokens can be issued **without land permission**, so a human reviews and lands LLM work (§11.3). **Decided** (2026-11-22):
 

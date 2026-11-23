@@ -88,6 +88,8 @@ type Param = string | number | null;
 export class Db {
   readonly sql: DatabaseSync;
   private depth = 0;
+  /** Waiting for the transaction to commit (afterCommit). */
+  private readonly committed: (() => void)[] = [];
 
   /** Open (or create) the database file; ":memory:" for tests. */
   constructor(path: string) {
@@ -121,16 +123,25 @@ export class Db {
     if (this.depth > 0) return fn();
     this.sql.exec("BEGIN IMMEDIATE");
     this.depth++;
+    let out: T;
     try {
-      const out = fn();
+      out = fn();
       this.sql.exec("COMMIT");
-      return out;
     } catch (e) {
       this.sql.exec("ROLLBACK");
+      this.committed.length = 0;
       throw e;
     } finally {
       this.depth--;
     }
+    for (const f of this.committed.splice(0)) f();
+    return out;
+  }
+
+  /** Run `fn` once what's being written now is committed: now, outside a transaction; never, if it's rolled back. */
+  afterCommit(fn: () => void): void {
+    if (this.depth > 0) this.committed.push(fn);
+    else fn();
   }
 
   meta(key: string): string | undefined {

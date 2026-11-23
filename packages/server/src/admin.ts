@@ -4,12 +4,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { serve } from "@hono/node-server";
 import { docFromJson, Sapwood } from "@thek42/sapwood-core";
 import { Auth, isRole, type Scopes } from "./auth.ts";
 import { Db } from "./db.ts";
 import { GitHub, type GitHubConfig } from "./github.ts";
-import { createApp, type AppOptions } from "./http.ts";
+import { Events } from "./events.ts";
+import { createApp, listen, type AppOptions } from "./http.ts";
 import { Repo, RepoError } from "./repo.ts";
 
 export interface AdminIo {
@@ -166,7 +166,9 @@ function admin(argv: string[], io: AdminIo): number | { close(): void } {
         db.close();
         throw new RepoError("state", "This database has no project: run sapwood-server init first");
       }
-      const server = serve({ fetch: createApp(repo, new Auth(db), options).fetch, port, hostname });
+      const auth = new Auth(db);
+      const events = new Events(repo, auth);
+      const server = listen(createApp(repo, auth, { ...options, events }), { port, hostname });
       io.out(`Serving the Sapwood API on http://${hostname}:${port}/api`);
       io.out(
         !clientId
@@ -175,6 +177,7 @@ function admin(argv: string[], io: AdminIo): number | { close(): void } {
       );
       return {
         close() {
+          events.stop();
           server.close();
           db.close();
         },

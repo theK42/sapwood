@@ -181,6 +181,18 @@ export interface RepoOptions {
   snapshotEvery?: number;
 }
 
+/** What a task event says happened to it. */
+export type TaskChange = "created" | "changed" | "named" | "switched" | "rebased" | "landed" | "abandoned" | "reopened";
+
+/**
+ * Something that changed, once it's committed (DESIGN §9.4: what the WebSocket pushes).
+ * `by` is who did it; null when the server did it on its own (a task rebased as it was read).
+ */
+export type RepoEvent =
+  | { type: "head"; branch: string; commit: CommitInfo; by: string }
+  | { type: "branch"; branch: BranchInfo; change: "created" | "discarded"; by: string | null }
+  | { type: "task"; task: TaskInfo; change: TaskChange; by: string | null };
+
 const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,99}$/;
 const DOC_CACHE = 16;
 
@@ -203,6 +215,34 @@ export class Repo {
 
   get initialized(): boolean {
     return this.db.meta("initialized") !== undefined;
+  }
+
+  // ------------------------------------------------------------ events
+
+  private readonly listeners = new Set<(e: RepoEvent) => void>();
+
+  /** Hear of every change, once it's committed. Returns a function that stops it. */
+  on(fn: (e: RepoEvent) => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  /** Tell listeners once the change being written is committed; never if it's rolled back. */
+  private emit(make: () => RepoEvent): void {
+    if (!this.listeners.size) return;
+    this.db.afterCommit(() => {
+      const e = make();
+      for (const fn of this.listeners)
+        try {
+          fn(e);
+        } catch (err) {
+          console.error(err); // a listener's failure isn't the change's
+        }
+    });
+  }
+
+  private taskEvent(id: number, change: TaskChange, by: string | null): void {
+    this.emit(() => ({ type: "task", task: this.task(id), change, by }));
   }
 
   /** Start the project: its first commit, on `main`. */
@@ -241,6 +281,7 @@ export class Repo {
       "INSERT INTO branches (name, parent, fork_commit, head, archived, created_by, created_at, base_commit, base_point, net) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, '[]')",
       name, parent.name, parent.head, parent.head, actor, now(), parent.head, parent.head,
     );
+    this.emit(() => ({ type: "branch", branch: this.branch(name), change: "created", by: actor }));
     return this.branch(name);
   }
 
@@ -306,6 +347,7 @@ export class Repo {
       const parentHead = this.branch(p.name).head;
       const merge = this.addCommit(p.name, parentHead, head, null, actor, opts.message ?? `Merge ${name} into ${p.name}`, net, s.doc);
       this.setBase(name, merge.id, head, []);
+      this.emit(() => ({ type: "head", branch: p.name, commit: merge, by: actor }));
       return { synced, merge, doc: s.doc };
     });
     this.heads.set(p.name, { commit: out.merge.id, s: Sapwood.fromDoc(cloneDoc(out.doc)), exports: new Map() });
@@ -340,6 +382,7 @@ export class Repo {
     const { ops, route } = this.across(() => this.stateAt(base.commit), base.net, theirs, (c) => flip(resolutions[conflictId(c, true)]), r.state, r.ops);
     this.syncRoutes[route]++;
     const commit = this.addCommit(b.name, b.head, parent.head, null, actor, `Sync ${b.name} from ${parent.name}`, ops, r.state, false);
+    this.emit(() => ({ type: "head", branch: b.name, commit, by: actor }));
     this.setBase(b.name, parent.head, base.point, r.ops);
     this.heads.set(b.name, { commit: commit.id, s: Sapwood.fromDoc(cloneDoc(r.state)), exports: new Map() });
     this.remember(commit.id, cloneDoc(r.state));
@@ -356,11 +399,12 @@ export class Repo {
   }
 
   /** Archive a branch: it is kept, but can't be changed. */
-  discardBranch(name: string): BranchInfo {
+  discardBranch(name: string, actor: string | null = null): BranchInfo {
     if (name === "main") throw new RepoError("bad-request", "main can't be discarded");
     this.liveBranch(name);
     this.db.run("UPDATE branches SET archived = 1 WHERE name = ?", name);
     this.heads.delete(name);
+    this.emit(() => ({ type: "branch", branch: this.branch(name), change: "discarded", by: actor }));
     return this.branch(name);
   }
 
@@ -483,6 +527,7 @@ export class Repo {
     const at = now();
     const { lastInsertRowid: id } = this.db.run("INSERT INTO tasks (branch, owner, name, base, state, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?)", b.name, owner, name, b.head, at, at);
     this.setCurrent(owner, b.name, id);
+    this.taskEvent(id, "created", owner);
     return this.task(id);
   }
 
@@ -497,12 +542,14 @@ export class Repo {
   switchTask(id: number, actor: string): TaskInfo {
     const t = this.openTask(id, actor);
     this.setCurrent(actor, t.branch, id);
+    this.taskEvent(id, "switched", actor);
     return this.task(id);
   }
 
   renameTask(id: number, actor: string, name: string | null): TaskInfo {
     this.ownTask(id, actor);
     this.db.run("UPDATE tasks SET name = ?, updated_at = ? WHERE id = ?", name, now(), id);
+    this.taskEvent(id, "named", actor);
     return this.task(id);
   }
 
@@ -529,6 +576,7 @@ export class Repo {
         this.db.run("DELETE FROM task_changes WHERE task = ? AND undone = 1", id);
         this.db.run("INSERT INTO task_changes (task, seq, ops, inverse, undone) VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM task_changes WHERE task = ?), ?, ?, 0)", id, id, JSON.stringify(change.ops), JSON.stringify(change.inverse));
         this.touch(id);
+        this.taskEvent(id, "changed", actor);
       });
     } catch (e) {
       this.views.delete(id);
@@ -546,6 +594,7 @@ export class Repo {
     this.db.tx(() => {
       this.db.run("UPDATE task_changes SET undone = 1 WHERE task = ? AND seq = ?", id, r.seq);
       this.touch(id);
+      this.taskEvent(id, "changed", actor);
     });
     return true;
   }
@@ -559,6 +608,7 @@ export class Repo {
     this.db.tx(() => {
       this.db.run("UPDATE task_changes SET undone = 0, inverse = ? WHERE task = ? AND seq = ?", JSON.stringify(inverse), id, r.seq);
       this.touch(id);
+      this.taskEvent(id, "changed", actor);
     });
     return true;
   }
@@ -598,6 +648,7 @@ export class Repo {
     const undone = this.undoneOf(id);
     const redo = this.carryRedo(t, r, resolutions, undone);
     this.adopt(t, head, r.changes, redo.changes);
+    this.taskEvent(id, "rebased", actor);
     const out: { task: TaskInfo; dropped: ConflictJson[]; carried?: Carried } = { task: this.task(id), dropped: r.dropped.map((c) => conflictJson(c)) };
     if (undone.length) out.carried = { task: out.task, redo: redo.changes.length, dropped: redo.dropped.map((c) => conflictJson(c, this.head(t.branch))) };
     return out;
@@ -643,6 +694,9 @@ export class Repo {
         this.addUndone(next, 0, redo.changes);
         if (wasCurrent) this.setCurrent(t.owner, b.name, next);
       }
+      this.emit(() => ({ type: "head", branch: b.name, commit: c, by: actor }));
+      this.taskEvent(id, "landed", actor);
+      if (next !== null) this.taskEvent(next, "created", actor);
       return { commit: c, next };
     });
     this.views.delete(id);
@@ -663,6 +717,7 @@ export class Repo {
     this.db.run("UPDATE tasks SET state = 'abandoned', updated_at = ? WHERE id = ?", now(), id);
     this.db.run("DELETE FROM current_tasks WHERE task = ?", id);
     this.views.delete(id);
+    this.taskEvent(id, "abandoned", actor);
     return this.task(id);
   }
 
@@ -673,6 +728,7 @@ export class Repo {
     this.liveBranch(t.branch);
     this.db.run("UPDATE tasks SET state = 'open', updated_at = ? WHERE id = ?", now(), id);
     this.setCurrent(actor, t.branch, id);
+    this.taskEvent(id, "reopened", actor);
     return this.task(id);
   }
 
@@ -722,6 +778,7 @@ export class Repo {
       const { lastInsertRowid: id } = this.db.run("INSERT INTO tasks (branch, owner, name, base, state, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?)", branch, owner, name, base, at, at);
       this.db.run("INSERT INTO task_changes (task, seq, ops, inverse, undone) VALUES (?, 1, ?, ?, 0)", id, JSON.stringify(ops), JSON.stringify(inverse));
       this.setCurrent(owner, branch, id);
+      this.taskEvent(id, "created", owner);
       return id;
     });
     return this.task(id);
@@ -867,7 +924,9 @@ export class Repo {
     const r = this.rebased(t, {});
     if (r.blocking.length) return;
     const redo = this.carryRedo(t, r, {}, t.canRedo ? this.undoneOf(t.id) : []);
-    if (!redo.dropped.length) this.adopt(t, head, r.changes, redo.changes);
+    if (redo.dropped.length) return;
+    this.adopt(t, head, r.changes, redo.changes);
+    this.taskEvent(t.id, "rebased", null);
   }
 
   /**

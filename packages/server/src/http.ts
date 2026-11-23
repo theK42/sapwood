@@ -8,17 +8,20 @@
 // Branch names with a slash are URL-encoded in paths.
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { serve, upgradeWebSocket, type ServerType, type WebSocketServerLike } from "@hono/node-server";
 import { Hono, type Context } from "hono";
+import { WebSocketServer } from "ws";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import {
   ApiError, ExportRefused, Sapwood, sha256, whereFilter,
   type ApiErrorCode, type ExportFile, type JsonValue, type Patch, type QueryOptions,
 } from "@thek42/sapwood-core";
 import { demand, isRole, type Auth, type Principal, type Role, type Scopes } from "./auth.ts";
+import { Events } from "./events.ts";
 import type { GitHub } from "./github.ts";
 import { RepoError, type Repo, type Resolutions, type TaskState } from "./repo.ts";
 
-type Env = { Variables: { me: Principal } };
+type Env = { Variables: { me: Principal; token: string; byCookie: boolean } };
 type C = Context<Env>;
 
 interface Place {
@@ -49,6 +52,8 @@ export interface AppOptions {
   github?: GitHub;
   /** Where browsers reach the server, for GitHub's redirect back (default: as the request came in). */
   publicUrl?: string;
+  /** What /api/events sends from (default: made here, over `repo`). */
+  events?: Events;
 }
 
 const SESSION = "sapwood_session";
@@ -56,6 +61,20 @@ const STATE = "sapwood_oauth_state";
 const SESSION_DAYS = 30;
 /** A write by session cookie must carry this header, which a page on another site can't send. */
 const CSRF_HEADER = "x-sapwood-request";
+
+/** Serve the app over HTTP, with its WebSocket. `close` ends open sockets too. */
+export function listen(app: Hono<Env>, opts: { port: number; hostname: string }): { server: ServerType; close(): void } {
+  const wss = new WebSocketServer({ noServer: true });
+  const server = serve({ fetch: app.fetch, port: opts.port, hostname: opts.hostname, websocket: { server: wss as unknown as WebSocketServerLike } }); // ws's types say noServer may be undefined
+  return {
+    server,
+    close() {
+      for (const ws of wss.clients) ws.terminate();
+      wss.close();
+      server.close();
+    },
+  };
+}
 
 export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<Env> {
   const app = new Hono<Env>();
@@ -126,9 +145,11 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
   app.use("/api/*", async (c, next) => {
     const m = /^Bearer\s+(\S+)$/i.exec(c.req.header("authorization") ?? "");
     let me = m ? auth.authenticate(m[1]!) : null;
+    let token = m?.[1] ?? "";
     if (!m) {
       const session = getCookie(c, SESSION);
       me = session ? auth.authenticate(session) : null;
+      token = session ?? "";
       if (me && !["GET", "HEAD", "OPTIONS"].includes(c.req.method) && c.req.header(CSRF_HEADER) !== "1")
         return c.json({ error: { code: "forbidden", message: `A write with a session cookie needs the header ${CSRF_HEADER}: 1` } }, 403);
     }
@@ -137,11 +158,44 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
       return c.json({ error: { code: "unauthenticated", message: "Pass a Sapwood token: Authorization: Bearer swd_…" } }, 401);
     }
     c.set("me", me);
+    c.set("token", token);
+    c.set("byCookie", !m);
     await next();
   });
 
   const me = (c: C) => c.get("me");
   const may = (c: C, need: Role, action: "read" | "write" | "land", branch: string) => demand(me(c), need, action, branch);
+
+  // ------------------------------------------------------------ events
+
+  const events = opts.events ?? new Events(repo, auth);
+
+  /**
+   * The WebSocket: what changes on the branches you may read (or those in ?branch=, which
+   * repeats), as JSON messages. A browser signs in with its session cookie, which only a
+   * page from this server may use here (a page on another site would send its own origin).
+   */
+  app.get("/api/events", async (c, next) => {
+    if (c.req.header("upgrade")?.toLowerCase() !== "websocket")
+      return c.json({ error: { code: "bad-request", message: "This is a WebSocket: connect with one" } }, 426);
+    if (c.get("byCookie") && c.req.header("origin") !== new URL(base(c)).origin)
+      return c.json({ error: { code: "forbidden", message: "Events by session cookie only for pages from this server" } }, 403);
+    const asked = c.req.queries("branch");
+    for (const b of asked ?? []) may(c, "viewer", "read", repo.branch(b).name);
+    let stop = () => {};
+    return upgradeWebSocket(c, {
+      onOpen: (_e, ws) => {
+        stop = events.add({
+          token: c.get("token"),
+          principal: me(c),
+          branches: asked ? new Set(asked) : null,
+          send: (text) => ws.send(text),
+          close: (code, reason) => ws.close(code, reason),
+        });
+      },
+      onClose: () => stop(),
+    });
+  });
 
   // ------------------------------------------------------------ who, users, tokens
 
@@ -206,7 +260,7 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
   app.delete("/api/branches/:b", (c) => {
     const b = c.req.param("b");
     may(c, "editor", "write", b);
-    return c.json(repo.discardBranch(b));
+    return c.json(repo.discardBranch(b, me(c).login));
   });
   /** How the branch stands against its parent: behind, ahead, and what a sync would conflict on. */
   app.get("/api/branches/:b/compare", (c) => {
