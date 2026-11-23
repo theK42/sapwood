@@ -113,6 +113,17 @@ const PATCH = z.discriminatedUnion("op", [
     fields,
     force: z.boolean().optional(),
   }),
+  z.object({
+    op: z.literal("createPack"),
+    name: z.string().describe("A new pack's name, unique; content packs such as DLC hold their own sheets"),
+    parent: z.string().optional().describe("The pack it goes in (default: root)"),
+  }),
+  z.object({
+    op: z.literal("createSheet"),
+    name: z.string().describe("A new sheet's name, unique in its pack"),
+    pack: z.string().optional().describe("Its pack (default: root)"),
+    kind: z.enum(["data", "scratch"]).optional().describe("data (the default) holds entities; scratch holds notes and working"),
+  }),
 ]);
 
 const INSTRUCTIONS = `Sapwood holds a game's data: entities of types the schema defines, kept in spreadsheet sheets, with formulas and validation.
@@ -120,6 +131,7 @@ const INSTRUCTIONS = `Sapwood holds a game's data: entities of types the schema 
 - Read the schema first (the schema tool) to know the types, their fields and the rules.
 - Read with get and query. Entities come as JSON: "$type", "$id", "$pack", "$sheet", "$active", then fields. A field backed by a formula shows {"$value", "$formula"}.
 - Change things with patch: a list of patches applied all or nothing, as one change. Prefer one patch call with several patches to many calls.
+- Packs: entities in a pack may refer to entities in it and in the packs above it, not below. To add content in a new pack (a DLC), make the pack and a sheet in it (createPack, createSheet), then create entities with that sheet and pack. Making a pack needs a Developer's token.
 - Errors come with a code in brackets ([not-found], [bad-value], [formula], …) and a message saying what to fix.
 - After editing, check validate: a change with validation errors can't land.
 - On a server, your edits go into the user's current task on the branch, alongside theirs. You can't land, merge or discard: the user reviews the task and lands it. undo takes back the last change in the task, yours or theirs.

@@ -58,6 +58,10 @@ Data (on a server: reads show your current task, writes go into it)
   create <type> <id> [<field>=<value>…] [--sheet <s>] [--pack <p>] [--after <id>]
   comment-out <id>  |  uncomment <id>  |  delete <id>
   apply <patch.jsonl>             Patches, one JSON object per line, all or nothing
+Packs and sheets
+  pack create <name> [--parent <p>]   A pack, under root unless --parent (a Developer's)
+  sheet create <name> [--pack <p>] [--scratch]
+                                  An empty data sheet, or a scratch one, in root unless --pack
 Schema
   schema get                      The schema as YAML
   schema apply <file> [--force]   Apply an edited schema file
@@ -275,6 +279,24 @@ async function command(argv: string[], io: Io): Promise<number> {
       }
       const w = await backend(p, io).b.patch(patches);
       return wrote(w, `Applied ${plural(patches.length, "patch", "patches")}.`);
+    }
+
+    case "pack":
+    case "sheet": {
+      const [sub, ...rest] = args;
+      if (sub !== "create") throw new UsageError(`Try sapwood ${cmd} create <name>`);
+      const p = parse(rest, cmd === "pack" ? { task: { type: "string" }, parent: { type: "string" } } : { task: { type: "string" }, pack: { type: "string" }, scratch: { type: "boolean" } });
+      const [name] = positionals(p, ["name"]);
+      const b = backend(p, io).b;
+      if (cmd === "pack") {
+        const patch: Patch = { op: "createPack", name: name! };
+        if (p.values.parent !== undefined) patch.parent = p.values.parent as string;
+        return wrote(await b.patch([patch]), `Made pack ${name}${patch.parent ? ` in ${patch.parent}` : ""}.`);
+      }
+      const patch: Patch = { op: "createSheet", name: name! };
+      if (p.values.pack !== undefined) patch.pack = p.values.pack as string;
+      if (p.values.scratch === true) patch.kind = "scratch";
+      return wrote(await b.patch([patch]), `Made ${p.values.scratch ? "scratch sheet" : "sheet"} ${name}${patch.pack ? ` in pack ${patch.pack}` : ""}.`);
     }
 
     case "schema": {

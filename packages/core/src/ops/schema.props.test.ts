@@ -297,8 +297,8 @@ describe("schema ops (properties)", () => {
 });
 
 describe("schema rebase with mineFirst", () => {
-  const seen = { total: 0, differ: 0, reconciled: 0 };
-  prop("rebasing the earlier side over the later, with mineFirst, gives the same document, or reconcile says what's left", (g) => {
+  type Seen = { total: number; differ: number; reconciled: number };
+  const both = (g: Gen, seen: Seen) => {
     const a = genOps(g, start, "a").ops, b = genOps(g, start, "b").ops;
     const chosen = new Map<string, Side>();
     const choose = (id: string): Side => {
@@ -324,11 +324,15 @@ describe("schema rebase with mineFirst", () => {
     const after = cloneDoc(y.state);
     for (const op of rc) applyOp(after, op);
     expect(same(after, x.state)).toBe(true);
-  });
+  };
+  prop("rebasing the earlier side over the later, with mineFirst, gives the same document, or reconcile says what's left", (g) => both(g, { total: 0, differ: 0, reconciled: 0 }));
   it("mostly agrees, and reconcile covers most of the rest", () => {
+    // Seeded: a ratio over the few cases that differ swings from run to run.
+    const seen: Seen = { total: 0, differ: 0, reconciled: 0 };
+    fc.assert(fc.property(fc.gen(), (g) => both(g, seen)), { numRuns: 1500, seed: 1 });
     expect(seen.differ).toBeLessThan(seen.total / 10);
     expect(seen.reconciled).toBeGreaterThan(seen.differ * 0.8);
-  });
+  }, 600_000);
 });
 
 describe("the schema generator", () => {

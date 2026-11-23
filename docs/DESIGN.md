@@ -719,7 +719,7 @@ Wizard capabilities:
 - `create` puts the new row after the last entity of its type (on the given sheet or pack, if any), or after another entity (`after`). A type with no entities yet needs a sheet, unless the pack has only one data sheet. If that sheet is named after another type, it belongs to that type, so a new data sheet named after the new type is created, in the same change. Taken IDs are refused, regardless of case.
 - **Singletons** have no ID, so they have their own read and write: `singleton(type)` returns `{ "$type", "$pack", …fields }` from the active field rows, with a struct split into rows (`.cost.amount`) as one object. `setSingleton(type, fields)` writes column B of a field's row, or each sub-field's row for a split struct; formulas need `force` as above. A field with no row gets one, after the last field row of the singleton's first active block in its pack. With no block, a block is added at the end of the pack's only data sheet (unless it's named after another type), or else on the sheet named after the singleton, created if need be (§6.8). Null clears a field's value and keeps its row. Two active rows for a field is refused as `ambiguous` on write; a read shows the first.
 - `applySchema(yaml)` is `schema apply` (§5.8): one change, undone in one step.
-- A patch file applies all or nothing, as one undo step. Its lines are `set`, `create`, `commentOut`, `uncomment`, `delete` and `setSingleton`.
+- A patch file applies all or nothing, as one undo step. Its lines are `set`, `create`, `commentOut`, `uncomment`, `delete` and `setSingleton`, and `createPack` (`name`, `parent`) and `createSheet` (`name`, `pack`, `kind`: `data` or `scratch`) for a new pack or an empty sheet (2026-11-22). Making a pack is a Developer's (§11.2); the server refuses it from anyone else.
 - Errors carry a stable code (`not-found`, `ambiguous`, `exists`, `formula`, `no-column`, `bad-value`, …) for the CLI and LLMs to act on.
 
 In `@thek42/sapwood-core` this is the `Sapwood` class: reads, writes, validation located by sheet name and A1 address, export, and undo, over one in-memory project. The server adds tasks, branches and landing on top. **Decided.**
@@ -733,6 +733,7 @@ In `@thek42/sapwood-core` this is the `Sapwood` class: reads, writes, validation
 | Tasks | `task new/list/switch/status/name/rebase/land/abandon/reopen`, `undo`, `redo` |
 | History | `log [<branch>] [-n <count>]`, `revert <commit>`, `restore <commit>` |
 | Data | `get <id>`, `query <type> [--where …]`, `set <id> field=value`, `create <type> --pack <b> [--sheet <s>]`, `comment-out <id>`, `apply <patch.jsonl>` |
+| Packs and sheets | `pack create <name> [--parent <p>]`, `sheet create <name> [--pack <p>] [--scratch]` |
 | Schema | `schema get`, `schema apply <file>` |
 | Validation & export | `validate`, `export [--branch] [--commit] --out <dir>` |
 

@@ -342,4 +342,13 @@ describe("the HTTP API", () => {
     expect((await app.request("/api/branches")).status).toBe(401); // the API is still the API
     expect((await app.request("/api/nope")).status).toBe(401);
   });
+
+  it("an Editor makes sheets, and only a Developer makes packs", async () => {
+    const { ada, bob } = setup();
+    expect((await bob("POST /api/branches/main/patches", [{ op: "createPack", name: "dlc" }])).status).toBe(403);
+    expect((await ada("POST /api/branches/main/patches", [{ op: "createPack", name: "dlc" }])).status).toBe(200);
+    const w = await bob("POST /api/branches/main/patches", [{ op: "createSheet", name: "More" }, { op: "create", type: "Ammo", sheet: "More", fields: { $id: "a3", speed: 5 } }]);
+    expect(w.status).toBe(200);
+    expect((await bob(`GET /api/tasks/${w.json.task.id}/entities/a3`)).json).toMatchObject({ $sheet: "More", speed: 5 });
+  });
 });

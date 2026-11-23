@@ -80,6 +80,20 @@ describe("the sapwood command", () => {
     expect((await sw("init")).code).toBe(2); // already there
   });
 
+  it("makes packs and sheets, and entities on them", async () => {
+    const { sw, json } = await setup();
+    expect((await sw("pack", "create", "dlc")).out).toBe("Made pack dlc.");
+    expect((await sw("pack", "create", "dlc2", "--parent", "dlc")).out).toBe("Made pack dlc2 in dlc.");
+    expect((await sw("sheet", "create", "DLC Ammo", "--pack", "dlc")).out).toBe("Made sheet DLC Ammo in pack dlc.");
+    expect((await sw("sheet", "create", "Notes", "--pack", "dlc", "--scratch")).out).toBe("Made scratch sheet Notes in pack dlc.");
+    expect((await sw("create", "Ammo", "a9", "speed=50", "--sheet", "DLC Ammo", "--pack", "dlc")).out).toBe("Created Ammo a9 on DLC Ammo.");
+    expect(await json("get", "a9")).toMatchObject({ $pack: "dlc", $sheet: "DLC Ammo", speed: 50 });
+    const again = await sw("pack", "create", "dlc");
+    expect(again.code).toBe(1);
+    expect(again.err).toContain("There's a pack called dlc already");
+    expect((await sw("pack", "list")).code).toBe(2);
+  });
+
   it("set types values for their fields, and saves", async () => {
     const { sw, json } = (await setup());
     expect((await sw("set", "w1", "damage=12.5", "element=ice", "shots=a1,a2", "price.amount=7", "released=2026-12-01 10:00")).out).toBe("Set damage, element, shots, price, released on w1.");

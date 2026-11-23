@@ -8,7 +8,7 @@
 // forced. Tasks, branches and landing are the server's (Phase 2); this is the layer under them.
 
 import type { Content, Literal } from "../formula/content.ts";
-import type { ColId, PackId, RowId, SheetId } from "../formula/model.ts";
+import type { ColId, PackId, RowId, SheetId, SheetKind } from "../formula/model.ts";
 import { numberToCol } from "../formula/parse.ts";
 import { exportJson, valueJson, type ExportFile, type ExportOptions, type JsonOut } from "../export/json.ts";
 import type { Doc } from "../ops/doc.ts";
@@ -82,7 +82,9 @@ export type Patch =
   | { op: "set"; id: string; fields: Record<string, JsonValue>; force?: boolean }
   | { op: "create"; type: string; fields: Record<string, JsonValue>; sheet?: string; pack?: string; after?: string }
   | { op: "commentOut" | "uncomment" | "delete"; id: string }
-  | { op: "setSingleton"; type: string; fields: Record<string, JsonValue>; force?: boolean };
+  | { op: "setSingleton"; type: string; fields: Record<string, JsonValue>; force?: boolean }
+  | { op: "createPack"; name: string; parent?: string }
+  | { op: "createSheet"; name: string; pack?: string; kind?: SheetKind };
 
 /** Where a new entity goes. By default: after the last one of its type, or on the only data sheet. */
 export interface Placement {
@@ -309,6 +311,34 @@ export class Sapwood {
     });
   }
 
+  /**
+   * Make a pack (DESIGN §7.1) under root, or under the pack `parent` names. Pack names are
+   * unique. Its sheets' entities may refer to its own and its ancestors' (§7.2).
+   */
+  createPack(name: string, parent?: string): Change {
+    return this.write(() => {
+      const n = typeof name === "string" ? name.trim() : "";
+      if (n === "" || n.includes("/")) throw new ApiError("bad-value", "A pack's name is non-empty text without a /");
+      if ([...this.project.wb.packs.values()].some((p) => p.name === n)) throw new ApiError("exists", `There's a pack called ${n} already`);
+      const under = parent === undefined ? this.project.wb.root : this.packId(parent);
+      let id = n;
+      for (let i = 1; this.project.doc.packs.has(id); i++) id = `p${this.project.wb.idSalt}${i}`;
+      return { ops: [{ kind: "createPack", pack: id, name: n, parent: under }] };
+    });
+  }
+
+  /** Make an empty sheet in a pack (root unless named): a data sheet, or a scratch one. Names are unique in a pack. */
+  createSheet(name: string, opts: { pack?: string; kind?: SheetKind } = {}): Change {
+    return this.write(() => {
+      const n = typeof name === "string" ? name.trim() : "";
+      if (n === "" || n.includes("!") || n.includes("/")) throw new ApiError("bad-value", "A sheet's name is non-empty text without ! or /");
+      if (opts.kind !== undefined && opts.kind !== "data" && opts.kind !== "scratch") throw new ApiError("bad-value", "A sheet's kind is data or scratch");
+      const pack = opts.pack === undefined ? this.project.wb.root : this.packId(opts.pack);
+      if (this.project.wb.findSheet(pack, n)) throw new ApiError("exists", `Pack ${this.project.wb.packName(pack)} has a sheet called ${n} already`);
+      return { ops: [{ kind: "createSheet", sheet: this.project.wb.freshSheetId(), name: n, pack, sheetKind: opts.kind ?? "data" }] };
+    });
+  }
+
   /** Apply patches in order, all or nothing, as one change (one undo step). */
   apply(patches: readonly Patch[]): Change {
     const changes: Change[] = [];
@@ -369,6 +399,14 @@ export class Sapwood {
         return this.delete(p.id);
       case "setSingleton":
         return this.setSingleton(p.type, p.fields, { force: p.force ?? false });
+      case "createPack":
+        return this.createPack(p.name, p.parent);
+      case "createSheet": {
+        const opts: { pack?: string; kind?: SheetKind } = {};
+        if (p.pack !== undefined) opts.pack = p.pack;
+        if (p.kind !== undefined) opts.kind = p.kind;
+        return this.createSheet(p.name, opts);
+      }
       default:
         throw new ApiError("bad-value", `Unknown patch op ${JSON.stringify((p as { op: unknown }).op)}`);
     }

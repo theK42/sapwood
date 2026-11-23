@@ -245,6 +245,37 @@ describe("writes", () => {
   });
 });
 
+describe("packs and sheets", () => {
+  it("a DLC pack with its own sheets, whose entities refer to root's", () => {
+    const s = krbsg();
+    const before = canonDoc(cloneDoc(s.doc));
+    s.apply([
+      { op: "createPack", name: "dlc" },
+      { op: "createSheet", name: "DLC Weapons", pack: "dlc" },
+      { op: "createSheet", name: "Notes", pack: "dlc", kind: "scratch" },
+      { op: "create", type: "Projectile", sheet: "DLC Weapons", pack: "dlc", fields: { $id: "LanceBolt", sprite: "spr_blaster", script: "lance_bolt.lua", collider: "bolt" } },
+      { op: "create", type: "Weapon", sheet: "DLC Weapons", pack: "dlc", fields: { $id: "Lance", projectiles: ["LanceBolt"], script: "lance.lua", cooldown: 1.2, damage: 4 } },
+    ]);
+    expect(s.get("Lance")).toMatchObject({ $pack: "dlc", $sheet: "DLC Weapons", projectiles: ["LanceBolt"] });
+    expect(s.query("Weapon", { pack: "dlc" }).map((e) => e.$id)).toEqual(["Lance"]);
+    expect(s.validate().errors).toBe(0);
+    expect(s.export().map((f) => f.path)).toContain("dlc.json");
+    // A sub-pack, and what's refused.
+    s.createPack("dlc2", "dlc");
+    fails("exists", () => s.createPack("dlc"));
+    fails("not-found", () => s.createPack("x", "nope"));
+    fails("bad-value", () => s.createPack("a/b"));
+    fails("exists", () => s.createSheet("Notes", { pack: "dlc" }));
+    fails("bad-value", () => s.createSheet("Bad!Name"));
+    fails("bad-value", () => s.apply([{ op: "createSheet", name: "X", kind: "pivot" as "data" }]));
+    // root's entities can't refer to the DLC's (§7.2).
+    s.set("Blaster", { projectiles: ["LanceBolt"] });
+    expect(s.validate().errors).toBeGreaterThan(0);
+    while (s.undo());
+    expect(canonDoc(s.doc)).toEqual(before);
+  });
+});
+
 describe("singletons", () => {
   it("read from blocks and qualified rows, with split structs as one object", () => {
     const s = sing();

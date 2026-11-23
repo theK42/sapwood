@@ -108,6 +108,16 @@ describe("the MCP server, on a local project file", () => {
     expect(formula.text).toMatch(/\[formula\]$/);
     // The schema of the patch list is checked before anything runs.
     expect((await call("patch", { patches: [{ op: "explode", id: "w1" }] })).error).toBe(true);
+    // A pack and its sheet, with an entity on it.
+    const dlc = await call("patch", {
+      patches: [
+        { op: "createPack", name: "dlc" },
+        { op: "createSheet", name: "DLC Ammo", pack: "dlc" },
+        { op: "create", type: "Ammo", sheet: "DLC Ammo", pack: "dlc", fields: { $id: "a9", speed: 50 } },
+      ],
+    });
+    expect(dlc.error).toBe(false);
+    expect(await json("get", { id: "a9" })).toMatchObject({ $pack: "dlc", $sheet: "DLC Ammo" });
   });
 
   it("reports validation, and changes the schema", async () => {
