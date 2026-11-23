@@ -87,6 +87,18 @@ export interface Landed {
   commit: CommitInfo;
   /** Ops of the task that no longer applied on the head, dropped (DESIGN §8.5). */
   dropped: ConflictJson[];
+  /** When the task had undone changes: the new task they went into, still undone, so redo goes on there. */
+  carried?: Carried;
+}
+
+/** A task's undone changes, carried onto a new head. */
+export interface Carried {
+  /** The task holding them: a new one after a land, the same one after a rebase. Null when none still applied. */
+  task: TaskInfo | null;
+  /** How many undone changes are there to redo. */
+  redo: number;
+  /** Undone changes, or parts of them, that no longer apply on the head, dropped. */
+  dropped: ConflictJson[];
 }
 
 export type Resolutions = Record<string, Side>;
@@ -153,6 +165,10 @@ interface Rebased {
   ops: Op[];
   /** The rebased ops, grouped as the task's changes were, in order (see regroup). */
   changes: Op[][];
+  /** The task's changes in effect, before the rebase. */
+  live: Op[][];
+  /** What landed on the branch since the task's base. */
+  theirs: Op[];
   state: Doc;
   behind: number;
   /** Unresolved conflicts: they block a land. */
@@ -321,19 +337,7 @@ export class Repo {
     // it can't (the schema differs) does the commit take the long way: undo the branch's
     // net change, apply the parent's, then the branch's rebased.
     const flip = (s: Side | undefined): Side => (s === "theirs" ? "mine" : s === "mine" ? "theirs" : "mine");
-    const across = rebase(this.stateAt(base.commit), base.net, theirs, (c) => flip(resolutions[conflictId(c, true)]), { mineFirst: true });
-    let ops = across.ops;
-    let route: SyncRoute = "clean";
-    if (!docsEqual(across.state, r.state)) {
-      const rest = reconcile(across.state, r.state);
-      if (rest) {
-        ops = [...ops, ...rest];
-        route = "reconciled";
-      } else {
-        ops = [...applyOps(this.stateAt(base.commit), base.net), ...theirs, ...r.ops];
-        route = "long";
-      }
-    }
+    const { ops, route } = this.across(() => this.stateAt(base.commit), base.net, theirs, (c) => flip(resolutions[conflictId(c, true)]), r.state, r.ops);
     this.syncRoutes[route]++;
     const commit = this.addCommit(b.name, b.head, parent.head, null, actor, `Sync ${b.name} from ${parent.name}`, ops, r.state, false);
     this.setBase(b.name, parent.head, base.point, r.ops);
@@ -582,17 +586,21 @@ export class Repo {
 
   /**
    * Rebase a task onto its branch's head, settling conflicts by `resolutions`. Refused
-   * while any conflict is unresolved. Each change stays its own undo step, and the
-   * resolutions make one more; what was undone can't be redone after.
+   * while any conflict is unresolved. Each change stays its own undo step, and what was
+   * undone is carried over, still undone, so redo goes on (`carried`, when there was any).
    */
-  rebaseTask(id: number, actor: string, resolutions: Resolutions = {}): { task: TaskInfo; dropped: ConflictJson[] } {
+  rebaseTask(id: number, actor: string, resolutions: Resolutions = {}): { task: TaskInfo; dropped: ConflictJson[]; carried?: Carried } {
     const t = this.openTask(id, actor);
     const head = this.branch(t.branch).head;
     if (t.base === head) return { task: t, dropped: [] };
     const r = this.rebased(t, resolutions);
     if (r.blocking.length) throw conflictError(r.blocking, this.head(t.branch));
-    this.adopt(t, head, r.changes);
-    return { task: this.task(id), dropped: r.dropped.map((c) => conflictJson(c)) };
+    const undone = this.undoneOf(id);
+    const redo = this.carryRedo(t, r, resolutions, undone);
+    this.adopt(t, head, r.changes, redo.changes);
+    const out: { task: TaskInfo; dropped: ConflictJson[]; carried?: Carried } = { task: this.task(id), dropped: r.dropped.map((c) => conflictJson(c)) };
+    if (undone.length) out.carried = { task: out.task, redo: redo.changes.length, dropped: redo.dropped.map((c) => conflictJson(c, this.head(t.branch))) };
+    return out;
   }
 
   /**
@@ -606,6 +614,8 @@ export class Repo {
     let ops: Op[];
     let s: Sapwood;
     let dropped: Conflict[] = [];
+    const undone = this.undoneOf(id);
+    let redo: { changes: Op[][]; dropped: Conflict[] } = { changes: undone, dropped: [] };
     if (t.base === b.head) {
       ops = this.taskOps(id);
       s = this.viewOf(t).s;
@@ -615,20 +625,37 @@ export class Repo {
       ops = r.ops;
       dropped = r.dropped;
       s = Sapwood.fromDoc(r.state);
+      redo = this.carryRedo(t, r, opts.resolutions ?? {}, undone);
     }
     if (ops.length === 0) throw new RepoError("state", `Task ${id} has no changes to land`);
     const v = s.validate();
     if (v.errors) throw new RepoError("invalid", `Landing task ${id} would leave ${v.errors} validation error${v.errors === 1 ? "" : "s"}`, { validation: v });
-    const commit = this.db.tx(() => {
+    const { commit, next } = this.db.tx(() => {
       const c = this.addCommit(b.name, b.head, null, id, actor, opts.message ?? t.name ?? `Task ${id}`, ops, s.doc);
       this.db.run("UPDATE tasks SET state = 'landed', landed_commit = ?, updated_at = ? WHERE id = ?", c.id, now(), id);
+      const wasCurrent = this.db.one("SELECT 1 FROM current_tasks WHERE task = ? AND user = ?", id, t.owner) !== undefined;
       this.db.run("DELETE FROM current_tasks WHERE task = ?", id);
-      return c;
+      // What was undone goes on in a new task on the landed commit, still undone.
+      let next: number | null = null;
+      if (redo.changes.length) {
+        const at = now();
+        next = Number(this.db.run("INSERT INTO tasks (branch, owner, name, base, state, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?)", b.name, t.owner, t.name, c.id, at, at).lastInsertRowid);
+        this.addUndone(next, 0, redo.changes);
+        if (wasCurrent) this.setCurrent(t.owner, b.name, next);
+      }
+      return { commit: c, next };
     });
     this.views.delete(id);
     this.heads.set(b.name, { commit: commit.id, s, exports: new Map() });
     this.remember(commit.id, s.doc);
-    return { commit, dropped: dropped.map((c) => conflictJson(c)) };
+    const out: Landed = { commit, dropped: dropped.map((c) => conflictJson(c)) };
+    if (undone.length) out.carried = { task: next === null ? null : this.task(next), redo: redo.changes.length, dropped: redo.dropped.map((c) => conflictJson(c, s)) };
+    return out;
+  }
+
+  /** Add undone changes after a task's `after` changes. Their inverses are worked out on redo. */
+  private addUndone(task: number, after: number, changes: Op[][]): void {
+    changes.forEach((ops, i) => this.db.run("INSERT INTO task_changes (task, seq, ops, inverse, undone) VALUES (?, ?, ?, '[]', 1)", task, after + i + 1, JSON.stringify(ops)));
   }
 
   abandon(id: number, actor: string): TaskInfo {
@@ -789,30 +816,71 @@ export class Repo {
       blocking.push(c);
       return "theirs";
     });
-    return { ops: r.ops, changes: regroup(changes, r.ops, r.origins), state: r.state, behind: theirs.commits, blocking, dropped: r.conflicts.filter((c) => c.kind === "op") };
+    return { ops: r.ops, changes: regroup(changes, r.ops, r.origins), live: changes, theirs: theirs.ops, state: r.state, behind: theirs.commits, blocking, dropped: r.conflicts.filter((c) => c.kind === "op") };
+  }
+
+  /** The task's undone changes, in redo order. */
+  private undoneOf(id: number): Op[][] {
+    return this.db.all<{ ops: string }>("SELECT ops FROM task_changes WHERE task = ? AND undone = 1 ORDER BY seq", id).map((r) => JSON.parse(r.ops) as Op[]);
+  }
+
+  /**
+   * Carry a task's undone changes onto the state it was rebased to, still undone. They were
+   * made on top of its changes in effect, so they're rebased over the ops that take the
+   * task's own state to the rebased one: what landed since, brought across its changes as a
+   * sync commit brings the parent's across a branch. Where an undone change meets the
+   * head's changes, the head's stand, and the rest of it no longer applies: dropped, and
+   * reported. With nothing landed since, they're carried exactly.
+   */
+  private carryRedo(t: TaskInfo, r: Rebased, resolutions: Resolutions, undone: Op[][]): { changes: Op[][]; dropped: Conflict[] } {
+    if (!undone.length || !r.theirs.length) return { changes: undone, dropped: [] };
+    const live = r.live.flat();
+    const flip = (s: Side | undefined): Side => (s === "theirs" ? "mine" : s === "mine" ? "theirs" : "mine");
+    const path = this.across(() => this.stateAt(t.base), live, r.theirs, (c) => flip(resolutions[conflictId(c, true)]), r.state, r.ops).ops;
+    const mine = this.stateAt(t.base);
+    applyOps(mine, live);
+    const c = rebase(mine, path, undone.flat());
+    return { changes: regroupRedo(undone, c.ops, c.origins), dropped: c.conflicts };
+  }
+
+  /**
+   * Ops that take `base` plus `first` to `target`, which is `base` plus `second` plus
+   * `firstOver` (`first` rebased over `second`): `second` rebased over `first`, counted as
+   * landed first so ties go as they did, plus what `reconcile` says is left. Only if it
+   * can't (the schema differs) the long way: undo `first`, apply `second`, then `firstOver`.
+   */
+  private across(base: () => Doc, first: Op[], second: Op[], resolve: (c: Conflict) => Side, target: Doc, firstOver: Op[]): { ops: Op[]; route: SyncRoute } {
+    const a = rebase(base(), first, second, resolve, { mineFirst: true });
+    if (docsEqual(a.state, target)) return { ops: a.ops, route: "clean" };
+    const rest = reconcile(a.state, target);
+    if (rest) return { ops: [...a.ops, ...rest], route: "reconciled" };
+    const b = base();
+    return { ops: [...applyOps(b, first), ...second, ...firstOver], route: "long" };
   }
 
   /**
    * Bring a task up to the head when nothing is in the way: no conflicts, and nothing to
-   * redo (a rebase would drop it, and the user didn't ask for one).
+   * redo that would be lost (the user didn't ask for a rebase, so it mustn't drop any).
    */
   private tryAutoRebase(t: TaskInfo): void {
-    if (t.canRedo) return;
     const head = this.branch(t.branch).head;
     const r = this.rebased(t, {});
-    if (!r.blocking.length) this.adopt(t, head, r.changes);
+    if (r.blocking.length) return;
+    const redo = this.carryRedo(t, r, {}, t.canRedo ? this.undoneOf(t.id) : []);
+    if (!redo.dropped.length) this.adopt(t, head, r.changes, redo.changes);
   }
 
   /**
    * Move a task onto `head` with its rebased changes, each still its own undo step, with
-   * its inverse worked out again on the head. What was undone is dropped.
+   * its inverse worked out again on the head, then `undone`, still undone.
    */
-  private adopt(t: TaskInfo, head: string, changes: Op[][]): void {
+  private adopt(t: TaskInfo, head: string, changes: Op[][], undone: Op[][]): void {
     const doc = this.stateAt(head);
     const rows = changes.map((ops) => ({ ops, inverse: applyOps(doc, ops) }));
     this.db.tx(() => {
       this.db.run("DELETE FROM task_changes WHERE task = ?", t.id);
       rows.forEach((c, i) => this.db.run("INSERT INTO task_changes (task, seq, ops, inverse, undone) VALUES (?, ?, ?, ?, 0)", t.id, i + 1, JSON.stringify(c.ops), JSON.stringify(c.inverse)));
+      this.addUndone(t.id, rows.length, undone);
       this.db.run("UPDATE tasks SET base = ?, updated_at = ? WHERE id = ?", head, now(), t.id);
     });
     this.views.set(t.id, { base: head, s: taskProject(doc, t.id) });
@@ -875,6 +943,36 @@ export function regroup(changes: readonly (readonly Op[])[], ops: readonly Op[],
     out.at(-1)!.push(op);
     last = key;
   });
+  return out;
+}
+
+/**
+ * Group carried undone changes as they were, like regroup. Ops the rebase added (no
+ * origin) go with the change before them, or the first, so each redo step is one of the
+ * user's changes; a change that no longer applies at all is gone.
+ */
+export function regroupRedo(changes: readonly (readonly Op[])[], ops: readonly Op[], origins: readonly (number | null)[]): Op[][] {
+  const changeOf: number[] = [];
+  changes.forEach((c, i) => c.forEach(() => changeOf.push(i)));
+  const out: Op[][] = [];
+  let pending: Op[] = [];
+  let last: number | undefined;
+  ops.forEach((op, i) => {
+    const o = origins[i]!;
+    if (o === null) {
+      if (out.length) out.at(-1)!.push(op);
+      else pending.push(op);
+      return;
+    }
+    const key = changeOf[o]!;
+    if (key !== last) {
+      out.push(pending);
+      pending = [];
+    }
+    out.at(-1)!.push(op);
+    last = key;
+  });
+  if (pending.length) out.push(pending);
   return out;
 }
 

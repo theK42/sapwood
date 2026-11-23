@@ -135,7 +135,7 @@ describe("the repo", () => {
     expect([v().get("w1").damage, v().get("a1").speed]).toEqual([20, 900]);
   });
 
-  it("a task with something to redo waits to be rebased", () => {
+  it("a task with something to redo is rebased on read, and keeps it", () => {
     const { repo } = setup();
     const a = repo.createTask("main", "ada");
     const b = repo.createTask("main", "bob");
@@ -144,14 +144,76 @@ describe("the repo", () => {
     repo.undo(b.id, "bob");
     repo.write(a.id, "ada", (s) => s.set("w1", { damage: 20 }));
     repo.land(a.id, "ada");
-    expect(repo.status(b.id)).toMatchObject({ behind: 1, conflicts: [] });
-    expect(repo.view(b.id).get("w1").damage).toBe(10); // still on its base
+    expect(repo.status(b.id)).toMatchObject({ behind: 0, conflicts: [] });
+    expect(repo.view(b.id).get("w1").damage).toBe(20);
+    expect(repo.task(b.id)).toMatchObject({ changes: 1, canRedo: true });
     repo.redo(b.id, "bob");
-    expect(repo.view(b.id).get("w1").damage).toBe(20); // nothing to redo now: rebased on read
+    expect(repo.view(b.id).get("a2").speed).toBe(2);
     expect(repo.task(b.id).changes).toBe(2);
+  });
+
+  it("waits to rebase on read when that would lose something to redo", () => {
+    const { repo } = setup();
+    const a = repo.createTask("main", "ada");
+    const b = repo.createTask("main", "bob");
+    repo.write(b.id, "bob", (s) => s.set("a1", { speed: 1 }));
+    repo.write(b.id, "bob", (s) => s.set("a2", { speed: 2 }));
     repo.undo(b.id, "bob");
-    repo.rebaseTask(b.id, "bob"); // up to date: keeps the redo
+    // ada deletes the row bob's undone change wrote to.
+    repo.write(a.id, "ada", (s) => s.apply([{ op: "delete", id: "a2" }]));
+    repo.land(a.id, "ada");
+    expect(repo.status(b.id)).toMatchObject({ behind: 1, conflicts: [] });
     expect(repo.task(b.id).canRedo).toBe(true);
+    // Asked to, it rebases, and says what of the redo no longer applies.
+    const r = repo.rebaseTask(b.id, "bob");
+    expect(r.carried).toMatchObject({ task: { id: b.id, canRedo: false }, redo: 0 });
+    expect(r.carried!.dropped.length).toBeGreaterThan(0);
+  });
+
+  it("carries what was undone into a new task when a task lands", () => {
+    const { repo } = setup();
+    const b = repo.createTask("main", "bob");
+    repo.write(b.id, "bob", (s) => s.set("a1", { speed: 1 }));
+    repo.write(b.id, "bob", (s) => s.set("a2", { speed: 2 }));
+    repo.write(b.id, "bob", (s) => s.create("Ammo", { $id: "a9", speed: 9 }));
+    repo.undo(b.id, "bob");
+    repo.undo(b.id, "bob");
+    const landed = repo.land(b.id, "bob", { message: "Slow a1" });
+    expect(landed.carried).toMatchObject({ task: { owner: "bob", base: landed.commit.id, changes: 0, canRedo: true }, redo: 2, dropped: [] });
+    const next = landed.carried!.task!;
+    // It's bob's current task now, and redo goes on where it left off, exactly.
+    expect(repo.currentTask("main", "bob", false)!.id).toBe(next.id);
+    expect(repo.redo(next.id, "bob")).toBe(true);
+    expect(repo.view(next.id).get("a2").speed).toBe(2);
+    expect(repo.redo(next.id, "bob")).toBe(true);
+    expect(repo.view(next.id).get("a9").speed).toBe(9);
+    expect(repo.redo(next.id, "bob")).toBe(false);
+    expect(repo.undo(next.id, "bob")).toBe(true);
+    expect(() => repo.view(next.id).get("a9")).toThrow();
+    repo.redo(next.id, "bob");
+    // A land with nothing undone makes no new task.
+    expect(repo.land(next.id, "bob").carried).toBeUndefined();
+  });
+
+  it("rebases what was undone over what landed since, when a land rebases", () => {
+    const { repo } = setup();
+    const a = repo.createTask("main", "ada");
+    const b = repo.createTask("main", "bob");
+    repo.write(b.id, "bob", (s) => s.set("a1", { speed: 1 }));
+    repo.write(b.id, "bob", (s) => s.set("a2", { speed: 2 }));
+    repo.write(b.id, "bob", (s) => s.set("w1", { damage: 30 }));
+    repo.undo(b.id, "bob");
+    repo.undo(b.id, "bob");
+    // ada changes a2 too, and lands first: her change stands, that part of bob's redo goes.
+    repo.write(a.id, "ada", (s) => s.set("a2", { speed: 5 }));
+    repo.land(a.id, "ada");
+    const landed = repo.land(b.id, "bob");
+    expect(landed.carried).toMatchObject({ redo: 1 });
+    expect(landed.carried!.dropped.map((d) => d.where?.cell)).toEqual([expect.any(String)]);
+    const next = landed.carried!.task!.id;
+    repo.redo(next, "bob");
+    expect(repo.view(next).get("w1").damage).toBe(30);
+    expect(repo.view(next).get("a2").speed).toBe(5);
   });
 
   it("conflicts block a land until resolved", () => {

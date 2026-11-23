@@ -160,6 +160,35 @@ describe("the sapwood command, on a server", () => {
     expect((await ada.json("get", "w1")).damage).toBe(30);
   });
 
+  it("what you'd undone goes on after a land, and a rebase, so redo still works", async () => {
+    const { loggedIn } = setup();
+    const bob = await loggedIn("bob");
+    const ada = await loggedIn("ada");
+    await bob.sw("set", "a1", "speed=1");
+    await bob.sw("set", "a2", "speed=2");
+    await bob.sw("set", "w1", "damage=3");
+    await bob.sw("undo");
+    await bob.sw("undo");
+    expect((await bob.sw("task", "land", "-m", "Slow a1")).out.split("\n").slice(1)).toEqual([
+      "What you'd undone is in task 2, your current task now: sapwood redo goes on from there (2 changes).",
+    ]);
+    expect((await bob.sw("redo")).out).toBe("Redid a change in task 2: 1 change now.");
+    expect((await bob.json("get", "a2")).speed).toBe(2);
+    await bob.sw("undo");
+    // ada changes a2 meanwhile: hers stands, and bob's undone change to it goes.
+    await ada.sw("set", "a2", "speed=5");
+    await ada.sw("task", "land");
+    expect((await bob.sw("task", "rebase")).out.split("\n")).toEqual([
+      "Task 2 is up to date with main: 0 changes.",
+      "Kept what you'd undone: sapwood redo goes on (1 change).",
+      "Undone changes the head's changes now stand in the way of, dropped:",
+      "  1. Ammo!C2: mine 2, theirs 5",
+    ]);
+    await bob.sw("redo");
+    expect((await bob.json("get", "w1")).damage).toBe(3);
+    expect((await bob.json("get", "a2")).speed).toBe(5);
+  });
+
   it("refused lands say why", async () => {
     const { loggedIn, token, user } = setup();
     const bob = await loggedIn("bob");

@@ -574,6 +574,32 @@ interface StatusJson {
   validation: { errors: number; warnings: number };
 }
 
+interface CarriedJson {
+  task: TaskJson | null;
+  redo: number;
+  dropped: ConflictJson[];
+}
+
+/** What became of the task's undone changes after a land (into a new task) or a rebase (kept). */
+function carriedLines(c: CarriedJson, landed: boolean, current = true): string[] {
+  const out: string[] = [];
+  const redo = `(${plural(c.redo, "change")})`;
+  if (c.task && c.redo)
+    out.push(
+      !landed
+        ? `Kept what you'd undone: sapwood redo goes on ${redo}.`
+        : current
+          ? `What you'd undone is in task ${c.task.id}, your current task now: sapwood redo goes on from there ${redo}.`
+          : `What you'd undone is in task ${c.task.id} ${redo}: sapwood task switch ${c.task.id}, then sapwood redo.`,
+    );
+  else out.push("What you'd undone no longer applies: there's nothing to redo.");
+  if (c.dropped.length) {
+    out.push("Undone changes the head's changes now stand in the way of, dropped:");
+    out.push(...conflictLines(c.dropped));
+  }
+  return out;
+}
+
 async function currentTask(r: Remote): Promise<TaskJson> {
   const t = await r.client.json<TaskJson | null>("GET", `/api/branches/${enc(r.branch)}/tasks/current`);
   if (!t) throw new UsageError(`You have no current task on ${r.branch}: your first edit starts one, or run sapwood task new`);
@@ -649,9 +675,10 @@ async function task(args: string[], io: Io): Promise<number> {
       positionals(p, [], true);
       const r = remote(p, io);
       const id = await which(p, r);
-      const res = await r.client.json<{ task: TaskJson; dropped: ConflictJson[] }>("POST", `/api/tasks/${id}/rebase`, { resolutions: await resolutions(p, r, id) });
+      const res = await r.client.json<{ task: TaskJson; dropped: ConflictJson[]; carried?: CarriedJson }>("POST", `/api/tasks/${id}/rebase`, { resolutions: await resolutions(p, r, id) });
       io.out(`Task ${id} is up to date with ${res.task.branch}: ${plural(res.task.changes, "change")}.`);
       for (const d of res.dropped) io.out(`Dropped, no longer applies: ${d.id}`);
+      if (res.carried) carriedLines(res.carried, false).forEach((l) => io.out(l));
       return 0;
     }
     case "land": {
@@ -661,9 +688,13 @@ async function task(args: string[], io: Io): Promise<number> {
       const id = await which(p, r);
       const body: Record<string, unknown> = { resolutions: await resolutions(p, r, id) };
       if (p.values.message !== undefined) body.message = p.values.message;
-      const res = await r.client.json<{ commit: { id: string; branch: string }; dropped: ConflictJson[] }>("POST", `/api/tasks/${id}/land`, body);
+      const res = await r.client.json<{ commit: { id: string; branch: string }; dropped: ConflictJson[]; carried?: CarriedJson }>("POST", `/api/tasks/${id}/land`, body);
       io.out(`Landed task ${id} on ${res.commit.branch} as commit ${res.commit.id}.`);
       for (const d of res.dropped) io.out(`Dropped, no longer applies: ${d.id}`);
+      if (res.carried) {
+        const now = res.carried.task ? await r.client.json<TaskJson | null>("GET", `/api/branches/${enc(res.commit.branch)}/tasks/current`) : null;
+        carriedLines(res.carried, true, now?.id === res.carried.task?.id).forEach((l) => io.out(l));
+      }
       return 0;
     }
     case "abandon":
