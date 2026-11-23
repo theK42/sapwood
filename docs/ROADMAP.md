@@ -187,6 +187,8 @@ Phase 2 is done; what was left of loading speed moved to Phase 5 (2026-11-22).
 
 This is already a useful tool for the author.
 
+**M2 run by hand (2026-11-22):** on a test server with the KRBSG sample, signed in through GitHub's device flow. A branch and a task, a weapon and its projectile added (by CLI, and by an LLM over MCP), landed, merged to `main`, seen in `root.json` fetched over HTTP, then reverted and gone from it.
+
 ## Phase 3: Web app, home and spreadsheet
 
 - Sign-in, the home pack tree, branch selector, task bar.
