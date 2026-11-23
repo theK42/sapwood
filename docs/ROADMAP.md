@@ -219,6 +219,7 @@ This is already a useful tool for the author.
 - Generated form view, with ref pickers that respect pack reach.
 - Panel editors for `json` (with JSON Schema), `struct` and `union` fields, including lists of structs. Flattened sub-columns for simple structs. "Open in form" from the sheet.
 - Schema editor UI and validation rule editor (Developer role).
+- Pack and sheet management: create, rename and move packs (Developer) and sheets (Editor), in the web app's pack tree and the CLI. Making packs and sheets is already in the CLI, the API and MCP (2026-11-22); renaming and moving them isn't, though the ops exist.
 - Per-cell history (blame), per-entity history, restore-to-point.
 
 ## Phase 5: Adoption
