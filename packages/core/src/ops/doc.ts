@@ -121,8 +121,50 @@ export function canonDoc(doc: Doc): unknown {
   };
 }
 
+/**
+ * Whether two documents are the same: what comparing their canonDoc()s says, without
+ * building them. Cells still the same object (cloneDoc keeps them) aren't compared as JSON,
+ * and it stops at the first difference, so it costs little more than walking the cells.
+ */
 export function docsEqual(a: Doc, b: Doc): boolean {
-  return JSON.stringify(canonDoc(a)) === JSON.stringify(canonDoc(b));
+  if (a === b) return true;
+  if (a.schema !== b.schema && stableJson(a.schema) !== stableJson(b.schema)) return false;
+  if (a.packs.size !== b.packs.size) return false;
+  for (const [id, p] of a.packs) {
+    const q = b.packs.get(id);
+    if (!q || q.name !== p.name || q.parent !== p.parent) return false;
+  }
+  if (a.sheets.size !== b.sheets.size) return false;
+  const others = b.sheets.values();
+  for (const s of a.sheets.values()) {
+    const t = others.next().value!; // in order, as canonDoc lists them
+    if (s.id !== t.id || s.name !== t.name || s.pack !== t.pack || s.kind !== t.kind) return false;
+    if (!sameAxis(s.rows, t.rows) || !sameAxis(s.cols, t.cols)) return false;
+    if (!sameEntries(s.cells, t.cells, (x, y) => contentKey(x) === contentKey(y))) return false;
+    if (!sameEntries(s.formats, t.formats, (x, y) => stableJson(x) === stableJson(y))) return false;
+    if (!sameEntries(s.layouts, t.layouts, (x, y) => stableJson(x) === stableJson(y))) return false;
+  }
+  return true;
+}
+
+/** The same order, with the same of it deleted (what canonDoc writes as `~id`). */
+function sameAxis(a: AxisDoc, b: AxisDoc): boolean {
+  if (a.order.length !== b.order.length) return false;
+  for (let i = 0; i < a.order.length; i++) {
+    const x = a.order[i]!;
+    if (x !== b.order[i] || a.dead.has(x) !== b.dead.has(x)) return false;
+  }
+  return true;
+}
+
+function sameEntries<V>(a: Map<string, V>, b: Map<string, V>, same: (x: V, y: V) => boolean): boolean {
+  if (a.size !== b.size) return false;
+  for (const [k, v] of a) {
+    if (!b.has(k)) return false;
+    const w = b.get(k)!;
+    if (v !== w && !same(v, w)) return false;
+  }
+  return true;
 }
 
 const resolved = new WeakMap<Schema, ResolvedSchema>();

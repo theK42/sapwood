@@ -964,9 +964,9 @@ Performance targets at 10k entities (to be checked as we go):
 
 - Single-cell edit: recompute and validate in under 50 ms. **Met** (2026-11-20): 8–15 ms, including edits that change an ID or move a row.
 - Full validation: under 1 s. **Met:** 91 ms from scratch. Validation keeps what it read per row, so a run after an edit takes about 9 ms.
-- Land: under 2 s. Measured once landing exists (Phase 2).
+- Land: under 2 s. **Met** (2026-11-22): about 50 ms for a task up to date with its branch, 160 ms for one that rebases first, and 60 ms for the land that also stores a snapshot. A task that's behind is moved onto the new head by applying, to the project it already has, the ops that take it there (what landed since, brought across its changes, as a sync commit is made), which recalculates only what they touch; a land that rebases does the same, and the task's project becomes the head's. Only a project not yet built (a new task's first read, the first read of a head after a start) is built from the document: about 330 ms at 10k rows, 4.2 s at 100k.
 
-`npm run bench` measures these on a generated project (`packages/core/bench/engine.bench.ts`).
+`npm run bench` measures these on a generated project (`packages/core/bench/engine.bench.ts`); `npm run bench:server` measures loading and landing (`packages/server/bench/land.bench.ts`).
 
 ## 13. Lessons from KRBSG Data
 

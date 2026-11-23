@@ -139,10 +139,13 @@ describe("what was undone, carried over", () => {
           if (r.finish === "land" && c.task) expect(repo.currentTask("main", user, false)?.id).toBe(c.task.id);
           check(c, exact);
         }
-        // A restarted server reads every open task the same.
+        // A restarted server reads every open task, and the head, the same.
+        expect(repo.head("main").export({ allowInvalid: true })).toEqual(new Repo(db).head("main").export({ allowInvalid: true }));
         const again = new Repo(db);
         for (const t of repo.tasks({ branch: "main", state: "open" })) {
           expect(docsEqual(again.view(t.id).doc, repo.view(t.id).doc)).toBe(true);
+          // Computed values too: task views are moved along by ops, not rebuilt.
+          expect(repo.view(t.id).export({ allowInvalid: true })).toEqual(again.view(t.id).export({ allowInvalid: true }));
           expect(again.task(t.id).canRedo).toBe(repo.task(t.id).canRedo);
         }
       }),

@@ -14,7 +14,8 @@
     "typecheck": "tsc -b",
     "test": "vitest run",
     "test:watch": "vitest",
-    "bench": "node packages/core/bench/engine.bench.ts"
+    "bench": "node packages/core/bench/engine.bench.ts",
+    "bench:server": "node packages/server/bench/land.bench.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

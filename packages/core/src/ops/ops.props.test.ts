@@ -15,7 +15,7 @@ import { loadProject } from "../project/load.ts";
 import type { Edit, Project } from "../project/project.ts";
 import { Project as P } from "../project/project.ts";
 import { validate } from "../project/validate.ts";
-import { canonDoc, cloneDoc, docsEqual, isLive, splitCellKey } from "./doc.ts";
+import { canonDoc, cloneDoc, docFromJson, docsEqual, docToJson, isLive, splitCellKey } from "./doc.ts";
 import { applyOp, OpError, type Op } from "./ops.ts";
 
 const RUNS = Number(process.env.RUNS ?? 300);
@@ -139,6 +139,13 @@ describe("ops on the real model (properties)", () => {
       const doc = cloneDoc(start);
       for (const op of ops) applyOp(doc, op);
       expect(canonDoc(doc)).toEqual(canonDoc(p.doc));
+      // docsEqual says what comparing canonDoc()s says, for equal documents and for unequal
+      // ones: the start, a replay part way, the end, and copies made by JSON (no shared cells).
+      const part = cloneDoc(start);
+      for (const op of ops.slice(0, int(g, ops.length))) applyOp(part, op);
+      const canon = (d: typeof doc) => JSON.stringify(canonDoc(d));
+      for (const [x, y] of [[doc, p.doc], [start, p.doc], [part, p.doc], [start, part], [docFromJson(JSON.parse(JSON.stringify(docToJson(p.doc)))), doc]] as const)
+        expect(docsEqual(x, y)).toBe(canon(x) === canon(y));
       // mirror
       expect(observe(P.fromDoc(cloneDoc(p.doc)))).toEqual(observe(p));
       // undo

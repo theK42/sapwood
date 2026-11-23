@@ -126,18 +126,26 @@ export function analyze(base: Doc, ops: readonly Op[]): Analysis {
     for (const axis of ["row", "col"] as const)
       for (const x of axisOf(b, axis).order)
         if (!axisOf(b, axis).dead.has(x) && !isLive(axisOf(f, axis), x)) deleted.add(axisKey(id, axis, x));
-    for (const k of new Set([...b.cells.keys(), ...f.cells.keys()])) {
+    // cloneDoc keeps the cells' objects, so one that's still the same object is unchanged:
+    // only the few that were written are compared as JSON.
+    const cell = (k: string) => {
       const v = f.cells.get(k) ?? null;
-      if (contentKey(v) === contentKey(b.cells.get(k) ?? null)) continue;
+      const was = b.cells.get(k) ?? null;
+      if (v === was || contentKey(v) === contentKey(was)) return;
       cells.set(`${id}/${k}`, v);
       const [r, c] = splitCellKey(k);
       edited.add(axisKey(id, "row", r));
       edited.add(axisKey(id, "col", c));
-    }
-    for (const k of new Set([...b.formats.keys(), ...f.formats.keys()])) {
+    };
+    for (const k of f.cells.keys()) cell(k);
+    for (const k of b.cells.keys()) if (!f.cells.has(k)) cell(k);
+    const format = (k: string) => {
       const v = f.formats.get(k) ?? null;
-      if (stableJson(v) !== stableJson(b.formats.get(k) ?? null)) formats.set(`${id}/${k}`, v);
-    }
+      const was = b.formats.get(k) ?? null;
+      if (v !== was && stableJson(v) !== stableJson(was)) formats.set(`${id}/${k}`, v);
+    };
+    for (const k of f.formats.keys()) format(k);
+    for (const k of b.formats.keys()) if (!f.formats.has(k)) format(k);
   }
   for (const k of moved.keys()) edited.add(k);
   const finalRenames = new Map<string, string>();

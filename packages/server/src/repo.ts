@@ -646,8 +646,9 @@ export class Repo {
     const r = this.rebased(t, resolutions);
     if (r.blocking.length) throw conflictError(r.blocking, this.head(t.branch));
     const undone = this.undoneOf(id);
-    const redo = this.carryRedo(t, r, resolutions, undone);
-    this.adopt(t, head, r.changes, redo.changes);
+    const path = this.pathOf(t, r, resolutions);
+    const redo = this.carryRedo(t, r, path, undone);
+    this.adopt(t, head, r.changes, redo.changes, path);
     this.taskEvent(id, "rebased", actor);
     const out: { task: TaskInfo; dropped: ConflictJson[]; carried?: Carried } = { task: this.task(id), dropped: r.dropped.map((c) => conflictJson(c)) };
     if (undone.length) out.carried = { task: out.task, redo: redo.changes.length, dropped: redo.dropped.map((c) => conflictJson(c, this.head(t.branch))) };
@@ -675,8 +676,10 @@ export class Repo {
       if (r.blocking.length) throw conflictError(r.blocking, this.head(t.branch));
       ops = r.ops;
       dropped = r.dropped;
-      s = Sapwood.fromDoc(r.state);
-      redo = this.carryRedo(t, r, opts.resolutions ?? {}, undone);
+      const path = this.pathOf(t, r, opts.resolutions ?? {});
+      // The task's own project, moved onto the head, becomes the head's (it's dropped as a view below).
+      s = this.moveView(t, b.head, path) ?? Sapwood.fromDoc(r.state);
+      redo = this.carryRedo(t, r, path, undone);
     }
     if (ops.length === 0) throw new RepoError("state", `Task ${id} has no changes to land`);
     const v = s.validate();
@@ -889,15 +892,36 @@ export class Repo {
    * head's changes, the head's stand, and the rest of it no longer applies: dropped, and
    * reported. With nothing landed since, they're carried exactly.
    */
-  private carryRedo(t: TaskInfo, r: Rebased, resolutions: Resolutions, undone: Op[][]): { changes: Op[][]; dropped: Conflict[] } {
+  private carryRedo(t: TaskInfo, r: Rebased, path: () => Op[], undone: Op[][]): { changes: Op[][]; dropped: Conflict[] } {
     if (!undone.length || !r.theirs.length) return { changes: undone, dropped: [] };
-    const live = r.live.flat();
-    const flip = (s: Side | undefined): Side => (s === "theirs" ? "mine" : s === "mine" ? "theirs" : "mine");
-    const path = this.across(() => this.stateAt(t.base), live, r.theirs, (c) => flip(resolutions[conflictId(c, true)]), r.state, r.ops).ops;
     const mine = this.stateAt(t.base);
-    applyOps(mine, live);
-    const c = rebase(mine, path, undone.flat());
+    applyOps(mine, r.live.flat());
+    const c = rebase(mine, path(), undone.flat());
     return { changes: regroupRedo(undone, c.ops, c.origins), dropped: c.conflicts };
+  }
+
+  /**
+   * The ops that take a task's own state (its base plus its changes) to its rebase onto
+   * the head, `r.state`: what landed since, brought across its changes. Worked out once,
+   * when first asked for.
+   */
+  private pathOf(t: TaskInfo, r: Rebased, resolutions: Resolutions): () => Op[] {
+    let ops: Op[] | undefined;
+    const flip = (s: Side | undefined): Side => (s === "theirs" ? "mine" : s === "mine" ? "theirs" : "mine");
+    return () => (ops ??= r.theirs.length ? this.across(() => this.stateAt(t.base), r.live.flat(), r.theirs, (c) => flip(resolutions[conflictId(c, true)]), r.state, r.ops).ops : []);
+  }
+
+  /**
+   * The task's project moved onto its rebase: the one it has, with `path` applied, which
+   * recalculates only what that touches, rather than a new one built from the document.
+   * Null when it has none to move (none built yet, or on another base).
+   */
+  private moveView(t: TaskInfo, head: string, path: () => Op[]): Sapwood | null {
+    const v = this.views.get(t.id);
+    if (!v || v.base !== t.base) return null;
+    v.s.project.apply(path());
+    v.base = head;
+    return v.s;
   }
 
   /**
@@ -923,9 +947,10 @@ export class Repo {
     const head = this.branch(t.branch).head;
     const r = this.rebased(t, {});
     if (r.blocking.length) return;
-    const redo = this.carryRedo(t, r, {}, t.canRedo ? this.undoneOf(t.id) : []);
+    const path = this.pathOf(t, r, {});
+    const redo = this.carryRedo(t, r, path, t.canRedo ? this.undoneOf(t.id) : []);
     if (redo.dropped.length) return;
-    this.adopt(t, head, r.changes, redo.changes);
+    this.adopt(t, head, r.changes, redo.changes, path);
     this.taskEvent(t.id, "rebased", null);
   }
 
@@ -933,7 +958,7 @@ export class Repo {
    * Move a task onto `head` with its rebased changes, each still its own undo step, with
    * its inverse worked out again on the head, then `undone`, still undone.
    */
-  private adopt(t: TaskInfo, head: string, changes: Op[][], undone: Op[][]): void {
+  private adopt(t: TaskInfo, head: string, changes: Op[][], undone: Op[][], path: () => Op[]): void {
     const doc = this.stateAt(head);
     const rows = changes.map((ops) => ({ ops, inverse: applyOps(doc, ops) }));
     this.db.tx(() => {
@@ -942,7 +967,7 @@ export class Repo {
       this.addUndone(t.id, rows.length, undone);
       this.db.run("UPDATE tasks SET base = ?, updated_at = ? WHERE id = ?", head, now(), t.id);
     });
-    this.views.set(t.id, { base: head, s: taskProject(doc, t.id) });
+    if (!this.moveView(t, head, path)) this.views.set(t.id, { base: head, s: taskProject(doc, t.id) });
   }
 
   /** Add a commit on a branch, and (unless `addToNet` is false) to the branch's net change. */

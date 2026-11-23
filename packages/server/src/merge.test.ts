@@ -206,8 +206,17 @@ describe("merge and sync, at random", () => {
           }
           for (const b of ["dev", "feat"]) expect(netHolds(db, repo, b)).toBe(true);
           const fresh = new Repo(db);
-          for (const b of ["main", "dev", "feat"]) expect(docsEqual(fresh.head(b).doc, repo.head(b).doc)).toBe(true);
-          if (repo.task(task.id).state === "open") expect(docsEqual(fresh.view(task.id).doc, repo.view(task.id).doc)).toBe(true);
+          // The same documents, and the same computed values as a project built afresh
+          // (heads and task views are moved along by ops, not rebuilt).
+          const values = (s: Sapwood) => s.export({ allowInvalid: true });
+          for (const b of ["main", "dev", "feat"]) {
+            expect(docsEqual(fresh.head(b).doc, repo.head(b).doc)).toBe(true);
+            expect(values(repo.head(b))).toEqual(values(fresh.head(b)));
+          }
+          if (repo.task(task.id).state === "open") {
+            expect(docsEqual(fresh.view(task.id).doc, repo.view(task.id).doc)).toBe(true);
+            expect(values(repo.view(task.id))).toEqual(values(fresh.view(task.id)));
+          }
         }
         for (const k of ["clean", "reconciled", "long"] as const) routes[k] += repo.syncRoutes[k];
       }),
