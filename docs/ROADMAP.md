@@ -145,7 +145,6 @@ Still to do in Phase 1:
 ## Phase 2: Server, persistence, CLI
 
 - SQLite storage: commits, ops, tasks, branches, snapshots.
-- Loading from a snapshot that stores computed values and their dependencies, rather than recalculating every formula. At 100k rows recalculation is 1.4 s of a 4.9 s load; formulas' dependencies are found by evaluating them, so values alone aren't enough.
 - Task service: implicit working task, named tasks, auto-rebase, land queue.
 - Branches: create, merge, sync, discard; merge commits.
 - History: commit log, revert commit, read/export at a commit.
@@ -176,9 +175,7 @@ Still to do in Phase 1:
 - **Auth:** the four roles, and tokens with `read-only`, `no-land`, branch and role limits. `sapwood-server init`, `user add`, `token` and `serve` set a server up.
 - **Tests:** units for the repo, the HTTP API and the command, and a property test. Three users write random patches to their current tasks and land them in random order, resolving conflicts one way or the other. After every step, a server restarted on the same database must read the same head and tasks, and refused lands must leave the head alone. It found that two tasks creating an entity each made the same row ID; each task's new IDs now carry its number.
 
-Still to do in Phase 2:
-
-- Loading from snapshots that keep computed values (above). Landing is measured and meets the 2 s target (DESIGN §12.3); at 100k rows a new task's first read still builds its project from the document, about 4.2 s.
+Phase 2 is done; what was left of loading speed moved to Phase 5 (2026-11-22).
 
 **Milestone M2:** headless KRBSG round-trip.
 
@@ -212,6 +209,8 @@ This is already a useful tool for the author.
 - Importers: Google Sheets, `.xlsx`, CSV. Map tabs and columns to types and fields.
 - Wizards (declarative templates with interleaved placement).
 - Performance pass to the 100k-entity ceiling. Known costs at 100k rows: the checks that span rows (unique IDs, refs) are rebuilt on every validation (about 120 ms); `SUM(ENTITIES(type, field))` re-reads its whole column on each edit (about 30 ms for 80k); loading applies 700k cell ops (about 3 s besides recalculation).
+  - **Building a project from the document**, which a new task's first read and a server's first read of a head do: about 4.2 s at 100k rows (`npm run bench:server`). Recalculating every formula is about 40% of it; feeding the cells in is the rest. Two ways to weigh against each other: snapshots that keep computed values and their dependencies, so a load needn't recalculate (formulas' dependencies are found by evaluating them, so values alone aren't enough), and a cheaper build that feeds the cells in without applying the whole document again as ops.
+  - **Copying documents:** a rebase copies the whole document about ten times, about 250 ms each at 100k rows. A land that rebases takes 3.5 s there, and an open task's next read after another task lands 3.8 s.
 
 ## Stretch and later
 
