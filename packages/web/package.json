@@ -11,9 +11,13 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
+    "@glideapps/glide-data-grid": "6.0.4-alpha24",
     "@thek42/sapwood-core": "*",
+    "lodash": "^4.18.1",
+    "marked": "^16.4.2",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "react-responsive-carousel": "^3.2.23"
   },
   "devDependencies": {
     "@thek42/sapwood-server": "*",

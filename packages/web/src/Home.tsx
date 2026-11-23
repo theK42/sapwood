@@ -15,9 +15,12 @@ interface Props {
   atHead: boolean;
   commits: CommitInfo[];
   others: TaskInfo[];
+  /** Open a sheet, by its ID; and its address, for a link. */
+  open(sheet: string): void;
+  href(sheet: string): string;
 }
 
-export function Home({ source, atHead, commits, others }: Props) {
+export function Home({ source, atHead, commits, others, open, href }: Props) {
   const tick = useSource(source);
   const tree = useMemo(() => packTree(source.project.doc, validate(source.project).issues), [source, tick]);
   return (
@@ -31,7 +34,7 @@ export function Home({ source, atHead, commits, others }: Props) {
             <Badges c={tree.project} /> <span className="muted">not on any sheet</span>
           </p>
         )}
-        <Pack node={tree.root} depth={0} />
+        <Pack node={tree.root} depth={0} open={open} href={href} />
       </section>
       <aside className="side">
         <section className="panel" aria-label="Recent commits">
@@ -73,7 +76,7 @@ export function Home({ source, atHead, commits, others }: Props) {
   );
 }
 
-function Pack({ node, depth }: { node: PackNode; depth: number }) {
+function Pack({ node, depth, open: openSheet, href }: { node: PackNode; depth: number; open(sheet: string): void; href(sheet: string): string }) {
   const [open, setOpen] = useState(true);
   const empty = node.sheets.length === 0 && node.packs.length === 0;
   return (
@@ -85,7 +88,16 @@ function Pack({ node, depth }: { node: PackNode; depth: number }) {
         <ul className="sheet-list">
           {node.sheets.map((s) => (
             <li key={s.id}>
-              <span>{s.name}</span>
+              <a
+                href={href(s.id)}
+                onClick={(e) => {
+                  if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+                  e.preventDefault();
+                  openSheet(s.id);
+                }}
+              >
+                {s.name}
+              </a>
               {s.kind === "scratch" && <span className="tag">scratch</span>}
               <span className="muted small">{plural(s.rows, "row")}</span>
               <Badges c={s} />
@@ -94,7 +106,7 @@ function Pack({ node, depth }: { node: PackNode; depth: number }) {
           {empty && <li className="muted small">Empty</li>}
           {node.packs.map((q) => (
             <li key={q.id} className="sub">
-              <Pack node={q} depth={depth + 1} />
+              <Pack node={q} depth={depth + 1} open={openSheet} href={href} />
             </li>
           ))}
         </ul>

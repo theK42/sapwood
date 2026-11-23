@@ -1,12 +1,14 @@
 // The app's frame: signing in, then the workspace for one branch, with your current task.
 // The branch is in the address (/branches/<name>), so a link or a reload keeps it.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Op, Project } from "@thek42/sapwood-core";
 import { Api, ApiError, type BranchInfo, type CommitInfo, type Health, type Me, type TaskInfo } from "./api.ts";
 import { listen } from "./events.ts";
 import { HeadView } from "./head.ts";
 import { Home } from "./Home.tsx";
 import { TaskSession } from "./session.ts";
+import { SheetView } from "./SheetView.tsx";
 import { TaskBar } from "./TaskBar.tsx";
 
 const api = new Api();
@@ -84,6 +86,11 @@ function branchFromPath(): string | null {
   return m ? decodeURIComponent(m[1]!) : null;
 }
 
+function sheetFromPath(): string | null {
+  const m = /^\/branches\/[^/]+\/sheets\/([^/]+)/.exec(location.pathname);
+  return m ? decodeURIComponent(m[1]!) : null;
+}
+
 function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const [branches, setBranches] = useState<BranchInfo[]>([]);
   const [branch, setBranch] = useState<string>(branchFromPath() ?? "main");
@@ -93,13 +100,20 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [commits, setCommits] = useState<CommitInfo[]>([]);
   const [headTick, setHeadTick] = useState(0);
+  const [sheet, setSheet] = useState<string | null>(sheetFromPath());
+  const starting = useRef<Promise<TaskSession> | null>(null);
+  const canEdit = me.role !== "viewer" && me.scopes.readOnly !== true;
 
-  const go = (b: string) => {
-    history.pushState(null, "", `/branches/${encodeURIComponent(b)}`);
+  const go = (b: string, sh: string | null = null) => {
+    history.pushState(null, "", `/branches/${encodeURIComponent(b)}${sh ? `/sheets/${encodeURIComponent(sh)}` : ""}`);
     setBranch(b);
+    setSheet(sh);
   };
   useEffect(() => {
-    const back = () => setBranch(branchFromPath() ?? "main");
+    const back = () => {
+      setBranch(branchFromPath() ?? "main");
+      setSheet(sheetFromPath());
+    };
     addEventListener("popstate", back);
     return () => removeEventListener("popstate", back);
   }, []);
@@ -111,6 +125,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   useEffect(loadBranches, [loadBranches]);
   useEffect(() => {
     setCurrent(undefined);
+    setHead(null); // another branch's
     setTasks([]);
     setCommits([]);
     loadCurrent();
@@ -119,26 +134,39 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   }, [loadCurrent, loadTasks, loadCommits]);
 
   // Your current task's session, or the head when you have none.
+  // One session per task, however many ask for it: an edit that starts a task and the
+  // task's own "created" event can both get here first.
+  const opening = useRef(new Map<number, Promise<TaskSession>>());
+  const openSession = (id: number): Promise<TaskSession> => {
+    let p = opening.current.get(id);
+    if (!p) {
+      p = TaskSession.open(api, id);
+      opening.current.set(id, p);
+      p.catch(() => opening.current.delete(id));
+    }
+    return p;
+  };
   useEffect(() => {
     if (!current) return setSession(null);
-    let s: TaskSession | null = null;
+    const id = current.id;
     let gone = false;
-    void TaskSession.open(api, current.id).then((x) => {
-      if (gone) return x.close();
-      s = x;
-      setSession(x);
-    });
+    openSession(id).then((x) => !gone && setSession(x), () => {});
     return () => {
       gone = true;
-      s?.close();
+      const p = opening.current.get(id);
+      opening.current.delete(id);
+      void p?.then((x) => x.close(), () => {});
     };
   }, [current?.id]);
+  // The head, while you have no task, and until your task's session is ready (so a sheet
+  // stays open while the first edit starts a task).
   useEffect(() => {
-    if (current !== null) return setHead(null);
+    if (session) return setHead(null);
+    if (current !== null) return;
     let gone = false;
     void HeadView.open(api, branch).then((h) => !gone && setHead(h), () => {});
     return () => void (gone = true);
-  }, [current === null, branch]);
+  }, [session === null, current === null, branch]);
 
   // Events: tasks moving on, heads moving, branches made and discarded.
   useEffect(
@@ -169,6 +197,26 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
       }),
     [branch, session, head, me.login, loadBranches, loadCurrent, loadTasks, loadCommits, signedOut],
   );
+
+  /** Your task's session, starting a task if you have none: your first edit starts one (§8.3). */
+  const ensureSession = (): Promise<TaskSession> => {
+    if (session) return Promise.resolve(session);
+    starting.current ??= (async () => {
+      try {
+        const t = await api.newTask(branch);
+        setCurrent(t);
+        loadTasks();
+        return await openSession(t.id);
+      } finally {
+        starting.current = null;
+      }
+    })();
+    return starting.current;
+  };
+  const edit = (fn: (p: Project) => { ops: Op[] }) => {
+    if (session) return void session.edit(fn);
+    void ensureSession().then((s) => s.edit(fn), (e: unknown) => alert((e as Error).message));
+  };
 
   const signOut = async () => {
     await api.signOut();
@@ -213,7 +261,26 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           loadTasks();
         }}
       />
-      <main className="body">{source ? <Home source={source} atHead={source === head} commits={commits} others={others} /> : <p className="muted">Loading…</p>}</main>
+      {!source ? (
+        <main className="body">
+          <p className="muted">Loading…</p>
+        </main>
+      ) : sheet ? (
+        <SheetView
+          key={sheet}
+          source={source}
+          sheet={sheet}
+          canEdit={canEdit && (session ? session.editable : true)}
+          edit={edit}
+          undo={() => void session?.undo()}
+          redo={() => void session?.redo()}
+          back={() => go(branch)}
+        />
+      ) : (
+        <main className="body">
+          <Home source={source} atHead={source === head} commits={commits} others={others} open={(id) => go(branch, id)} href={(id) => `/branches/${encodeURIComponent(branch)}/sheets/${encodeURIComponent(id)}`} />
+        </main>
+      )}
     </div>
   );
 }

@@ -83,6 +83,24 @@ export function buildLayout(
   return { layout, errors };
 }
 
+/** Each column of a layout, as written: `cooldown`, `price.amount`, `projectiles[0]`. */
+export function columnSpecs(schema: ResolvedSchema, type: ResolvedType, layout: Layout): Map<ColId, string> {
+  const out = new Map<ColId, string>();
+  for (const c of layout) {
+    let def = type.fields.find((f) => f.def.id === c.field)?.def;
+    if (!def) continue;
+    let spec = def.name;
+    for (const id of c.path) {
+      const f: FieldDef | undefined = def!.type.kind === "struct" ? schema.structs.get(def!.type.name)?.fields.find((x) => x.id === id) : undefined;
+      if (!f) break;
+      spec += `.${f.name}`;
+      def = f;
+    }
+    out.set(c.col, c.index === undefined ? spec : `${spec}[${c.index}]`);
+  }
+  return out;
+}
+
 /** The default layout: every field in schema order, one whole column each (§6.3). */
 export const defaultSpecs = (type: ResolvedType): string[] => type.fields.map((f) => f.def.name);
 

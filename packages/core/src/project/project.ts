@@ -7,7 +7,7 @@
 // export read. Edits written against positions (`set`, `insert`, …) return the ops
 // they made and their inverse, for a task to record and undo.
 
-import { bind, BindError } from "../formula/bind.ts";
+import { bind, BindError, render, type Host } from "../formula/bind.ts";
 import type { Content } from "../formula/content.ts";
 import { Engine, parseInput } from "../formula/engine.ts";
 import { Workbook, type ColId, type PackId, type RowId, type SheetId, type SheetKind } from "../formula/model.ts";
@@ -617,6 +617,11 @@ export class Project {
     });
   }
 
+  /** What a formula bar shows for a cell: the text that, typed in, gives what it holds. */
+  inputAt(sheet: SheetId, row: RowId, col: ColId): string {
+    return contentInput(this.doc.sheets.get(sheet)?.cells.get(cellKey(row, col)) ?? null, { wb: this.wb, sheet });
+  }
+
   format(sheet: SheetId, row: RowId, col: ColId): Format | null {
     return this.doc.sheets.get(sheet)?.formats.get(cellKey(row, col)) ?? null;
   }
@@ -927,4 +932,18 @@ function groupBy<T, K>(xs: readonly T[], key: (x: T) => K): Map<K, T[]> {
 
 function display(v: Scalar): string {
   return typeof v === "number" ? formatNumber(v) : String(v);
+}
+
+/**
+ * A cell's content as a person would type it: a formula as A1 text from `host`, a literal as
+ * written, with a leading ' when text would otherwise read as a number, TRUE or a formula.
+ */
+export function contentInput(c: Content, host: Host): string {
+  if (c === null) return "";
+  if ("f" in c) return render(c.f, host);
+  if ("bad" in c) return c.bad;
+  const v = c.v;
+  if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+  if (typeof v === "number") return String(v);
+  return v.startsWith("=") || v.startsWith("'") || parseInput(v) !== v ? `'${v}` : v;
 }
