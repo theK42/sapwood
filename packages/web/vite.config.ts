@@ -1,0 +1,20 @@
+// In development, Vite serves the app on 5173 and passes /api, /auth and /healthz to a Sapwood server
+// (SAPWOOD_SERVER, default http://127.0.0.1:8417), as if the app were served from there:
+// the session cookie, and the WebSocket's Origin check, then work as in production.
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+
+const target = process.env.SAPWOOD_SERVER ?? "http://127.0.0.1:8417";
+const proxy = {
+  target,
+  changeOrigin: true,
+  ws: true,
+  // The server checks a WebSocket's Origin against itself.
+  configure: (p: { on(e: "proxyReqWs", f: (req: { setHeader(k: string, v: string): void }) => void): void }) => p.on("proxyReqWs", (req) => req.setHeader("origin", new URL(target).origin)),
+};
+
+export default defineConfig({
+  plugins: [react()],
+  server: { port: 5173, strictPort: true, proxy: { "/api": proxy, "/auth": proxy, "/healthz": proxy } },
+  build: { sourcemap: true },
+});

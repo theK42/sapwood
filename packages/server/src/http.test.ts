@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { docFromJson, docsEqual, Project, Sapwood } from "@thek42/sapwood-core";
 import { Auth, type Scopes } from "./auth.ts";
@@ -297,5 +300,46 @@ describe("the HTTP API", () => {
     const dev = as(tokenFor("ada", { role: "developer" }));
     const t2 = (await dev("POST /api/branches/main/tasks", {})).json.id;
     expect((await dev(`POST /api/tasks/${t2}/ops`, { ops: [{ kind: "createPack", pack: "px", name: "dlc", parent: "root" }] })).status).toBe(200);
+  });
+
+  it("signs a browser in with a token, as a session no more able than the token", async () => {
+    const { app, tokenFor, auth } = setup();
+    const post = (body: unknown, headers: Record<string, string> = { "x-sapwood-request": "1" }) =>
+      app.request("/auth/token", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+    expect((await post({ token: tokenFor("bob") }, {})).status).toBe(403); // no write header: a form on another site
+    expect((await post({ token: "swd_nope" })).status).toBe(401);
+    const r = await post({ token: tokenFor("ada", { readOnly: true }) });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ login: "ada", role: "admin" });
+    const cookie = /sapwood_session=([^;]+)/.exec(r.headers.get("set-cookie") ?? "")![1]!;
+    expect(r.headers.get("set-cookie")).toContain("HttpOnly");
+    const me = await app.request("/api/me", { headers: { cookie: `sapwood_session=${cookie}` } });
+    expect(((await me.json()) as { scopes: unknown }).scopes).toEqual({ readOnly: true });
+    expect(auth.tokens("ada").at(-1)).toMatchObject({ name: "Web sign-in", scopes: { readOnly: true } });
+  });
+
+  it("serves the web app, with index.html for its own routes", async () => {
+    const base = mkdtempSync(join(tmpdir(), "sapwood-web-"));
+    const dir = join(base, "dist");
+    mkdirSync(join(dir, "assets"), { recursive: true });
+    writeFileSync(join(dir, "index.html"), "<!doctype html><title>Sapwood</title>");
+    writeFileSync(join(dir, "assets", "app-abc123.js"), "console.log(1)");
+    writeFileSync(join(base, "secret.txt"), "no");
+    const db = new Db(":memory:");
+    const repo = new Repo(db);
+    repo.init(Sapwood.load(SCHEMA, PROJECT).doc, "ada");
+    const app = createApp(repo, new Auth(db), { web: dir });
+    const page = await app.request("/");
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-type")).toContain("text/html");
+    expect(page.headers.get("content-security-policy")).toContain("default-src 'self'");
+    expect(await (await app.request("/branches/main/sheets/Weapons")).text()).toContain("<title>Sapwood");
+    const js = await app.request("/assets/app-abc123.js");
+    expect(js.headers.get("content-type")).toContain("text/javascript");
+    expect(js.headers.get("cache-control")).toContain("immutable");
+    expect((await app.request("/assets/missing.js")).status).toBe(404);
+    expect((await app.request("/..%2fsecret.txt")).status).toBe(404);
+    expect((await app.request("/api/branches")).status).toBe(401); // the API is still the API
+    expect((await app.request("/api/nope")).status).toBe(401);
   });
 });

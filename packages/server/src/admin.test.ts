@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -27,23 +27,27 @@ function setup() {
 
 describe("sapwood-server", () => {
   it("init, users, tokens and serve", async () => {
-    const { run } = setup();
+    const { dir, run } = setup();
     expect(run("init", "--admin", "Ada", "--schema", "schema.yaml", "--from", "project.yaml").out).toMatch(/^Started the project on main \(commit [0-9a-f]+\), with ada as Admin/);
     expect(run("init", "--admin", "ada").r).toBe(1); // already started
     expect(run("user", "add", "bob", "--role", "editor").out).toBe("Added bob as editor.");
     expect(run("user", "add", "bob", "--role", "boss").r).toBe(2);
     const token = run("token", "bob", "--name", "laptop", "--no-land").out;
     expect(token).toMatch(/^swd_[\w-]+$/);
+    expect(run("serve", "--web", "nowhere").r).toBe(2); // no web app there
+    mkdirSync(join(dir, "web"));
+    writeFileSync(join(dir, "web", "index.html"), "<!doctype html><title>Sapwood</title>");
     const port = 20000 + Math.floor(Math.random() * 20000);
-    const s = run("serve", "--port", String(port));
+    const s = run("serve", "--port", String(port), "--web", "web");
     expect(s.out).toBe(
-      `Serving the Sapwood API on http://127.0.0.1:${port}/api\nGitHub sign-in is off ($SAPWOOD_GITHUB_CLIENT_ID isn't set): people need tokens from sapwood-server token.`,
+      `Serving the Sapwood API on http://127.0.0.1:${port}/api\nThe web app is on http://127.0.0.1:${port}/\nGitHub sign-in is off ($SAPWOOD_GITHUB_CLIENT_ID isn't set): people need tokens from sapwood-server token.`,
     );
     const server = s.r as { close(): void };
     try {
       const res = await fetch(`http://127.0.0.1:${port}/api/branches/main/entities/w1`, { headers: { authorization: `Bearer ${token}` } });
       expect(res.status).toBe(200);
       expect(((await res.json()) as { damage: number }).damage).toBe(10);
+      expect(await (await fetch(`http://127.0.0.1:${port}/branches/main`)).text()).toContain("<title>Sapwood");
     } finally {
       server.close();
     }

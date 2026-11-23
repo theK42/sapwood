@@ -11,7 +11,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p packages/web",
+    "build:web": "npm run build --workspace=packages/web",
+    "dev:web": "npm run dev --workspace=packages/web",
     "test": "vitest run",
     "test:watch": "vitest",
     "bench": "node packages/core/bench/engine.bench.ts",

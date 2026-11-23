@@ -207,6 +207,10 @@ This is already a useful tool for the author.
 6. **Type views and find references.**
 7. **History:** the commit log, and a task's diff.
 
+**Status (2026-11-22): started.**
+
+- **Foundation** (step 1): `packages/web`, built with `npm run build:web` and served by `sapwood-server serve` (or `--web <dir>`), with a content security policy that keeps the page to its own server. Sign-in by GitHub, or by pasting a Sapwood token, which becomes a session no more able than the token. A task session keeps the browser's own copy of the task: an edit shows at once, recalculated and validated in the browser, and its ops go to the server one change at a time, each with the revision it was made on. When the task moved on elsewhere, the session reads it again and replays what it hadn't sent; an edit that no longer applies is dropped and said so. Undo and redo are the server's. The WebSocket keeps it current: a write from the CLI or an LLM, or a rebase, shows without a reload. So far the page shows the branch, your task with its validation, undo, redo and Land, and the task's sheets. Tests run the session against a real server in-process: edits, undo and redo, another writer, an edit that no longer applies, a refused edit, a rebase and a land. Tried in the browser on the KRBSG sample.
+
 **Milestone M3:** a designer can do all KRBSG editing in the browser, with two people working in parallel tasks.
 
 ## Phase 4: Forms and schema UI

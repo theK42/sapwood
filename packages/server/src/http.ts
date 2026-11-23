@@ -8,6 +8,8 @@
 // Branch names with a slash are URL-encoded in paths.
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import { extname, join, resolve, sep } from "node:path";
 import { serve, upgradeWebSocket, type ServerType, type WebSocketServerLike } from "@hono/node-server";
 import { Hono, type Context } from "hono";
 import { WebSocketServer } from "ws";
@@ -56,6 +58,8 @@ export interface AppOptions {
   publicUrl?: string;
   /** What /api/events sends from (default: made here, over `repo`). */
   events?: Events;
+  /** The built web app's folder (packages/web/dist), served at every other path. */
+  web?: string;
 }
 
 const SESSION = "sapwood_session";
@@ -136,6 +140,23 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     const { token } = auth.createToken(u.login, { name: "Web sign-in", expires }, u.login);
     setCookie(c, SESSION, token, { httpOnly: true, secure: secure(c), sameSite: "Lax", path: "/", maxAge: SESSION_DAYS * 86_400 });
     return c.redirect("/");
+  });
+  /**
+   * Sign the browser in with a Sapwood token, for servers without GitHub sign-in: the session
+   * is a new token, able to do no more than the one given, for 30 days at most. Needs the
+   * write header, so a page on another site can't sign you in as someone else.
+   */
+  app.post("/auth/token", async (c) => {
+    if (c.req.header(CSRF_HEADER) !== "1") throw new RepoError("forbidden", `Signing in needs the header ${CSRF_HEADER}: 1`);
+    const b = await body(c);
+    const p = typeof b.token === "string" ? auth.authenticate(b.token.trim()) : null;
+    if (!p) return c.json({ error: { code: "unauthenticated", message: "That token doesn't work here: it may be mistyped, revoked or expired" } }, 401);
+    const given = auth.token(p.token).expires;
+    const most = new Date(Date.now() + SESSION_DAYS * 86_400_000).toISOString();
+    const expires = given !== null && given < most ? given : most;
+    const { token } = auth.createToken(p.login, { name: "Web sign-in", scopes: p.scopes, expires }, p.login);
+    setCookie(c, SESSION, token, { httpOnly: true, secure: secure(c), sameSite: "Lax", path: "/", maxAge: Math.floor((Date.parse(expires) - Date.now()) / 1000) });
+    return c.json({ login: p.login, role: p.role });
   });
   app.post("/auth/logout", (c) => {
     const session = getCookie(c, SESSION);
@@ -458,6 +479,8 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
 
   // ------------------------------------------------------------ reads, at a head, a task or a commit
 
+  if (opts.web) serveWeb(app, opts.web);
+
   reads(app, "/api/branches/:b", (c) => {
     const branch = c.req.param("b")!;
     may(c, "viewer", "read", branch);
@@ -514,6 +537,58 @@ function reads(app: Hono<Env>, prefix: string, place: (c: C) => Place): void {
     const headers = { ETag: tag, "Cache-Control": "no-cache" };
     if (matches(c.req.header("if-none-match"), tag)) return c.body(null, 304, headers);
     return c.body(f.content, 200, { ...headers, "Content-Type": "application/json; charset=utf-8" });
+  });
+}
+
+const TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
+  ".map": "application/json; charset=utf-8",
+};
+/** The page may only load from here, and only connect back here (its WebSocket too). Glide sets inline styles. */
+const CSP = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://avatars.githubusercontent.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
+/**
+ * The web app: its files, and index.html for any other path outside /api and /auth, so the
+ * app's own routes load it. Vite names files under assets/ by their contents, so they keep.
+ */
+function serveWeb(app: Hono<Env>, dir: string): void {
+  const root = resolve(dir);
+  app.get("*", (c, next) => {
+    let path: string;
+    try {
+      path = decodeURIComponent(new URL(c.req.url).pathname);
+    } catch {
+      return next(); // a malformed %-escape
+    }
+    if (path.startsWith("/api/") || path.startsWith("/auth/") || path === "/healthz") return next();
+    let file = resolve(join(root, path));
+    if (file !== root && !file.startsWith(root + sep)) return next(); // ../ out of the folder
+    let isFile = false;
+    try {
+      isFile = statSync(file).isFile();
+    } catch {
+      // not there: the app's own route
+    }
+    if (!isFile) {
+      if (extname(path) !== "") return next(); // a missing file, not a page
+      file = join(root, "index.html");
+    }
+    const type = TYPES[extname(file)] ?? "application/octet-stream";
+    const headers: Record<string, string> = { "Content-Type": type, "X-Content-Type-Options": "nosniff" };
+    if (path.startsWith("/assets/")) headers["Cache-Control"] = "public, max-age=31536000, immutable";
+    else headers["Cache-Control"] = "no-cache";
+    if (type.startsWith("text/html")) {
+      headers["Content-Security-Policy"] = CSP;
+      headers["Referrer-Policy"] = "same-origin";
+    }
+    return c.body(readFileSync(file), 200, headers);
   });
 }
 

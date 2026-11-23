@@ -96,7 +96,7 @@ export function sheetLayout(schema: ResolvedSchema, sheet: Pick<SheetDoc, "layou
   const t = schema.types.get(type);
   if (!t) return [];
   if (custom) {
-    // A field the type no longer has (removed, ง5.9) holds nothing: its column is scratch.
+    // A field the type no longer has (removed, ยง5.9) holds nothing: its column is scratch.
     const fields = new Set(t.fields.map((f) => f.def.id));
     return custom.filter((c) => !sheet.cols.dead.has(c.col) && fields.has(c.field));
   }

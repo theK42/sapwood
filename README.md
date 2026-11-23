@@ -47,6 +47,8 @@ npx sapwood task land -m "Faster Blaster"
 
 The database is one SQLite file, `sapwood.sqlite` (or `--db`, or `$SAPWOOD_DB`). Edits go into tasks and land onto branches; [DESIGN §9.4](docs/DESIGN.md) lists the HTTP API.
 
+`serve` also serves the web app, once it's built with `npm run build:web`, at the server's own address. Sign in there with GitHub, or with a Sapwood token on a server without GitHub sign-in. The web app is early: so far it shows your task, with undo, redo and Land.
+
 ## With an LLM
 
 `sapwood-mcp` is an MCP server: an AI tool starts it, and it works where `sapwood` would, with your login. For Claude Code:
@@ -66,6 +68,8 @@ npm install
 npm run typecheck
 npm test
 ```
+
+To work on the web app, run a server, then `npm run dev:web`: Vite serves the app on http://localhost:5173 and passes `/api` and `/auth` on to the server (`$SAPWOOD_SERVER`, default http://127.0.0.1:8417), so changes show at once.
 
 ## License
 

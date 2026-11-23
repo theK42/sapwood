@@ -260,7 +260,7 @@ export class Project {
   }
 
   /**
-   * The schema changed: cells are read under the new one (ง5.9). Default layouts follow
+   * The schema changed: cells are read under the new one (ยง5.9). Default layouts follow
    * the fields, column A may name different types, and formulas reading fields by name
    * may see different columns, so everything recalculates.
    */
@@ -416,7 +416,7 @@ export class Project {
    * A schema edit. Default layouts follow the schema's field order, so adding or removing
    * a field (or a trait) would shift every later column on sheets already holding rows of
    * the type. On those sheets the layout is pinned first, as it is: removed fields' columns
-   * drop out of it (their cells become scratch) and new fields are appended (ง5.9). Where
+   * drop out of it (their cells become scratch) and new fields are appended (ยง5.9). Where
    * the result is just the new default, nothing is pinned. Custom layouts get new fields
    * appended too.
    */

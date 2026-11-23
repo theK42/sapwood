@@ -1,8 +1,9 @@
 // The sapwood-server command: set up a server's database, add users, make tokens, serve.
 // These run on the server's machine, with direct access to the database file.
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { docFromJson, Sapwood } from "@thek42/sapwood-core";
 import { Auth, isRole, type Scopes } from "./auth.ts";
@@ -26,8 +27,9 @@ const HELP = `Usage: sapwood-server <command> [options]
   user add <login> --role <viewer|editor|developer|admin>
   token <login> --name <name> [--role <r>] [--read-only] [--no-land] [--branch <b>]… [--expires <date>]
                          Make a personal access token; it is shown once
-  serve [--port <n>] [--host <h>] [--url <public url>]
-                         Serve the HTTP API (default 127.0.0.1:8417)
+  serve [--port <n>] [--host <h>] [--url <public url>] [--web <dir>]
+                         Serve the HTTP API and the web app (default 127.0.0.1:8417);
+                         the web app is packages/web/dist unless --web says otherwise
 
 Every command takes --db <file> (default: $SAPWOOD_DB, else ./sapwood.sqlite).
 
@@ -38,6 +40,12 @@ GitHub sign-in needs a GitHub OAuth app, with its device flow enabled. serve rea
                                  URL is this plus /auth/github/callback`;
 
 class Usage extends Error {}
+
+/** packages/web/dist, when it's been built (npm run build:web), else null. */
+function builtWeb(): string | null {
+  const dir = fileURLToPath(new URL("../../web/dist", import.meta.url));
+  return existsSync(join(dir, "index.html")) ? dir : null;
+}
 
 /** Run one command. Returns the exit status (0 done, 1 failed, 2 typed wrong), or the running server for `serve`. */
 export function runAdmin(argv: string[], io: AdminIo): number | { close(): void } {
@@ -144,7 +152,7 @@ function admin(argv: string[], io: AdminIo): number | { close(): void } {
     }
 
     case "serve": {
-      const p = parse(rest, { port: { type: "string" }, host: { type: "string" }, url: { type: "string" } });
+      const p = parse(rest, { port: { type: "string" }, host: { type: "string" }, url: { type: "string" }, web: { type: "string" } });
       const port = Number(p.values.port ?? io.env.PORT ?? 8417);
       if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Usage(`Not a port: ${p.values.port}`);
       const hostname = (p.values.host as string | undefined) ?? "127.0.0.1";
@@ -160,6 +168,11 @@ function admin(argv: string[], io: AdminIo): number | { close(): void } {
         if (io.env.SAPWOOD_GITHUB_CLIENT_SECRET) config.clientSecret = io.env.SAPWOOD_GITHUB_CLIENT_SECRET;
         options.github = new GitHub(config);
       }
+      const web = p.values.web !== undefined ? resolve(io.cwd, p.values.web as string) : builtWeb();
+      if (web !== null) {
+        if (!existsSync(join(web, "index.html"))) throw new Usage(`No web app in ${web} (no index.html)`);
+        options.web = web;
+      }
       const db = open(p.values);
       const repo = new Repo(db);
       if (!repo.initialized) {
@@ -170,6 +183,7 @@ function admin(argv: string[], io: AdminIo): number | { close(): void } {
       const events = new Events(repo, auth);
       const server = listen(createApp(repo, auth, { ...options, events }), { port, hostname });
       io.out(`Serving the Sapwood API on http://${hostname}:${port}/api`);
+      io.out(web !== null ? `The web app is on http://${hostname}:${port}/` : "The web app isn't built, so only the API is served: run npm run build:web in the Sapwood folder.");
       io.out(
         !clientId
           ? "GitHub sign-in is off ($SAPWOOD_GITHUB_CLIENT_ID isn't set): people need tokens from sapwood-server token."
