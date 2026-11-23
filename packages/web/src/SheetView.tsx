@@ -6,7 +6,8 @@
 // first typed row in view), and can be pinned to a type. Column A carries a thin stripe in
 // the row's type color. Validation draws in its own channel over the cells (§6.7): an inset
 // dashed outline and a corner flag, red for errors and amber for warnings, with the message
-// on hover. User formatting (bold, italic, fill, text color) draws under it.
+// on hover. A row with an issue has its number in red or amber, and a cell flashes once when
+// an edit gives it a new error. User formatting (bold, italic, fill, text color) draws under it.
 
 import "@glideapps/glide-data-grid/dist/index.css";
 import {
@@ -31,7 +32,14 @@ export interface SheetProps {
   undo(): void;
   redo(): void;
   back(): void;
+  /** Go to this cell (0-based; col null: the row), once for each new `n`. */
+  jump?: { row: number; col: number | null; n: number } | null;
+  /** Open the issues panel. */
+  showIssues(): void;
 }
+
+/** How long a cell flashes for (§6.7: a brief pulse, once). */
+const PULSE_MS = 900;
 
 const ISSUE = { error: "#d32020", warning: "#d98a00" } as const;
 const FILLS = ["#fff3b0", "#d9f2d0", "#d6e8fb", "#fbd9d6", "#eadcf8"];
@@ -54,6 +62,41 @@ export function SheetView(p: SheetProps) {
   const [menu, setMenu] = useState<{ x: number; y: number; rect: Rect } | null>(null);
   const theme = useTheme();
   useEffect(() => setTip(null), [g]); // an edit may have settled the issue under the pointer
+
+  // The flash: cells by position, and when it started. Drawn by drawCell, frame by frame.
+  const pulse = useRef<{ cells: Map<string, { col: number; row: number; color: string }>; start: number } | null>(null);
+  const flash = (cells: { row: number; col: number; color: string }[]) => {
+    if (cells.length === 0) return;
+    pulse.current = { cells: new Map(cells.map((c) => [`${c.row},${c.col}`, c])), start: performance.now() };
+    const all = cells.map((c) => ({ cell: [c.col, c.row] as Item }));
+    const frame = () => {
+      ref.current?.updateCells(all);
+      if (pulse.current && performance.now() - pulse.current.start < PULSE_MS) requestAnimationFrame(frame);
+      else pulse.current = null, ref.current?.updateCells(all);
+    };
+    requestAnimationFrame(frame);
+  };
+  // A new error from an edit flashes; the errors a sheet opens with don't.
+  const errorKeys = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (!g) return;
+    const errs = g.issueCells().filter((c) => c.issue.level === "error");
+    const before = errorKeys.current;
+    errorKeys.current = new Set(errs.map((c) => c.key));
+    if (before) flash(errs.filter((c) => !before.has(c.key)).map((c) => ({ ...c, color: ISSUE.error })));
+  }, [g]);
+
+  // Going to a cell, from the issues panel.
+  useEffect(() => {
+    if (!p.jump || !g) return;
+    const { row, col } = p.jump;
+    const c = col ?? 0;
+    setSelection({ ...empty(), current: { cell: [c, row], range: { x: c, y: row, width: 1, height: 1 }, rangeStack: [] } });
+    ref.current?.scrollTo(c, row, "both", 0, 0, { vAlign: "center", hAlign: "center" });
+    ref.current?.focus();
+    const level = g.cell(row, c).issue?.level;
+    flash([{ row, col: c, color: level ? ISSUE[level] : theme.glide.accentColor! }]);
+  }, [p.jump?.n]);
 
   const cur = selection.current?.cell;
   const headerType = useMemo(() => {
@@ -112,6 +155,8 @@ export function SheetView(p: SheetProps) {
       }
       const issue = g!.cell(args.row, args.col).issue;
       if (issue) drawIssue(args.ctx, args.rect, issue.level);
+      const fl = pulse.current?.cells.get(`${args.row},${args.col}`);
+      if (fl) drawPulse(args.ctx, args.rect, fl.color, (performance.now() - pulse.current!.start) / PULSE_MS);
     },
     [g],
   );
@@ -244,7 +289,9 @@ export function SheetView(p: SheetProps) {
         <strong>{g.name}</strong>
         {g.kind === "scratch" && <span className="tag">scratch</span>}
         {(g.errors > 0 || g.warnings > 0) && (
-          <span className={g.errors ? "badge error" : "badge warn"}>{g.errors ? plural(g.errors, "error") : plural(g.warnings, "warning")}</span>
+          <button className={g.errors ? "badge error" : "badge warn"} onClick={p.showIssues} title="Show the issues">
+            {[g.errors && plural(g.errors, "error"), g.warnings && plural(g.warnings, "warning")].filter(Boolean).join(", ")}
+          </button>
         )}
         <span className="spacer" />
         {p.canEdit && (
@@ -374,6 +421,10 @@ export function SheetView(p: SheetProps) {
             const issue = g.cell(e.location[1], e.location[0]).issue;
             setTip(issue ? { x: e.bounds.x + e.bounds.width, y: e.bounds.y, issue } : null);
           }}
+          getRowThemeOverride={(row) => {
+            const l = g.rowLevel(row);
+            return l ? { textLight: ISSUE[l], markerFontStyle: "700 9px" } : undefined;
+          }}
           rowMarkers="number"
           freezeColumns={2}
           smoothScrollX
@@ -474,6 +525,20 @@ function drawIssue(ctx: CanvasRenderingContext2D, rect: { x: number; y: number; 
   ctx.lineTo(rect.x + rect.width - 1, rect.y + 8);
   ctx.closePath();
   ctx.fill();
+  ctx.restore();
+}
+
+/** The flash: a ring that fades and spreads a little as `t` goes from 0 to 1. */
+function drawPulse(ctx: CanvasRenderingContext2D, rect: { x: number; y: number; width: number; height: number }, color: string, t: number) {
+  if (t >= 1) return;
+  ctx.save();
+  ctx.globalAlpha = 0.35 * (1 - t);
+  ctx.fillStyle = color;
+  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+  ctx.globalAlpha = 1 - t;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
   ctx.restore();
 }
 

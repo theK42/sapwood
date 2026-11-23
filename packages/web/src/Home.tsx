@@ -18,9 +18,10 @@ interface Props {
   /** Open a sheet, by its ID; and its address, for a link. */
   open(sheet: string): void;
   href(sheet: string): string;
+  showIssues(): void;
 }
 
-export function Home({ source, atHead, commits, others, open, href }: Props) {
+export function Home({ source, atHead, commits, others, open, href, showIssues }: Props) {
   const tick = useSource(source);
   const tree = useMemo(() => packTree(source.project.doc, validate(source.project).issues), [source, tick]);
   return (
@@ -31,7 +32,10 @@ export function Home({ source, atHead, commits, others, open, href }: Props) {
         </h2>
         {(tree.project.errors > 0 || tree.project.warnings > 0) && (
           <p className="small">
-            <Badges c={tree.project} /> <span className="muted">not on any sheet</span>
+            <Badges c={tree.project} /> <span className="muted">not on any sheet</span>{" "}
+            <button className="link" onClick={showIssues}>
+              Show
+            </button>
           </p>
         )}
         <Pack node={tree.root} depth={0} open={open} href={href} />

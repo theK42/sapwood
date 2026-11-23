@@ -21,6 +21,8 @@ interface Props {
   headTick: number;
   /** The current task changed: switched, new, landed (then the task carrying redo, or none). */
   setCurrent(t: TaskInfo | null): void;
+  /** Open or close the issues panel. */
+  toggleIssues(): void;
 }
 
 export function TaskBar(p: Props) {
@@ -31,6 +33,9 @@ export function TaskBar(p: Props) {
       <div className="taskbar">
         <span className="muted">{p.current === null ? `You have no task on ${p.branch}. You're seeing its head.` : "Opening your task…"}</span>
         <span className="spacer" />
+        <button className="button quiet" onClick={p.toggleIssues}>
+          Issues
+        </button>
         {canEdit && <TasksMenu {...p} current={null} />}
       </div>
     );
@@ -58,9 +63,9 @@ function OpenTask(p: Props & { session: TaskSession }) {
     <div className="taskbar">
       <TaskName api={p.api} session={s} />
       <span className="muted">{plural(t.changes, "change")}</span>
-      <span className={v.errors > 0 ? "badge error" : v.warnings > 0 ? "badge warn" : "badge ok"}>
-        {v.errors > 0 ? plural(v.errors, "error") : v.warnings > 0 ? plural(v.warnings, "warning") : "Valid"}
-      </span>
+      <button className={v.errors > 0 ? "badge error" : v.warnings > 0 ? "badge warn" : "badge ok"} onClick={p.toggleIssues} title="Show or hide the issues">
+        {v.errors > 0 || v.warnings > 0 ? [v.errors && plural(v.errors, "error"), v.warnings && plural(v.warnings, "warning")].filter(Boolean).join(", ") : "Valid"}
+      </button>
       {behind > 0 && (
         <span className="badge warn" title="Commits landed on the branch since this task started, that it hasn't taken in yet">
           {plural(behind, "commit")} behind

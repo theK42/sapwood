@@ -6,6 +6,7 @@ import type { Op, Project } from "@thek42/sapwood-core";
 import { Api, ApiError, type BranchInfo, type CommitInfo, type Health, type Me, type TaskInfo } from "./api.ts";
 import { listen } from "./events.ts";
 import { HeadView } from "./head.ts";
+import { IssuePanel } from "./IssuePanel.tsx";
 import { Home } from "./Home.tsx";
 import { TaskSession } from "./session.ts";
 import { SheetView } from "./SheetView.tsx";
@@ -101,6 +102,8 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const [commits, setCommits] = useState<CommitInfo[]>([]);
   const [headTick, setHeadTick] = useState(0);
   const [sheet, setSheet] = useState<string | null>(sheetFromPath());
+  const [issuesOpen, setIssuesOpen] = useState(false);
+  const [jump, setJump] = useState<{ sheet: string; row: number; col: number | null; n: number } | null>(null);
   const starting = useRef<Promise<TaskSession> | null>(null);
   const canEdit = me.role !== "viewer" && me.scopes.readOnly !== true;
 
@@ -108,11 +111,13 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
     history.pushState(null, "", `/branches/${encodeURIComponent(b)}${sh ? `/sheets/${encodeURIComponent(sh)}` : ""}`);
     setBranch(b);
     setSheet(sh);
+    setJump(null); // a sheet opened another way starts where it starts
   };
   useEffect(() => {
     const back = () => {
       setBranch(branchFromPath() ?? "main");
       setSheet(sheetFromPath());
+      setJump(null);
     };
     addEventListener("popstate", back);
     return () => removeEventListener("popstate", back);
@@ -260,7 +265,9 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           setCurrent(t);
           loadTasks();
         }}
+        toggleIssues={() => setIssuesOpen((x) => !x)}
       />
+      <div className={issuesOpen && source ? "work with-issues" : "work"}>
       {!source ? (
         <main className="body">
           <p className="muted">Loading…</p>
@@ -275,12 +282,27 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           undo={() => void session?.undo()}
           redo={() => void session?.redo()}
           back={() => go(branch)}
+          jump={jump?.sheet === sheet ? jump : null}
+          showIssues={() => setIssuesOpen(true)}
         />
       ) : (
         <main className="body">
-          <Home source={source} atHead={source === head} commits={commits} others={others} open={(id) => go(branch, id)} href={(id) => `/branches/${encodeURIComponent(branch)}/sheets/${encodeURIComponent(id)}`} />
+          <Home source={source} atHead={source === head} commits={commits} others={others} open={(id) => go(branch, id)} href={(id) => `/branches/${encodeURIComponent(branch)}/sheets/${encodeURIComponent(id)}`} showIssues={() => setIssuesOpen(true)} />
         </main>
       )}
+      {issuesOpen && source && (
+        <IssuePanel
+          source={source}
+          sheet={sheet}
+          close={() => setIssuesOpen(false)}
+          jump={(x) => {
+            if (!x.sheet || x.row === null) return;
+            if (x.sheet.id !== sheet) go(branch, x.sheet.id);
+            setJump((j) => ({ sheet: x.sheet!.id, row: x.row!, col: x.col, n: (j?.n ?? 0) + 1 }));
+          }}
+        />
+      )}
+      </div>
     </div>
   );
 }

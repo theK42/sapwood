@@ -93,6 +93,47 @@ export class SheetGrid {
     return (this.counts = counts);
   }
 
+  /**
+   * Each cell that shows an issue, the worst one, where the grid has it now; a row's own
+   * issue shows on column A. The key names the cell by ID, so it holds as rows move.
+   */
+  issueCells(): { row: number; col: number; key: string; issue: Issue }[] {
+    this.check();
+    const rows = new Map(this.rowIds.map((id, i) => [id, i]));
+    const cols = new Map(this.colIds.map((id, i) => [id, i]));
+    const out = new Map<string, { row: number; col: number; key: string; issue: Issue }>();
+    for (const [k, issue] of this.issues) {
+      const [r, c] = k.split("|") as [RowId, ColId];
+      const row = rows.get(r);
+      const col = cols.get(c);
+      if (row !== undefined && col !== undefined) out.set(k, { row, col, key: k, issue });
+    }
+    const a = this.colIds[0];
+    for (const [r, issue] of this.rowIssues) {
+      const row = rows.get(r);
+      if (row === undefined || a === undefined) continue;
+      const k = `${r}|${a}`;
+      const had = out.get(k);
+      if (!had || (had.issue.level === "warning" && issue.level === "error")) out.set(k, { row, col: 0, key: k, issue });
+    }
+    return [...out.values()];
+  }
+
+  /** The worst issue anywhere on a row, for its row number. */
+  rowLevel(row: number): "error" | "warning" | null {
+    const r = this.rowIds[row];
+    if (r === undefined) return null;
+    this.check();
+    if (!this.levels) {
+      this.levels = new Map();
+      const worse = (id: RowId, l: "error" | "warning") => this.levels!.get(id) !== "error" && this.levels!.set(id, l);
+      for (const [k, i] of this.issues) worse(k.split("|")[0] as RowId, i.level);
+      for (const [id, i] of this.rowIssues) worse(id, i.level);
+    }
+    return this.levels.get(r) ?? null;
+  }
+  private levels: Map<RowId, "error" | "warning"> | null = null;
+
   get name(): string {
     return this.project.wb.sheet(this.sheet).name;
   }
