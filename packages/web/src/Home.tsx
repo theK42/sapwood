@@ -19,10 +19,19 @@ interface Props {
   open(sheet: string): void;
   href(sheet: string): string;
   showIssues(): void;
+  /** Open a type view; and its address. */
+  openType(type: string): void;
+  typeHref(type: string): string;
 }
 
-export function Home({ source, atHead, commits, others, open, href, showIssues }: Props) {
+export function Home({ source, atHead, commits, others, open, href, showIssues, openType, typeHref }: Props) {
   const tick = useSource(source);
+  // Entity types, with how many of each there are (commented-out ones too).
+  const types = useMemo(() => {
+    const n = new Map<string, number>();
+    for (const e of source.project.project().entities) n.set(e.type, (n.get(e.type) ?? 0) + 1);
+    return [...source.project.schema.types.values()].filter((t) => !t.def.singleton).map((t) => ({ name: t.def.name, count: n.get(t.def.name) ?? 0 }));
+  }, [source, tick]);
   const tree = useMemo(() => packTree(source.project.doc, validate(source.project).issues), [source, tick]);
   return (
     <div className="home">
@@ -41,6 +50,28 @@ export function Home({ source, atHead, commits, others, open, href, showIssues }
         <Pack node={tree.root} depth={0} open={open} href={href} />
       </section>
       <aside className="side">
+        <section className="panel" aria-label="Types">
+          <h2>
+            Types <span className="muted small">every entity of one type, from all sheets</span>
+          </h2>
+          <ul className="type-list">
+            {types.map((t) => (
+              <li key={t.name}>
+                <a
+                  href={typeHref(t.name)}
+                  onClick={(e) => {
+                    if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+                    e.preventDefault();
+                    openType(t.name);
+                  }}
+                >
+                  {t.name}
+                </a>{" "}
+                <span className="muted small">{t.count}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
         <section className="panel" aria-label="Recent commits">
           <h2>Recent commits</h2>
           {commits.length === 0 ? (

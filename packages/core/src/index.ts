@@ -13,6 +13,7 @@ export * from "./project/rows.ts";
 export * from "./project/project.ts";
 export * from "./project/load.ts";
 export * from "./project/validate.ts";
+export * from "./project/refs.ts";
 export * from "./export/json.ts";
 export { sha256 } from "./export/sha256.ts";
 export * from "./formula/content.ts";

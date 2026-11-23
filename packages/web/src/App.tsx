@@ -7,6 +7,9 @@ import { Api, ApiError, type BranchInfo, type CommitInfo, type Health, type Me, 
 import { listen } from "./events.ts";
 import { HeadView } from "./head.ts";
 import { IssuePanel } from "./IssuePanel.tsx";
+import { refList } from "./refs.ts";
+import { RefsPanel } from "./RefsPanel.tsx";
+import { TypeView } from "./TypeView.tsx";
 import { Home } from "./Home.tsx";
 import { TaskSession } from "./session.ts";
 import { SheetView } from "./SheetView.tsx";
@@ -92,6 +95,14 @@ function sheetFromPath(): string | null {
   return m ? decodeURIComponent(m[1]!) : null;
 }
 
+function typeFromPath(): string | null {
+  const m = /^\/branches\/[^/]+\/types\/([^/]+)/.exec(location.pathname);
+  return m ? decodeURIComponent(m[1]!) : null;
+}
+
+/** What's beside the page: the issues, or the references to an ID. */
+type Side = { kind: "issues" } | { kind: "refs"; id: string } | null;
+
 function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const [branches, setBranches] = useState<BranchInfo[]>([]);
   const [branch, setBranch] = useState<string>(branchFromPath() ?? "main");
@@ -102,21 +113,26 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const [commits, setCommits] = useState<CommitInfo[]>([]);
   const [headTick, setHeadTick] = useState(0);
   const [sheet, setSheet] = useState<string | null>(sheetFromPath());
-  const [issuesOpen, setIssuesOpen] = useState(false);
+  const [typeName, setTypeName] = useState<string | null>(typeFromPath());
+  const [side, setSide] = useState<Side>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [jump, setJump] = useState<{ sheet: string; row: number; col: number | null; n: number } | null>(null);
   const starting = useRef<Promise<TaskSession> | null>(null);
   const canEdit = me.role !== "viewer" && me.scopes.readOnly !== true;
 
-  const go = (b: string, sh: string | null = null) => {
-    history.pushState(null, "", `/branches/${encodeURIComponent(b)}${sh ? `/sheets/${encodeURIComponent(sh)}` : ""}`);
+  const go = (b: string, sh: string | null = null, type: string | null = null) => {
+    const rest = sh ? `/sheets/${encodeURIComponent(sh)}` : type ? `/types/${encodeURIComponent(type)}` : "";
+    history.pushState(null, "", `/branches/${encodeURIComponent(b)}${rest}`);
     setBranch(b);
     setSheet(sh);
+    setTypeName(sh ? null : type);
     setJump(null); // a sheet opened another way starts where it starts
   };
   useEffect(() => {
     const back = () => {
       setBranch(branchFromPath() ?? "main");
       setSheet(sheetFromPath());
+      setTypeName(typeFromPath());
       setJump(null);
     };
     addEventListener("popstate", back);
@@ -231,6 +247,27 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const others = tasks.filter((t) => t.owner !== me.login);
   const source = session ?? head;
 
+  /** Open a sheet at a cell (0-based; col null: the row). */
+  const goTo = (sh: string, row: number, col: number | null) => {
+    if (sh !== sheet) go(branch, sh);
+    setJump((j) => ({ sheet: sh, row, col, n: (j?.n ?? 0) + 1 }));
+  };
+  const findRefs = (id: string) => setSide({ kind: "refs", id });
+  const goToDefinition = (id: string) => {
+    if (!source) return;
+    const defs = refList(source.project, id).filter((x) => x.kind === "definition");
+    if (defs.length === 1) goTo(defs[0]!.sheet, defs[0]!.row, defs[0]!.col);
+    else {
+      findRefs(id); // none, or a duplicate: the panel says which
+      if (defs.length === 0) setNotice(`No entity has the ID “${id}”.`);
+    }
+  };
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
   return (
     <div className="app">
       <header className="top">
@@ -265,9 +302,14 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           setCurrent(t);
           loadTasks();
         }}
-        toggleIssues={() => setIssuesOpen((x) => !x)}
+        toggleIssues={() => setSide((x) => (x?.kind === "issues" ? null : { kind: "issues" }))}
       />
-      <div className={issuesOpen && source ? "work with-issues" : "work"}>
+      {notice && (
+        <p className="toast" role="status">
+          {notice}
+        </p>
+      )}
+      <div className={side && source ? "work with-issues" : "work"}>
       {!source ? (
         <main className="body">
           <p className="muted">Loading…</p>
@@ -283,25 +325,42 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           redo={() => void session?.redo()}
           back={() => go(branch)}
           jump={jump?.sheet === sheet ? jump : null}
-          showIssues={() => setIssuesOpen(true)}
+          showIssues={() => setSide({ kind: "issues" })}
+          findRefs={findRefs}
+          goToDefinition={goToDefinition}
+          openType={(t) => go(branch, null, t)}
+        />
+      ) : typeName ? (
+        <TypeView
+          key={typeName}
+          source={source}
+          type={typeName}
+          canEdit={canEdit && (session ? session.editable : true)}
+          edit={edit}
+          undo={() => void session?.undo()}
+          redo={() => void session?.redo()}
+          back={() => go(branch)}
+          goTo={(h) => goTo(h.sheet, h.row, h.col)}
+          findRefs={findRefs}
+          goToDefinition={goToDefinition}
+          showIssues={() => setSide({ kind: "issues" })}
         />
       ) : (
         <main className="body">
-          <Home source={source} atHead={source === head} commits={commits} others={others} open={(id) => go(branch, id)} href={(id) => `/branches/${encodeURIComponent(branch)}/sheets/${encodeURIComponent(id)}`} showIssues={() => setIssuesOpen(true)} />
+          <Home source={source} atHead={source === head} commits={commits} others={others} open={(id) => go(branch, id)} href={(id) => `/branches/${encodeURIComponent(branch)}/sheets/${encodeURIComponent(id)}`} showIssues={() => setSide({ kind: "issues" })} openType={(t) => go(branch, null, t)} typeHref={(t) => `/branches/${encodeURIComponent(branch)}/types/${encodeURIComponent(t)}`} />
         </main>
       )}
-      {issuesOpen && source && (
+      {side?.kind === "issues" && source && (
         <IssuePanel
           source={source}
           sheet={sheet}
-          close={() => setIssuesOpen(false)}
+          close={() => setSide(null)}
           jump={(x) => {
-            if (!x.sheet || x.row === null) return;
-            if (x.sheet.id !== sheet) go(branch, x.sheet.id);
-            setJump((j) => ({ sheet: x.sheet!.id, row: x.row!, col: x.col, n: (j?.n ?? 0) + 1 }));
+            if (x.sheet && x.row !== null) goTo(x.sheet.id, x.row, x.col);
           }}
         />
       )}
+      {side?.kind === "refs" && source && <RefsPanel key={side.id} source={source} id={side.id} close={() => setSide(null)} jump={(x) => goTo(x.sheet, x.row, x.col)} />}
       </div>
     </div>
   );

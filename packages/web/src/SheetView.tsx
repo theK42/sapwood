@@ -18,9 +18,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { Format, Issue, Op, Project } from "@thek42/sapwood-core";
 import { numberToCol } from "@thek42/sapwood-core";
 import { copyPayload, parsePaste } from "./clipboard.ts";
-import { SheetGrid, typeColor, type Axis, type CellEdit, type Rect } from "./grid.ts";
+import { SheetGrid, typeColor, type Axis, type CellEdit, type CellView, type Rect } from "./grid.ts";
 import type { Source } from "./head.ts";
 import { plural, useSource } from "./hooks.ts";
+import { idsAt } from "./refs.ts";
 
 export interface SheetProps {
   source: Source;
@@ -36,12 +37,16 @@ export interface SheetProps {
   jump?: { row: number; col: number | null; n: number } | null;
   /** Open the issues panel. */
   showIssues(): void;
+  /** Where an ID is used; where it's defined; every entity of a type. */
+  findRefs(id: string): void;
+  goToDefinition(id: string): void;
+  openType(type: string): void;
 }
 
 /** How long a cell flashes for (§6.7: a brief pulse, once). */
-const PULSE_MS = 900;
+export const PULSE_MS = 900;
 
-const ISSUE = { error: "#d32020", warning: "#d98a00" } as const;
+export const ISSUE = { error: "#d32020", warning: "#d98a00" } as const;
 const FILLS = ["#fff3b0", "#d9f2d0", "#d6e8fb", "#fbd9d6", "#eadcf8"];
 const INKS = ["#b3261e", "#2f6b3a", "#1a4d8f", "#8a5a00"];
 
@@ -59,7 +64,7 @@ export function SheetView(p: SheetProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; issue: Issue } | null>(null);
   const [widths, setWidths] = useState<Record<number, number>>({});
-  const [menu, setMenu] = useState<{ x: number; y: number; rect: Rect } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; rect: Rect; cell: { row: number; col: number } | null } | null>(null);
   const theme = useTheme();
   useEffect(() => setTip(null), [g]); // an edit may have settled the issue under the pointer
 
@@ -93,7 +98,9 @@ export function SheetView(p: SheetProps) {
     const c = col ?? 0;
     setSelection({ ...empty(), current: { cell: [c, row], range: { x: c, y: row, width: 1, height: 1 }, rangeStack: [] } });
     ref.current?.scrollTo(c, row, "both", 0, 0, { vAlign: "center", hAlign: "center" });
+    // On a sheet that just opened, Glide takes focus only once it has drawn.
     ref.current?.focus();
+    requestAnimationFrame(() => requestAnimationFrame(() => ref.current?.focus()));
     const level = g.cell(row, c).issue?.level;
     flash([{ row, col: c, color: level ? ISSUE[level] : theme.glide.accentColor! }]);
   }, [p.jump?.n]);
@@ -115,31 +122,7 @@ export function SheetView(p: SheetProps) {
     });
   }, [g, headerType, widths]);
 
-  const getCellContent = useCallback(
-    ([col, row]: Item): GridCell => {
-      const v = g!.cell(row, col);
-      const f = v.format;
-      const override: Partial<Theme> = {};
-      if (v.formula) override.textDark = theme.formula;
-      if (v.error) override.textDark = ISSUE.error;
-      if (f?.color) override.textDark = String(f.color);
-      if (f?.fill) {
-        override.bgCell = String(f.fill);
-        if (!f.color) override.textDark = v.formula ? "#1a4d8f" : v.error ? ISSUE.error : "#1d1d1b"; // the fills are light, in dark mode too
-      }
-      if (f?.bold || f?.italic) override.baseFontStyle = `${f.italic ? "italic " : ""}${f.bold ? "600 " : ""}13px`;
-      return {
-        kind: GridCellKind.Text,
-        data: v.input,
-        displayData: v.text,
-        allowOverlay: p.canEdit,
-        readonly: !p.canEdit,
-        contentAlign: v.number ? "right" : "left",
-        ...(Object.keys(override).length ? { themeOverride: override } : {}),
-      };
-    },
-    [g, p.canEdit, theme],
-  );
+  const getCellContent = useCallback(([col, row]: Item): GridCell => cellContent(g!.cell(row, col), p.canEdit, theme), [g, p.canEdit, theme]);
 
   const drawCell = useCallback<DrawCellCallback>(
     (args, drawContent) => {
@@ -238,7 +221,7 @@ export function SheetView(p: SheetProps) {
   const menuAt = (x: number, y: number, col: number, row: number | null) => {
     const r = range();
     const inside = r !== null && col >= r.col && col < r.col + r.cols && (row === null || (row >= r.row && row < r.row + r.rows));
-    setMenu({ x, y, rect: inside ? r : { row: row ?? 0, col, rows: 1, cols: 1 } });
+    setMenu({ x, y, rect: inside ? r : { row: row ?? 0, col, rows: 1, cols: 1 }, cell: row === null ? null : { row, col } });
   };
   const format = (change: Format | null) => {
     const r = range();
@@ -247,9 +230,17 @@ export function SheetView(p: SheetProps) {
     ref.current?.focus();
   };
 
-  // Undo and redo are the task's, not the grid's.
+  // Undo and redo are the task's, not the grid's. F12 goes to the definition of the ID in the
+  // cell, Shift+F12 finds its references (as in code editors).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === "F12" && cur && g && document.activeElement?.closest(".sheet-grid")) {
+        e.preventDefault();
+        const ids = idsAt(g.project, g.sheet, cur[1], cur[0]);
+        const id = ids.defines ?? ids.names[0];
+        if (id) (e.shiftKey || ids.defines ? p.findRefs : p.goToDefinition)(id);
+        return;
+      }
       if (!(e.ctrlKey || e.metaKey) || !document.activeElement?.closest(".sheet-grid")) return;
       const k = e.key.toLowerCase();
       if (k === "z" && !e.shiftKey) (p.undo(), e.preventDefault());
@@ -432,7 +423,17 @@ export function SheetView(p: SheetProps) {
           rowHeight={26}
         />
       </div>
-      {menu && <SheetMenu grid={g} at={menu} canEdit={p.canEdit} close={() => setMenu(null)} change={change} clear={clear} />}
+      {menu && (
+        <SheetMenu
+          grid={g}
+          at={menu}
+          canEdit={p.canEdit}
+          close={() => setMenu(null)}
+          change={change}
+          clear={clear}
+          navigate={(f) => (setMenu(null), f(p))}
+        />
+      )}
       {tip && (
         <div className={`tip ${tip.issue.level}`} style={{ left: tip.x + 4, top: tip.y }}>
           {tip.issue.message}
@@ -442,10 +443,34 @@ export function SheetView(p: SheetProps) {
   );
 }
 
+/** A cell as Glide draws it: the value shown, what was typed for its editor, and its formats. */
+export function cellContent(v: CellView, canEdit: boolean, theme: { formula: string }): GridCell {
+  const f = v.format;
+  const override: Partial<Theme> = {};
+  if (v.formula) override.textDark = theme.formula;
+  if (v.error) override.textDark = ISSUE.error;
+  if (f?.color) override.textDark = String(f.color);
+  if (f?.fill) {
+    override.bgCell = String(f.fill);
+    if (!f.color) override.textDark = v.formula ? "#1a4d8f" : v.error ? ISSUE.error : "#1d1d1b"; // the fills are light, in dark mode too
+  }
+  if (f?.bold || f?.italic) override.baseFontStyle = `${f.italic ? "italic " : ""}${f.bold ? "600 " : ""}13px`;
+  return {
+    kind: GridCellKind.Text,
+    data: v.input,
+    displayData: v.text,
+    allowOverlay: canEdit,
+    readonly: !canEdit,
+    contentAlign: v.number ? "right" : "left",
+    ...(Object.keys(override).length ? { themeOverride: override } : {}),
+  };
+}
+
 /** Right-click: copy and cut, clear, and inserting and deleting rows and columns. */
 function SheetMenu(p: {
   grid: SheetGrid;
-  at: { x: number; y: number; rect: Rect };
+  at: { x: number; y: number; rect: Rect; cell: { row: number; col: number } | null };
+  navigate(f: (s: SheetProps) => void): void;
   canEdit: boolean;
   close(): void;
   change(fn: (g: SheetGrid) => { ops: Op[] }): void;
@@ -491,8 +516,32 @@ function SheetMenu(p: {
   const rowsHere = r.row < g.liveRows;
   const colsHere = r.col < g.liveCols;
   const fixed = g.kind === "data" ? 2 : 0;
+  // What the cell is about: the ID it defines or names, and its row's type.
+  const c = p.at.cell;
+  const ids = c && g.kind === "data" ? idsAt(g.project, g.sheet, c.row, c.col) : { defines: null, names: [] };
+  const rowType = c ? g.rowType(c.row) : null;
+  const type = rowType && !g.project.schema.types.get(rowType)?.def.singleton ? rowType : null;
+  const quote = (id: string) => `“${id.length > 24 ? id.slice(0, 23) + "…" : id}”`;
+  const about = [
+    ...(ids.defines ? [item(`Find references to ${quote(ids.defines)}`, true, () => p.navigate((s) => s.findRefs(ids.defines!)))] : []),
+    ...ids.names.slice(0, 3).flatMap((id) => [
+      item(`Go to ${quote(id)}`, true, () => p.navigate((s) => s.goToDefinition(id))),
+      item(`Find references to ${quote(id)}`, true, () => p.navigate((s) => s.findRefs(id))),
+    ]),
+    ...(type ? [item(`Show every ${type}`, true, () => p.navigate((s) => s.openType(type)))] : []),
+  ];
   return (
     <div className="menu-list sheet-menu" role="menu" ref={ref} style={pos}>
+      {about.length > 0 && (
+        <>
+          {about.map((x, i) => (
+            <span key={i} style={{ display: "contents" }}>
+              {x}
+            </span>
+          ))}
+          <hr />
+        </>
+      )}
       {item("Copy", true, copy(false))}
       {item("Cut", p.canEdit, copy(true))}
       <span className="muted small hint">Paste with Ctrl+V</span>
@@ -510,7 +559,7 @@ function SheetMenu(p: {
 }
 
 /** The reserved validation channel (§6.7): an inset dashed outline and a corner flag. */
-function drawIssue(ctx: CanvasRenderingContext2D, rect: { x: number; y: number; width: number; height: number }, level: "error" | "warning") {
+export function drawIssue(ctx: CanvasRenderingContext2D, rect: { x: number; y: number; width: number; height: number }, level: "error" | "warning") {
   const color = ISSUE[level];
   ctx.save();
   ctx.strokeStyle = color;
@@ -529,7 +578,7 @@ function drawIssue(ctx: CanvasRenderingContext2D, rect: { x: number; y: number; 
 }
 
 /** The flash: a ring that fades and spreads a little as `t` goes from 0 to 1. */
-function drawPulse(ctx: CanvasRenderingContext2D, rect: { x: number; y: number; width: number; height: number }, color: string, t: number) {
+export function drawPulse(ctx: CanvasRenderingContext2D, rect: { x: number; y: number; width: number; height: number }, color: string, t: number) {
   if (t >= 1) return;
   ctx.save();
   ctx.globalAlpha = 0.35 * (1 - t);
@@ -543,7 +592,7 @@ function drawPulse(ctx: CanvasRenderingContext2D, rect: { x: number; y: number; 
 }
 
 /** Glide's colors from the page's, light or dark, following the system. */
-function useTheme(): { glide: Partial<Theme>; formula: string } {
+export function useTheme(): { glide: Partial<Theme>; formula: string } {
   const [dark, setDark] = useState(() => matchMedia("(prefers-color-scheme: dark)").matches);
   useEffect(() => {
     const m = matchMedia("(prefers-color-scheme: dark)");
