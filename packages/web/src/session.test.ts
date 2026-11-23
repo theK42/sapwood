@@ -60,6 +60,10 @@ describe("the web app's task session", () => {
     expect(value(s, "w3", "damage")).toBe(13);
     await agrees(bob, s);
     expect(s.notice).toBe(null);
+    // Named elsewhere: the session takes the name, without reading the task again.
+    const rev = s.task.rev;
+    s.heard(await bob.renameTask(t.id, "Buffs"));
+    expect(s.task).toMatchObject({ name: "Buffs", rev });
   });
 
   it("reads the task again when something else wrote to it, and keeps its own edit", async () => {

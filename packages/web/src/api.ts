@@ -3,7 +3,7 @@
 // The shapes here mirror the server's (packages/server/src/repo.ts), which the app doesn't
 // import: that code runs on Node.
 
-import type { DocJson, Op } from "@thek42/sapwood-core";
+import type { Conflict, DocJson, Op } from "@thek42/sapwood-core";
 
 export type Role = "viewer" | "editor" | "developer" | "admin";
 export type TaskState = "open" | "landed" | "abandoned";
@@ -50,11 +50,15 @@ export interface TaskInfo {
   updatedAt: string;
 }
 
+/** A conflict with the head, to settle as mine or theirs by its ID. */
 export interface ConflictJson {
   id: string;
-  where?: { sheet: string; a1: string };
-  conflict: unknown;
+  /** A cell's place on the head, by sheet name and A1 address. */
+  where?: { sheet: string; cell: string };
+  conflict: Conflict;
 }
+
+export type Resolutions = Record<string, "mine" | "theirs">;
 
 export interface TaskStatus {
   task: TaskInfo;
@@ -141,5 +145,7 @@ export class Api {
   writeOps = (id: number, ops: Op[], rev: number) => this.call<{ task: TaskInfo; ops: number }>("POST", `/api/tasks/${id}/ops`, { ops, rev });
   undo = (id: number, rev: number) => this.call<{ done: boolean; ops: Op[]; task: TaskInfo }>("POST", `/api/tasks/${id}/undo`, { rev });
   redo = (id: number, rev: number) => this.call<{ done: boolean; ops: Op[]; task: TaskInfo }>("POST", `/api/tasks/${id}/redo`, { rev });
-  land = (id: number, message?: string) => this.call<Landed>("POST", `/api/tasks/${id}/land`, message === undefined ? {} : { message });
+  land = (id: number, opts: { message?: string; resolutions?: Resolutions } = {}) => this.call<Landed>("POST", `/api/tasks/${id}/land`, opts);
+  rebase = (id: number, resolutions: Resolutions) => this.call<{ task: TaskInfo; dropped: ConflictJson[] }>("POST", `/api/tasks/${id}/rebase`, { resolutions });
+  abandon = (id: number) => this.call<TaskInfo>("POST", `/api/tasks/${id}/abandon`);
 }

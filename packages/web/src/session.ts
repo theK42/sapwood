@@ -107,7 +107,12 @@ export class TaskSession {
    * (written elsewhere, rebased, landed) means reading it again; our own writes we've seen.
    */
   heard(task: TaskInfo): void {
-    if (task.id !== this.task.id || task.rev <= this.task.rev) return;
+    if (task.id !== this.task.id) return;
+    if (task.rev === this.task.rev && task.name !== this.task.name) {
+      this.task = { ...this.task, name: task.name }; // named: nothing else changed
+      return this.changed();
+    }
+    if (task.rev <= this.task.rev) return;
     if (this.running) return; // our next write finds out, or this is our own write's echo
     void this.run(() => this.resync());
   }

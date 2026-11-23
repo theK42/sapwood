@@ -1,11 +1,13 @@
 // The app's frame: signing in, then the workspace for one branch, with your current task.
 // The branch is in the address (/branches/<name>), so a link or a reload keeps it.
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { validate } from "@thek42/sapwood-core";
-import { Api, ApiError, type BranchInfo, type Health, type Me, type TaskInfo } from "./api.ts";
+import { useCallback, useEffect, useState } from "react";
+import { Api, ApiError, type BranchInfo, type CommitInfo, type Health, type Me, type TaskInfo } from "./api.ts";
 import { listen } from "./events.ts";
+import { HeadView } from "./head.ts";
+import { Home } from "./Home.tsx";
 import { TaskSession } from "./session.ts";
+import { TaskBar } from "./TaskBar.tsx";
 
 const api = new Api();
 
@@ -87,6 +89,10 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const [branch, setBranch] = useState<string>(branchFromPath() ?? "main");
   const [current, setCurrent] = useState<TaskInfo | null | undefined>(undefined);
   const [session, setSession] = useState<TaskSession | null>(null);
+  const [head, setHead] = useState<HeadView | null>(null);
+  const [tasks, setTasks] = useState<TaskInfo[]>([]);
+  const [commits, setCommits] = useState<CommitInfo[]>([]);
+  const [headTick, setHeadTick] = useState(0);
 
   const go = (b: string) => {
     history.pushState(null, "", `/branches/${encodeURIComponent(b)}`);
@@ -98,15 +104,21 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
     return () => removeEventListener("popstate", back);
   }, []);
 
-  const loadBranches = useCallback(() => void api.branches().then(setBranches), []);
+  const loadBranches = useCallback(() => void api.branches().then(setBranches, () => {}), []);
   const loadCurrent = useCallback(() => void api.currentTask(branch).then(setCurrent, () => setCurrent(null)), [branch]);
+  const loadTasks = useCallback(() => void api.tasks(branch).then(setTasks, () => {}), [branch]);
+  const loadCommits = useCallback(() => void api.commits(branch).then(setCommits, () => {}), [branch]);
   useEffect(loadBranches, [loadBranches]);
   useEffect(() => {
     setCurrent(undefined);
+    setTasks([]);
+    setCommits([]);
     loadCurrent();
-  }, [loadCurrent]);
+    loadTasks();
+    loadCommits();
+  }, [loadCurrent, loadTasks, loadCommits]);
 
-  // The current task's session, opened when there is one.
+  // Your current task's session, or the head when you have none.
   useEffect(() => {
     if (!current) return setSession(null);
     let s: TaskSession | null = null;
@@ -121,6 +133,12 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
       s?.close();
     };
   }, [current?.id]);
+  useEffect(() => {
+    if (current !== null) return setHead(null);
+    let gone = false;
+    void HeadView.open(api, branch).then((h) => !gone && setHead(h), () => {});
+    return () => void (gone = true);
+  }, [current === null, branch]);
 
   // Events: tasks moving on, heads moving, branches made and discarded.
   useEffect(
@@ -129,23 +147,36 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
         message: (m) => {
           if (m.type === "task" && m.task.branch === branch) {
             session?.heard(m.task);
-            if (m.task.owner === me.login && (m.change === "switched" || m.change === "created")) loadCurrent();
+            loadTasks();
+            if (m.task.owner === me.login && ["switched", "created", "landed", "abandoned", "reopened"].includes(m.change)) loadCurrent();
+          }
+          if (m.type === "head" && m.branch === branch) {
+            loadCommits();
+            void head?.reload();
+            setHeadTick((n) => n + 1);
           }
           if (m.type === "branch") loadBranches();
         },
         reconnected: () => {
           loadBranches();
+          loadCurrent();
+          loadTasks();
+          loadCommits();
           void session?.reload();
+          void head?.reload();
         },
         signedOut,
       }),
-    [branch, session, me.login, loadBranches, loadCurrent, signedOut],
+    [branch, session, head, me.login, loadBranches, loadCurrent, loadTasks, loadCommits, signedOut],
   );
 
   const signOut = async () => {
     await api.signOut();
     signedOut();
   };
+  const mine = tasks.filter((t) => t.owner === me.login);
+  const others = tasks.filter((t) => t.owner !== me.login);
+  const source = session ?? head;
 
   return (
     <div className="app">
@@ -169,100 +200,20 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           Sign out
         </button>
       </header>
-      <TaskBar branch={branch} me={me} current={current} session={session} started={setCurrent} />
-      <main className="body">{session ? <Contents session={session} /> : <p className="muted">{current === undefined ? "Loading…" : "Nothing to show until you start a task."}</p>}</main>
+      <TaskBar
+        api={api}
+        branch={branch}
+        me={me}
+        current={current}
+        session={session}
+        mine={mine}
+        headTick={headTick}
+        setCurrent={(t) => {
+          setCurrent(t);
+          loadTasks();
+        }}
+      />
+      <main className="body">{source ? <Home source={source} atHead={source === head} commits={commits} others={others} /> : <p className="muted">Loading…</p>}</main>
     </div>
-  );
-}
-
-/** Re-render on every change to the session. */
-function useSession(s: TaskSession): { tick: number } {
-  const [store] = useState(() => {
-    let tick = 0;
-    return {
-      subscribe: (fn: () => void) => s.subscribe(() => (tick++, fn())),
-      get: () => tick,
-    };
-  });
-  return { tick: useSyncExternalStore(store.subscribe, store.get) };
-}
-
-function TaskBar({ branch, me, current, session, started }: { branch: string; me: Me; current: TaskInfo | null | undefined; session: TaskSession | null; started(t: TaskInfo): void }) {
-  const canEdit = me.role !== "viewer" && me.scopes.readOnly !== true;
-  if (current === undefined) return <div className="taskbar" />;
-  if (current === null || !session)
-    return (
-      <div className="taskbar">
-        <span className="muted">{current === null ? `You have no task on ${branch}.` : "Opening your task…"}</span>
-        {current === null && canEdit && (
-          <button className="button" onClick={() => void api.newTask(branch).then(started)}>
-            Start a task
-          </button>
-        )}
-      </div>
-    );
-  return <OpenTask session={session} started={started} />;
-}
-
-function OpenTask({ session: s, started }: { session: TaskSession; started(t: TaskInfo | null): void }) {
-  const { tick } = useSession(s);
-  const v = useMemo(() => validate(s.project), [s, tick]);
-  const t = s.task;
-  const [landing, setLanding] = useState(false);
-  const land = async () => {
-    setLanding(true);
-    try {
-      await s.settled();
-      const r = await api.land(t.id);
-      started(r.carried?.task ?? null);
-    } catch (e) {
-      alert((e as Error).message);
-    } finally {
-      setLanding(false);
-    }
-  };
-  return (
-    <div className="taskbar">
-      <span className="task-name">{t.name ?? `Task ${t.id}`}</span>
-      <span className="muted">
-        {t.changes} {t.changes === 1 ? "change" : "changes"}
-      </span>
-      <span className={v.errors > 0 ? "badge error" : v.warnings > 0 ? "badge warn" : "badge ok"}>
-        {v.errors > 0 ? `${v.errors} ${v.errors === 1 ? "error" : "errors"}` : v.warnings > 0 ? `${v.warnings} ${v.warnings === 1 ? "warning" : "warnings"}` : "Valid"}
-      </span>
-      {s.state.unsent > 0 && <span className="muted">Saving…</span>}
-      <span className="spacer" />
-      <button className="button quiet" disabled={!t.canUndo || !s.editable} onClick={() => void s.undo()}>
-        Undo
-      </button>
-      <button className="button quiet" disabled={!t.canRedo || !s.editable} onClick={() => void s.redo()}>
-        Redo
-      </button>
-      <button className="button primary" disabled={landing || !s.editable || t.changes === 0 || v.errors > 0} onClick={land}>
-        Land
-      </button>
-      {s.notice && (
-        <p className="notice" role="status">
-          {s.notice}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/** For now, what the task's project holds; the pack tree and the grid come next. */
-function Contents({ session: s }: { session: TaskSession }) {
-  useSession(s);
-  const doc = s.project.doc;
-  return (
-    <ul className="sheets">
-      {[...doc.sheets.values()].map((sh) => (
-        <li key={sh.id}>
-          <strong>{sh.name}</strong> <span className="muted">
-            {doc.packs.get(sh.pack)?.name ?? sh.pack} · {sh.kind} · {sh.rows.order.length - sh.rows.dead.size} rows
-          </span>
-        </li>
-      ))}
-    </ul>
   );
 }
