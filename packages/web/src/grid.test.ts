@@ -78,4 +78,51 @@ describe("a sheet as the grid shows it", () => {
     v.format({ row: 1, col: 2, rows: 1, cols: 2 }, null);
     expect(new SheetGrid(p, s).cell(1, 2).format).toBe(null);
   });
+
+  it("inserts, deletes and moves rows, and columns without moving fields off their data", () => {
+    const p = krbsg();
+    const s = p.sheetId("Weapons");
+    const at = () => new SheetGrid(p, s);
+    expect(at().insert("row", 1, 2).ops.map((o) => o.kind)).toEqual(["insert"]);
+    expect(at().cell(3, 1).input).toBe("Blaster");
+    expect(at().remove("row", 1, 2).ops.map((o) => o.kind)).toEqual(["delete"]);
+    expect(at().cell(1, 1).input).toBe("Blaster");
+    // A column before the fields: they're pinned to their columns first, so cooldown stays 0.5.
+    const before = (p as unknown as { doc: { sheets: Map<string, { layouts: Map<string, unknown> }> } }).doc.sheets.get(s)!.layouts.size;
+    expect(before).toBe(0);
+    expect(at().insert("col", 2, 1).ops.map((o) => o.kind)).toEqual(["setLayout", "insert"]);
+    expect(at().columnName("Weapon", 2)).toBe("");
+    expect(at().columnName("Weapon", 3)).toBe("projectiles");
+    expect(at().cell(1, 5).text).toBe("0.5");
+    // Not before A or B, and A and B don't move or go.
+    expect(at().insert("col", 1, 1).ops).toEqual([]);
+    expect(at().remove("col", 0, 1).ops).toEqual([]);
+    expect(at().move("col", 1, 1, 4).ops).toEqual([]);
+    expect(at().move("col", 4, 1, 1).ops).toEqual([]);
+    // Moving cooldown's column to the end keeps it cooldown.
+    at().remove("col", 2, 1);
+    const cols = at().liveCols;
+    at().move("col", 4, 1, cols - 1);
+    expect(at().columnName("Weapon", cols - 1)).toBe("cooldown");
+    expect(at().cell(1, cols - 1).text).toBe("0.5");
+    // A row dragged down, then back up.
+    at().edit([{ row: 2, col: 0, input: "# note" }]);
+    at().move("row", 1, 1, 2);
+    expect(at().cell(2, 1).input).toBe("Blaster");
+    at().move("row", 2, 1, 1);
+    expect(at().cell(1, 1).input).toBe("Blaster");
+  });
+
+  it("fill repeats the source, moving formulas, and brings formats", () => {
+    const p = krbsg();
+    const s = p.sheetId("Weapons");
+    const g = new SheetGrid(p, s);
+    g.edit([{ row: 1, col: 6, input: "=F2/E2", format: { bold: true } }]);
+    new SheetGrid(p, s).fill({ row: 1, col: 6, rows: 1, cols: 1 }, { row: 1, col: 6, rows: 4, cols: 2 });
+    const v = new SheetGrid(p, s);
+    expect(v.cell(2, 6).input).toBe("=F3/E3");
+    expect(v.cell(4, 7).input).toBe("=G5/F5");
+    expect(v.cell(4, 7).format).toEqual({ bold: true });
+    expect(v.cell(1, 6).text).toBe("2");
+  });
 });

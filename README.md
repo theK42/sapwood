@@ -47,7 +47,7 @@ npx sapwood task land -m "Faster Blaster"
 
 The database is one SQLite file, `sapwood.sqlite` (or `--db`, or `$SAPWOOD_DB`). Edits go into tasks and land onto branches; [DESIGN §9.4](docs/DESIGN.md) lists the HTTP API.
 
-`serve` also serves the web app, once it's built with `npm run build:web`, at the server's own address. Sign in there with GitHub, or with a Sapwood token on a server without GitHub sign-in. The web app is early: it has the home page (the packs and sheets with their validation, recent commits, other people's tasks), your task with undo, redo and Land, and the spreadsheet: typing, formulas, validation on the cells, and formatting. Copy/paste, fill, and inserting and moving rows come next.
+`serve` also serves the web app, once it's built with `npm run build:web`, at the server's own address. Sign in there with GitHub, or with a Sapwood token on a server without GitHub sign-in. The web app is early: it has the home page (the packs and sheets with their validation, recent commits, other people's tasks), your task with undo, redo and Land, and the spreadsheet: typing, formulas, validation on the cells, formatting, copy and paste (with Sheets and Excel too), fill, and inserting, deleting and moving rows and columns.
 
 ## With an LLM
 

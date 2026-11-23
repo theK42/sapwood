@@ -1,8 +1,8 @@
 // Raw (A1) AST <-> bound AST (stable IDs). The bound AST is what gets stored;
 // formula text is only ever produced by `render`.
 
-import type { A1Point, BinOp, ErrorCode, RawExpr } from "./parse.ts";
-import { numberToCol } from "./parse.ts";
+import type { A1Point, BinOp, ErrorCode, RawExpr, SheetText } from "./parse.ts";
+import { FormulaSyntaxError, numberToCol, parseFormula } from "./parse.ts";
 import type { ColId, PackId, RowId, SheetId, Workbook } from "./model.ts";
 
 export interface BoundPoint {
@@ -201,4 +201,84 @@ export function shift(e: RawExpr, dRow: number, dCol: number): RawExpr {
     default:
       return e;
   }
+}
+
+// ---------------------------------------------------------------- formula text, moved
+
+/**
+ * Formula text typed at one cell, as it reads moved `dRow` rows and `dCol` columns (copy and
+ * paste, fill): relative references follow, absolute ones stay, as in Excel and Sheets. A
+ * reference moved off the grid makes the formula `=#REF!`. Text that isn't a formula, or
+ * doesn't parse, is unchanged.
+ */
+export function moveFormula(input: string, dRow: number, dCol: number): string {
+  if (!input.startsWith("=") || input.length < 2) return input;
+  try {
+    return "=" + renderRaw(shift(parseFormula(input), dRow, dCol), null);
+  } catch (e) {
+    if (e instanceof BindError) return "=#REF!";
+    if (e instanceof FormulaSyntaxError) return input;
+    throw e;
+  }
+}
+
+/**
+ * Formula text typed at (`row`, `col`), 1-based, in relative R1C1 form (`=R[0]C[-2]*2`), as
+ * Google Sheets writes it to the clipboard. Text that isn't a formula, or doesn't parse, is null.
+ */
+export function formulaR1C1(input: string, row: number, col: number): string | null {
+  if (!input.startsWith("=") || input.length < 2) return null;
+  try {
+    return "=" + renderRaw(parseFormula(input), { row, col });
+  } catch (e) {
+    if (e instanceof FormulaSyntaxError) return null;
+    throw e;
+  }
+}
+
+/** A parsed formula as text: A1, or relative R1C1 from `at`. */
+function renderRaw(e: RawExpr, at: { row: number; col: number } | null, outer = -1): string {
+  const sub = (x: RawExpr, o: number) => renderRaw(x, at, o);
+  switch (e.k) {
+    case "num":
+      return String(e.v);
+    case "str":
+      return `"${e.v.replaceAll('"', '""')}"`;
+    case "bool":
+      return e.v ? "TRUE" : "FALSE";
+    case "err":
+      return e.v;
+    case "name":
+      return e.name;
+    case "ref":
+      return sheetText(e.sheet) + point(e.a, at);
+    case "range":
+      return sheetText(e.sheet) + point(e.a, at) + ":" + point(e.b, at);
+    case "call":
+      return `${e.fn}(${e.args.map((a) => sub(a, -1)).join(", ")})`;
+    case "bin": {
+      const p = PREC[e.op];
+      const s = `${sub(e.l, p - 0.5)}${e.op}${sub(e.r, p)}`;
+      return p <= outer ? `(${s})` : s;
+    }
+    case "neg":
+      return `-${sub(e.e, 5)}`;
+    case "pct":
+      return `${sub(e.e, 6)}%`;
+    case "field":
+      return `${sub(e.e, 6)}.${e.field}`;
+  }
+}
+
+function point(p: A1Point, at: { row: number; col: number } | null): string {
+  if (at === null) return (p.col === null ? "" : (p.colAbs ? "$" : "") + numberToCol(p.col)) + (p.row === null ? "" : (p.rowAbs ? "$" : "") + String(p.row));
+  const r = p.row === null ? "" : p.rowAbs ? `R${p.row}` : `R[${p.row - at.row}]`;
+  const c = p.col === null ? "" : p.colAbs ? `C${p.col}` : `C[${p.col - at.col}]`;
+  return r + c;
+}
+
+function sheetText(s: SheetText | null): string {
+  if (s === null) return "";
+  const name = s.pack === null ? s.sheet : `${s.pack}/${s.sheet}`;
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !/^[A-Za-z]{1,3}[0-9]+$/.test(name) ? `${name}!` : `'${name.replaceAll("'", "''")}'!`;
 }

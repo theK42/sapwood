@@ -13,10 +13,11 @@ import {
   CompactSelection, DataEditor, GridCellKind,
   type DataEditorRef, type DrawCellCallback, type DrawHeaderCallback, type EditListItem, type GridCell, type GridColumn, type GridSelection, type Item, type Theme,
 } from "@glideapps/glide-data-grid";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Format, Issue, Project } from "@thek42/sapwood-core";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { Format, Issue, Op, Project } from "@thek42/sapwood-core";
 import { numberToCol } from "@thek42/sapwood-core";
-import { SheetGrid, typeColor, type CellEdit } from "./grid.ts";
+import { copyPayload, parsePaste } from "./clipboard.ts";
+import { SheetGrid, typeColor, type Axis, type CellEdit, type Rect } from "./grid.ts";
 import type { Source } from "./head.ts";
 import { plural, useSource } from "./hooks.ts";
 
@@ -50,6 +51,7 @@ export function SheetView(p: SheetProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; issue: Issue } | null>(null);
   const [widths, setWidths] = useState<Record<number, number>>({});
+  const [menu, setMenu] = useState<{ x: number; y: number; rect: Rect } | null>(null);
   const theme = useTheme();
   useEffect(() => setTip(null), [g]); // an edit may have settled the issue under the pointer
 
@@ -136,9 +138,62 @@ export function SheetView(p: SheetProps) {
     [p.edit, p.sheet],
   );
 
-  const range = () => {
+  const range = (): Rect | null => {
     const r = selection.current?.range;
     return r ? { row: r.y, col: r.x, rows: r.height, cols: r.width } : null;
+  };
+  const change = (fn: (g: SheetGrid) => { ops: Op[] }) => {
+    setMenu(null);
+    p.edit((proj) => fn(new SheetGrid(proj, p.sheet)));
+    ref.current?.focus();
+  };
+  const clear = (r: Rect) => {
+    const cells: CellEdit[] = [];
+    for (let y = r.row; y < r.row + r.rows && y < g!.liveRows; y++)
+      for (let x = r.col; x < r.col + r.cols && x < g!.liveCols; x++) {
+        const v = g!.cell(y, x);
+        if (v.input !== "" || v.format) cells.push({ row: y, col: x, input: "", format: null });
+      }
+    write(cells);
+  };
+
+  // Copy, cut and paste are ours (DESIGN 6.6): Sapwood's formulas move, Sheets and Excel get values.
+  useEffect(() => {
+    const inGrid = () => document.activeElement?.closest(".sheet-grid") != null;
+    const onCopy = (e: ClipboardEvent, cut = false) => {
+      const r = range();
+      if (!inGrid() || !r || !e.clipboardData || !g) return;
+      const out = copyPayload(g, r);
+      e.clipboardData.setData("text/plain", out.text);
+      e.clipboardData.setData("text/html", out.html);
+      e.preventDefault();
+      if (cut && p.canEdit) clear(r);
+    };
+    const onCut = (e: ClipboardEvent) => onCopy(e, true);
+    const onPaste = (e: ClipboardEvent) => {
+      const r = range();
+      if (!inGrid() || !r || !e.clipboardData || !p.canEdit) return;
+      e.preventDefault();
+      const grid = parsePaste(e.clipboardData.getData("text/html"), e.clipboardData.getData("text/plain"), { row: r.row, col: r.col });
+      const cells: CellEdit[] = [];
+      grid.forEach((row, i) => row.forEach((c, j) => cells.push({ row: r.row + i, col: r.col + j, input: c.input, ...(c.format !== undefined ? { format: c.format } : {}) })));
+      write(cells);
+    };
+    document.addEventListener("copy", onCopy);
+    document.addEventListener("cut", onCut);
+    document.addEventListener("paste", onPaste);
+    return () => {
+      document.removeEventListener("copy", onCopy);
+      document.removeEventListener("cut", onCut);
+      document.removeEventListener("paste", onPaste);
+    };
+  });
+
+  /** The rows or columns a menu acts on: the selection's, if the cell is in it, else the cell's. */
+  const menuAt = (x: number, y: number, col: number, row: number | null) => {
+    const r = range();
+    const inside = r !== null && col >= r.col && col < r.col + r.cols && (row === null || (row >= r.row && row < r.row + r.rows));
+    setMenu({ x, y, rect: inside ? r : { row: row ?? 0, col, rows: 1, cols: 1 } });
   };
   const format = (change: Format | null) => {
     const r = range();
@@ -155,6 +210,14 @@ export function SheetView(p: SheetProps) {
       if (k === "z" && !e.shiftKey) (p.undo(), e.preventDefault());
       else if (k === "y" || (k === "z" && e.shiftKey)) (p.redo(), e.preventDefault());
       else if (k === "b" && p.canEdit) (format({ bold: !g?.cell(cur?.[1] ?? 0, cur?.[0] ?? 0).format?.bold }), e.preventDefault());
+      else if ((k === "d" || k === "r") && p.canEdit) {
+        // Fill down (Ctrl+D) from the selection's top row, or right (Ctrl+R) from its left column, as in Excel.
+        e.preventDefault();
+        const r = range();
+        if (!r) return;
+        const from = k === "d" ? { ...r, rows: 1 } : { ...r, cols: 1 };
+        if ((k === "d" ? r.rows : r.cols) > 1) change((x) => x.fill(from, r));
+      }
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
@@ -271,6 +334,29 @@ export function SheetView(p: SheetProps) {
             setDraft(null);
           }}
           onVisibleRegionChanged={(r) => setTopRow(r.y)}
+          keybindings={{ copy: false, cut: false, paste: false }}
+          onPaste={false}
+          fillHandle={p.canEdit}
+          onFillPattern={(e) => {
+            e.preventDefault();
+            const { patternSource: a, fillDestination: b } = e;
+            change((x) => x.fill({ row: a.y, col: a.x, rows: a.height, cols: a.width }, { row: b.y, col: b.x, rows: b.height, cols: b.width }));
+          }}
+          {...(p.canEdit
+            ? {
+                onRowMoved: (from: number, to: number) => change((x) => x.move("row", from, 1, to)),
+                onColumnMoved: (from: number, to: number) => change((x) => x.move("col", from, 1, to)),
+              }
+            : {})}
+          onColumnProposeMove={(from, to) => g.canChange("col", from, 1) && (g.kind !== "data" || to >= 2) && to < g.liveCols}
+          onCellContextMenu={([col, row], e) => {
+            e.preventDefault();
+            menuAt(e.bounds.x + e.localEventX, e.bounds.y + e.localEventY, col, row);
+          }}
+          onHeaderContextMenu={(col, e) => {
+            e.preventDefault();
+            menuAt(e.bounds.x + e.localEventX, e.bounds.y + e.localEventY, col, null);
+          }}
           onKeyDown={(e) => {
             // Glide 6.0.4-alpha24 doesn't start editing on a key typed in column A when columns
             // are frozen beside the row numbers (its visible-region check is off by one): the
@@ -293,11 +379,79 @@ export function SheetView(p: SheetProps) {
           rowHeight={26}
         />
       </div>
+      {menu && <SheetMenu grid={g} at={menu} canEdit={p.canEdit} close={() => setMenu(null)} change={change} clear={clear} />}
       {tip && (
         <div className={`tip ${tip.issue.level}`} style={{ left: tip.x + 4, top: tip.y }}>
           {tip.issue.message}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Right-click: copy and cut, clear, and inserting and deleting rows and columns. */
+function SheetMenu(p: {
+  grid: SheetGrid;
+  at: { x: number; y: number; rect: Rect };
+  canEdit: boolean;
+  close(): void;
+  change(fn: (g: SheetGrid) => { ops: Op[] }): void;
+  clear(r: Rect): void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ left: p.at.x, top: p.at.y });
+  // Inside the window: up from the pointer if there's no room below, left if none to the right.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    setPos({
+      left: Math.max(8, p.at.x + width > innerWidth - 8 ? p.at.x - width : p.at.x),
+      top: Math.max(8, p.at.y + height > innerHeight - 8 ? p.at.y - height : p.at.y),
+    });
+  }, [p.at.x, p.at.y]);
+  useEffect(() => {
+    const away = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && p.close();
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && p.close();
+    addEventListener("mousedown", away);
+    addEventListener("keydown", esc);
+    return () => {
+      removeEventListener("mousedown", away);
+      removeEventListener("keydown", esc);
+    };
+  });
+  const r = p.at.rect;
+  const g = p.grid;
+  const rows = (n: number) => plural(n, "row");
+  const cols = (n: number) => plural(n, "column");
+  const item = (label: string, enabled: boolean, run: () => void) => (
+    <button role="menuitem" disabled={!enabled} onClick={run}>
+      {label}
+    </button>
+  );
+  const insert = (axis: Axis, at: number, n: number) => () => p.change((x) => x.insert(axis, at, n));
+  // Copying needs a user gesture; a click in this menu is one, and execCommand fires our copy handler.
+  const copy = (cut: boolean) => () => {
+    p.close();
+    document.execCommand(cut ? "cut" : "copy");
+  };
+  const rowsHere = r.row < g.liveRows;
+  const colsHere = r.col < g.liveCols;
+  const fixed = g.kind === "data" ? 2 : 0;
+  return (
+    <div className="menu-list sheet-menu" role="menu" ref={ref} style={pos}>
+      {item("Copy", true, copy(false))}
+      {item("Cut", p.canEdit, copy(true))}
+      <span className="muted small hint">Paste with Ctrl+V</span>
+      {item("Clear", p.canEdit, () => (p.close(), p.clear(r)))}
+      <hr />
+      {item(`Insert ${rows(r.rows)} above`, p.canEdit && rowsHere, insert("row", r.row, r.rows))}
+      {item(`Insert ${rows(r.rows)} below`, p.canEdit && rowsHere, insert("row", r.row + r.rows, r.rows))}
+      {item(`Delete ${rows(r.rows)}`, p.canEdit && g.canChange("row", r.row, r.rows), () => p.change((x) => x.remove("row", r.row, r.rows)))}
+      <hr />
+      {item(`Insert ${cols(r.cols)} left`, p.canEdit && colsHere && r.col >= fixed, insert("col", r.col, r.cols))}
+      {item(`Insert ${cols(r.cols)} right`, p.canEdit && colsHere && r.col + r.cols >= fixed, insert("col", r.col + r.cols, r.cols))}
+      {item(`Delete ${cols(r.cols)}`, p.canEdit && g.canChange("col", r.col, r.cols), () => p.change((x) => x.remove("col", r.col, r.cols)))}
     </div>
   );
 }

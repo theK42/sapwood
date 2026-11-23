@@ -138,3 +138,7 @@ code { font: 12px ui-monospace, "Cascadia Mono", Consolas, monospace; }
 .tip.warning { color: var(--warn); }
 .sheet-list a { color: var(--text); text-decoration: none; }
 .sheet-list a:hover { text-decoration: underline; color: var(--accent); }
+.sheet-menu { position: fixed; right: auto; }
+.menu-list > button:disabled { color: var(--muted); opacity: 0.6; cursor: default; background: none; }
+.menu-list hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; width: 100%; }
+.menu-list .hint { padding: 2px 10px 6px; }

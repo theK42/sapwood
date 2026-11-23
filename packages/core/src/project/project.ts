@@ -635,6 +635,27 @@ export class Project {
     });
   }
 
+  /**
+   * Keep every type's columns where they are on a data sheet, before columns are inserted,
+   * deleted or moved: a type with no custom layout maps its fields by position from C
+   * (§6.3), so a column put before them would move each field to the next column's data.
+   * Each such type used on the sheet gets its default layout as a custom one, by column ID.
+   */
+  pinColumns(sheet: SheetId): Edit {
+    return this.edit(() => {
+      const s = this.wb.sheet(sheet);
+      if (s.kind !== "data" || s.cols.length < 1) return [];
+      const doc = this.doc.sheets.get(sheet)!;
+      const colA = s.cols.idAt(1);
+      const types = new Set<string>();
+      for (const row of s.rows.liveIds()) {
+        const rc = classify(this.schema, String(this.engine.cellById(sheet, row, colA).value ?? ""));
+        if (rc.kind === "entity" && !doc.layouts.has(rc.type)) types.add(rc.type);
+      }
+      return [...types].map((type): Op => ({ kind: "setLayout", sheet, type, layout: this.layout(sheet, type) }));
+    });
+  }
+
   /** Delete `count` rows (or columns) from position `pos`. */
   remove(sheet: SheetId, axis: Axis, pos: number, count = 1): Edit {
     return this.edit(() => [{ kind: "delete", sheet, axis, ids: this.axisOf(sheet, axis).liveIds().slice(pos - 1, pos - 1 + count) }]);

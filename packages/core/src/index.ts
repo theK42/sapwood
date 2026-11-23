@@ -18,6 +18,7 @@ export { sha256 } from "./export/sha256.ts";
 export * from "./formula/content.ts";
 export { display, isErr, type Value } from "./formula/values.ts";
 export { colToNumber, numberToCol } from "./formula/parse.ts";
+export { formulaR1C1, moveFormula } from "./formula/bind.ts";
 export type { ColId, PackId, RowId, SheetId, SheetKind } from "./formula/model.ts";
 export * from "./ops/doc.ts";
 export * from "./ops/ops.ts";

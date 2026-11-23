@@ -7,7 +7,7 @@
 
 import {
   classify, columnSpecs, defaultSpecs, display, isErr, numberToCol, sheetLayout, validate,
-  type ColId, type Edit, type Format, type Issue, type Op, type Project, type RowClass, type RowId, type SheetId,
+  moveFormula, type ColId, type Edit, type Format, type Issue, type Op, type Project, type RowClass, type RowId, type SheetId,
 } from "@thek42/sapwood-core";
 
 /** Empty rows and columns shown past the sheet's end. */
@@ -31,7 +31,19 @@ export interface CellEdit {
   row: number;
   col: number;
   input: string;
+  /** A format to set too (null clears it); left alone when absent. */
+  format?: Format | null;
 }
+
+/** A block of cells, 0-based, as the grid counts. */
+export interface Rect {
+  row: number;
+  col: number;
+  rows: number;
+  cols: number;
+}
+
+export type Axis = "row" | "col";
 
 const EMPTY: CellView = { text: "", input: "", formula: false, number: false, error: false, format: null, issue: null };
 
@@ -183,8 +195,72 @@ export class SheetGrid {
       if (maxCol >= this.colIds.length) edits.push(p.insert(this.sheet, "col", this.colIds.length + 1, maxCol + 1 - this.colIds.length));
       return edits;
     }, (edits) => {
-      for (const c of cells) edits.push(p.set(this.sheet, this.address(c.row, c.col), c.input));
+      for (const c of cells) {
+        const a1 = this.address(c.row, c.col);
+        edits.push(p.set(this.sheet, a1, c.input));
+        if (c.format !== undefined) edits.push(p.setFormat(this.sheet, a1, c.format));
+      }
     });
+  }
+
+  /** On a data sheet, columns A and B are the type and ID: they stay first (§6.2). */
+  private fixedCols(): number {
+    return this.kind === "data" ? Math.min(2, this.colIds.length) : 0;
+  }
+
+  /** Whether rows or columns at [from, from+count) may be deleted or moved. */
+  canChange(axis: Axis, from: number, count: number): boolean {
+    const len = axis === "row" ? this.rowIds.length : this.colIds.length;
+    if (count < 1 || from < 0 || from >= len) return false;
+    return axis === "row" || from >= this.fixedCols();
+  }
+
+  /** Insert `count` rows or columns before `at` (0-based; at the end is fine). Not before A or B on a data sheet. */
+  insert(axis: Axis, at: number, count: number): { ops: Op[] } {
+    const len = axis === "row" ? this.rowIds.length : this.colIds.length;
+    if (count < 1 || at > len || (axis === "col" && at < this.fixedCols())) return { ops: [] };
+    return this.all(() => [...this.pins(axis, at < len), this.project.insert(this.sheet, axis, at + 1, count)]);
+  }
+
+  /** Delete rows or columns. Formulas that pointed into them show #REF!. */
+  remove(axis: Axis, from: number, count: number): { ops: Op[] } {
+    const len = axis === "row" ? this.rowIds.length : this.colIds.length;
+    if (!this.canChange(axis, from, count)) return { ops: [] };
+    const n = Math.min(count, len - from);
+    return this.all(() => [...this.pins(axis, true), this.project.remove(this.sheet, axis, from + 1, n)]);
+  }
+
+  /** Move `count` rows or columns at `from` so the first ends up at `to` (0-based), as Glide reports a drag. */
+  move(axis: Axis, from: number, count: number, to: number): { ops: Op[] } {
+    const len = axis === "row" ? this.rowIds.length : this.colIds.length;
+    if (!this.canChange(axis, from, count) || to < 0 || to >= len || (axis === "col" && to < this.fixedCols()) || to === from) return { ops: [] };
+    const n = Math.min(count, len - from);
+    // Where they end up is where they go once taken out: Project.move counts the same way, 1-based.
+    return this.all(() => [...this.pins(axis, true), this.project.move(this.sheet, axis, from + 1, n, to + 1)]);
+  }
+
+  /** Before columns change on a data sheet, each type's fields are fixed to their columns. */
+  private pins(axis: Axis, shifts: boolean): Edit[] {
+    if (axis !== "col" || !shifts || this.kind !== "data") return [];
+    const e = this.project.pinColumns(this.sheet);
+    return e.ops.length ? [e] : [];
+  }
+
+  /**
+   * Fill `to` from `from` (Glide's fill handle): the source block repeats, and formulas move
+   * with each copy, as a fill does in Excel and Sheets. Formats come along.
+   */
+  fill(from: Rect, to: Rect): { ops: Op[] } {
+    const cells: CellEdit[] = [];
+    for (let r = to.row; r < to.row + to.rows; r++)
+      for (let c = to.col; c < to.col + to.cols; c++) {
+        if (r >= from.row && r < from.row + from.rows && c >= from.col && c < from.col + from.cols) continue;
+        const sr = from.row + mod(r - from.row, from.rows);
+        const sc = from.col + mod(c - from.col, from.cols);
+        const src = this.cell(sr, sc);
+        cells.push({ row: r, col: c, input: moveFormula(src.input, r - sr, c - sc), format: src.format });
+      }
+    return cells.length ? this.edit(cells) : { ops: [] };
   }
 
   /** Edits made one after another, as one: if one fails, those before it are taken back. */
@@ -234,3 +310,5 @@ export function typeColor(type: string): string {
   for (const ch of type) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return `hsl(${h % 360} 55% 50%)`;
 }
+
+const mod = (a: number, n: number): number => ((a % n) + n) % n;
