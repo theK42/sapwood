@@ -133,6 +133,10 @@ describe("a sheet as the grid shows it", () => {
     expect(at(["0.1", "0.2"], 3)).toEqual(["0.1", "0.2", "0.3"]);
     expect(at(["Wave 1", "Wave 2"], 4)).toEqual(["Wave 1", "Wave 2", "Wave 3", "Wave 4"]);
     expect(at(["lvl08", "lvl09"], 3)).toEqual(["lvl08", "lvl09", "lvl10"]);
+    expect(at(["star1.png", "star2.png"], 3)).toEqual(["star1.png", "star2.png", "star3.png"]);
+    expect(at(["v2.1-final", "v2.3-final"], 3)).toEqual(["v2.1-final", "v2.3-final", "v2.5-final"]); // the last number counts
+    expect(seriesIn(["star1.png", "star2.jpg"])).toBe(null);
+    expect(seriesIn(["star1.png"])).toBe(null);
     expect(seriesIn(["5"])).toBe(null); // one cell: repeat it
     expect(seriesIn(["Wave 1"])).toBe(null);
     expect(seriesIn(["1", "2", "4"])).toBe(null); // uneven: repeat

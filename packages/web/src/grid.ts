@@ -338,12 +338,13 @@ interface Series {
 }
 
 const NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
-const NUMBERED = /^(.*?)(\d+)$/;
+/** Text around its last number: "star1.png" is "star", "1", ".png". */
+const NUMBERED = /^(.*\D|)(\d+)(\D*)$/;
 
 /**
  * The series in a line of typed inputs, or null: two or more plain numbers with a steady step,
- * or text with the same start and a steady step in the number it ends with. Formulas, blanks
- * and anything uneven are no series.
+ * or text that's the same around its last number, with a steady step in that number.
+ * Formulas, blanks and anything uneven are no series.
  */
 export function seriesIn(inputs: readonly string[]): Series | null {
   if (inputs.length < 2) return null;
@@ -356,7 +357,8 @@ export function seriesIn(inputs: readonly string[]): Series | null {
   const parts = inputs.map((x) => NUMBERED.exec(x));
   if (parts.every((m) => m !== null) && !inputs.some((x) => x.startsWith("=") || x.startsWith("'"))) {
     const stem = parts[0]![1]!;
-    if (!parts.every((m) => m![1] === stem)) return null;
+    const tail = parts[0]![3]!;
+    if (!parts.every((m) => m![1] === stem && m![3] === tail)) return null;
     const ns = parts.map((m) => Number(m![2]));
     const step = steady(ns);
     if (step === null) return null;
@@ -364,7 +366,7 @@ export function seriesIn(inputs: readonly string[]): Series | null {
     return {
       at: (i) => {
         const n = ns[0]! + i * step;
-        return n < 0 ? inputs[mod(i, inputs.length)]! : stem + String(n).padStart(width, "0");
+        return n < 0 ? inputs[mod(i, inputs.length)]! : stem + String(n).padStart(width, "0") + tail;
       },
     };
   }
