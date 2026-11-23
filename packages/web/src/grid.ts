@@ -247,10 +247,27 @@ export class SheetGrid {
   }
 
   /**
-   * Fill `to` from `from` (Glide's fill handle): the source block repeats, and formulas move
-   * with each copy, as a fill does in Excel and Sheets. Formats come along.
+   * Fill `to` from `from` (the fill handle, Ctrl+D, Ctrl+R), as Excel and Sheets do. Along
+   * the fill, each line of the source (a column when filling down or up, a row when filling
+   * across) carries on as a series when it is two or more numbers with a steady step (1, 2
+   * gives 3, 4…), or text ending in such numbers ("Wave 1", "Wave 2" gives "Wave 3"). Anything
+   * else repeats, formulas moving with each copy. A single cell is never taken for a series.
+   * Formats repeat.
    */
   fill(from: Rect, to: Rect): { ops: Op[] } {
+    const down = to.col === from.col && to.cols === from.cols && (to.row < from.row || to.row + to.rows > from.row + from.rows);
+    const across = to.row === from.row && to.rows === from.rows && (to.col < from.col || to.col + to.cols > from.col + from.cols);
+    // Each line along the fill: its series, if it is one.
+    const series = new Map<number, Series | null>();
+    const seriesOf = (line: number): Series | null => {
+      if (!down && !across) return null;
+      if (!series.has(line)) {
+        const n = down ? from.rows : from.cols;
+        const inputs = Array.from({ length: n }, (_, i) => (down ? this.cell(from.row + i, line) : this.cell(line, from.col + i)).input);
+        series.set(line, seriesIn(inputs));
+      }
+      return series.get(line)!;
+    };
     const cells: CellEdit[] = [];
     for (let r = to.row; r < to.row + to.rows; r++)
       for (let c = to.col; c < to.col + to.cols; c++) {
@@ -258,7 +275,9 @@ export class SheetGrid {
         const sr = from.row + mod(r - from.row, from.rows);
         const sc = from.col + mod(c - from.col, from.cols);
         const src = this.cell(sr, sc);
-        cells.push({ row: r, col: c, input: moveFormula(src.input, r - sr, c - sc), format: src.format });
+        const s = seriesOf(down ? c : r);
+        const input = s ? s.at(down ? r - from.row : c - from.col) : moveFormula(src.input, r - sr, c - sc);
+        cells.push({ row: r, col: c, input, format: src.format });
       }
     return cells.length ? this.edit(cells) : { ops: [] };
   }
@@ -312,3 +331,52 @@ export function typeColor(type: string): string {
 }
 
 const mod = (a: number, n: number): number => ((a % n) + n) % n;
+
+/** A series a fill carries on: the value at index `i` along it (0 is the source's first). */
+interface Series {
+  at(i: number): string;
+}
+
+const NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
+const NUMBERED = /^(.*?)(\d+)$/;
+
+/**
+ * The series in a line of typed inputs, or null: two or more plain numbers with a steady step,
+ * or text with the same start and a steady step in the number it ends with. Formulas, blanks
+ * and anything uneven are no series.
+ */
+export function seriesIn(inputs: readonly string[]): Series | null {
+  if (inputs.length < 2) return null;
+  if (inputs.every((x) => NUMBER.test(x.trim()))) {
+    const ns = inputs.map(Number);
+    const step = steady(ns);
+    if (step === null) return null;
+    return { at: (i) => tidy(ns[0]! + i * step) };
+  }
+  const parts = inputs.map((x) => NUMBERED.exec(x));
+  if (parts.every((m) => m !== null) && !inputs.some((x) => x.startsWith("=") || x.startsWith("'"))) {
+    const stem = parts[0]![1]!;
+    if (!parts.every((m) => m![1] === stem)) return null;
+    const ns = parts.map((m) => Number(m![2]));
+    const step = steady(ns);
+    if (step === null) return null;
+    const width = parts[0]![2]!.startsWith("0") ? parts[0]![2]!.length : 0; // "Wave 01" stays two digits
+    return {
+      at: (i) => {
+        const n = ns[0]! + i * step;
+        return n < 0 ? inputs[mod(i, inputs.length)]! : stem + String(n).padStart(width, "0");
+      },
+    };
+  }
+  return null;
+}
+
+/** The step between successive numbers, if it never changes. */
+function steady(ns: readonly number[]): number | null {
+  const step = ns[1]! - ns[0]!;
+  for (let i = 2; i < ns.length; i++) if (Math.abs(ns[i]! - ns[i - 1]! - step) > 1e-9 * Math.max(1, Math.abs(step))) return null;
+  return step;
+}
+
+/** 0.1 + 0.2 shows as 0.3. */
+const tidy = (n: number): string => String(Number(n.toPrecision(15)));

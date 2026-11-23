@@ -337,6 +337,8 @@ export function SheetView(p: SheetProps) {
           keybindings={{ copy: false, cut: false, paste: false }}
           onPaste={false}
           fillHandle={p.canEdit}
+          // Glide only lets a fill-handle drag through (to onFillPattern) when this is set.
+          getCellsForSelection={true}
           onFillPattern={(e) => {
             e.preventDefault();
             const { patternSource: a, fillDestination: b } = e;

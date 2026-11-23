@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { loadProject } from "@thek42/sapwood-core";
-import { SheetGrid, SPARE_ROWS } from "./grid.ts";
+import { seriesIn, SheetGrid, SPARE_ROWS } from "./grid.ts";
 
 const fixture = (f: string) => readFileSync(new URL(`../../core/fixtures/krbsg/${f}`, import.meta.url), "utf8");
 const krbsg = () => loadProject(fixture("schema.yaml"), fixture("project.yaml")).project;
@@ -124,5 +124,41 @@ describe("a sheet as the grid shows it", () => {
     expect(v.cell(4, 7).input).toBe("=G5/F5");
     expect(v.cell(4, 7).format).toEqual({ bold: true });
     expect(v.cell(1, 6).text).toBe("2");
+  });
+
+  it("fill carries on a series of two or more, and never from one cell", () => {
+    const at = (xs: string[], n: number) => Array.from({ length: n }, (_, i) => seriesIn(xs)?.at(i) ?? null);
+    expect(at(["1", "2"], 5)).toEqual(["1", "2", "3", "4", "5"]);
+    expect(at(["10", "7.5"], 4)).toEqual(["10", "7.5", "5", "2.5"]);
+    expect(at(["0.1", "0.2"], 3)).toEqual(["0.1", "0.2", "0.3"]);
+    expect(at(["Wave 1", "Wave 2"], 4)).toEqual(["Wave 1", "Wave 2", "Wave 3", "Wave 4"]);
+    expect(at(["lvl08", "lvl09"], 3)).toEqual(["lvl08", "lvl09", "lvl10"]);
+    expect(seriesIn(["5"])).toBe(null); // one cell: repeat it
+    expect(seriesIn(["Wave 1"])).toBe(null);
+    expect(seriesIn(["1", "2", "4"])).toBe(null); // uneven: repeat
+    expect(seriesIn(["Wave 1", "Boss 2"])).toBe(null);
+    expect(seriesIn(["=A1", "=A2"])).toBe(null); // formulas move instead
+    expect(seriesIn(["1", ""])).toBe(null);
+    expect(seriesIn(["a", "b"])).toBe(null);
+    expect(seriesIn(["'1", "'2"])).toBe(null); // typed as text
+  });
+
+  it("fill down, up and across continues each line's series, or repeats it", () => {
+    const { project: p } = loadProject("types:\n  T: { fields: { n: float } }\n", { sheets: [{ name: "S", kind: "scratch", rows: [] }] });
+    const s = p.sheetId("S");
+    new SheetGrid(p, s).edit([
+      { row: 2, col: 0, input: "1" }, { row: 3, col: 0, input: "2" },
+      { row: 2, col: 1, input: "x" }, { row: 3, col: 1, input: "y" },
+      { row: 2, col: 2, input: "7" }, { row: 3, col: 2, input: "=C3*2" },
+    ]);
+    new SheetGrid(p, s).fill({ row: 2, col: 0, rows: 2, cols: 3 }, { row: 0, col: 0, rows: 7, cols: 3 });
+    const g = new SheetGrid(p, s);
+    expect([0, 1, 2, 3, 4, 5, 6].map((r) => g.cell(r, 0).input)).toEqual(["-1", "0", "1", "2", "3", "4", "5"]);
+    expect([0, 1, 4, 5, 6].map((r) => g.cell(r, 1).input)).toEqual(["x", "y", "x", "y", "x"]);
+    expect([4, 5].map((r) => g.cell(r, 2).input)).toEqual(["7", "=C5*2"]);
+    // Across: a row's series.
+    new SheetGrid(p, s).edit([{ row: 8, col: 0, input: "Wave 1" }, { row: 8, col: 1, input: "Wave 2" }]);
+    new SheetGrid(p, s).fill({ row: 8, col: 0, rows: 1, cols: 2 }, { row: 8, col: 0, rows: 1, cols: 4 });
+    expect([0, 1, 2, 3].map((c) => new SheetGrid(p, s).cell(8, c).input)).toEqual(["Wave 1", "Wave 2", "Wave 3", "Wave 4"]);
   });
 });
