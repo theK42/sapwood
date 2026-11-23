@@ -8,7 +8,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod";
 import { ApiError, type Patch, type ValidationJson } from "@thek42/sapwood-core";
 import { LocalBackend, type Backend, type Written } from "@thek42/sapwood-cli/backend";
-import { Client, configPath, enc, readConfig, RemoteBackend, serverUrl, ServerError, type Fetch, type TaskJson } from "@thek42/sapwood-cli/remote";
+import { Client, configPath, enc, readConfig, RemoteBackend, serverUrl, ServerError, writeConfig, type Fetch, type TaskJson } from "@thek42/sapwood-cli/remote";
 import { findProject, loadProjectFile, PROJECT_FILE } from "@thek42/sapwood-cli/store";
 import { UsageError } from "@thek42/sapwood-cli/values";
 
@@ -36,6 +36,8 @@ export interface Connection {
   backend(): Backend;
   /** On a server: the client and branch, for the task tools. */
   remote?(): { client: Client; branch: string };
+  /** On a server: work on another branch from now on. Saved for the CLI too, as `sapwood branch switch` does, when the branch comes from your saved login. */
+  switchBranch?(name: string): { saved: boolean };
 }
 
 /** The same choice the CLI makes: `--project`, else `--server` (or `$SAPWOOD_SERVER`), else a project file here or above, else the server last logged in to. */
@@ -53,11 +55,13 @@ export function connect(opts: ConnectOptions, io: McpIo): Connection {
   }
   const server = given !== undefined ? serverUrl(given) : readConfig(configPath(env)).default;
   if (server === undefined) throw new UsageError(`No ${PROJECT_FILE} here or in any folder above, and no server logged in to: run sapwood login --server <url>`);
+  /** A branch switched to here, when it can't be saved: --branch or $SAPWOOD_BRANCH fixed it, or there's no saved login. */
+  let switched: string | undefined;
   const remote = () => {
     const saved = readConfig(configPath(env)).servers[server];
     const token = env.SAPWOOD_TOKEN ?? saved?.token;
     if (token === undefined) throw new UsageError(`Not logged in to ${server}: run sapwood login --server ${server}`);
-    return { client: new Client(server, token, io.fetch ?? fetch), branch: opts.branch ?? env.SAPWOOD_BRANCH ?? saved?.branch ?? "main" };
+    return { client: new Client(server, token, io.fetch ?? fetch), branch: switched ?? opts.branch ?? env.SAPWOOD_BRANCH ?? saved?.branch ?? "main" };
   };
   remote(); // logged in, or say so now
   return {
@@ -67,6 +71,18 @@ export function connect(opts: ConnectOptions, io: McpIo): Connection {
       return new RemoteBackend(r.client, r.branch, { current: true });
     },
     remote,
+    switchBranch: (name) => {
+      const file = configPath(env);
+      const config = readConfig(file);
+      const saved = config.servers[server];
+      if (switched === undefined && opts.branch === undefined && env.SAPWOOD_BRANCH === undefined && saved) {
+        config.servers[server] = { ...saved, branch: name };
+        writeConfig(file, config);
+        return { saved: true };
+      }
+      switched = name;
+      return { saved: false };
+    },
   };
 }
 
@@ -106,7 +122,8 @@ const INSTRUCTIONS = `Sapwood holds a game's data: entities of types the schema 
 - Change things with patch: a list of patches applied all or nothing, as one change. Prefer one patch call with several patches to many calls.
 - Errors come with a code in brackets ([not-found], [bad-value], [formula], …) and a message saying what to fix.
 - After editing, check validate: a change with validation errors can't land.
-- On a server, your edits go into the user's current task on the branch, alongside theirs. You can't land, merge or discard: the user reviews the task and lands it. undo takes back the last change in the task, yours or theirs.`;
+- On a server, your edits go into the user's current task on the branch, alongside theirs. You can't land, merge or discard: the user reviews the task and lands it. undo takes back the last change in the task, yours or theirs.
+- Work in the current task and branch unless the user asks otherwise. Start a task (task_new) or a branch (branch_create), or switch to another (task_switch, branch_switch), only when asked: a switch changes where the user's own edits go too.`;
 
 const text = (t: string): CallToolResult => ({ content: [{ type: "text", text: t }] });
 const json = (v: unknown): CallToolResult => text(JSON.stringify(v, null, 2));
@@ -292,6 +309,133 @@ export function createServer(conn: Connection): McpServer {
         }),
       );
     }
+
+    const brief = (t: TaskJson, current: number | undefined) => ({ id: t.id, name: t.name, owner: t.owner, state: t.state, changes: t.changes, ...(t.id === current ? { current: true } : {}) });
+    const switchTo = (name: string) => {
+      const { saved } = conn.switchBranch!(name);
+      return saved ? `Now on branch ${name}, for the sapwood command too.` : `Now on branch ${name} here (the sapwood command keeps its own).`;
+    };
+
+    server.registerTool(
+      "task_list",
+      {
+        title: "Tasks",
+        description: "The open tasks on the branch, everyone's, with the user's current one marked.",
+        inputSchema: { all: z.boolean().optional().describe("Landed and abandoned tasks too") },
+        annotations: READ,
+      },
+      guard(async ({ all }) => {
+        const { client, branch, task } = await current();
+        const list = await client.json<TaskJson[]>("GET", `/api/branches/${enc(branch)}/tasks${all ? "" : "?state=open"}`);
+        return json({ branch, tasks: list.map((t) => brief(t, task?.id)) });
+      }),
+    );
+
+    server.registerTool(
+      "task_new",
+      {
+        title: "Start a task",
+        description: "Start a new task on the branch, from its head. It becomes the user's current task there, so later edits (theirs too) go into it. Only when the user asks.",
+        inputSchema: { name: z.string().optional().describe("What the task is for") },
+        annotations: EDIT,
+      },
+      guard(async ({ name }) => {
+        const { client, branch } = remote();
+        const t = await client.json<TaskJson>("POST", `/api/branches/${enc(branch)}/tasks`, name ? { name } : {});
+        return text(`Started task ${t.id} on ${branch}; it's the current task there now.`);
+      }),
+    );
+
+    server.registerTool(
+      "task_switch",
+      {
+        title: "Switch tasks",
+        description: "Make another open task of the user's their current one, so edits go into it. A task on another branch switches the branch too. Only when the user asks.",
+        inputSchema: { id: z.number().int().positive().describe("The task's number") },
+        annotations: EDIT,
+      },
+      guard(async ({ id }) => {
+        const { client, branch } = remote();
+        const t = await client.json<TaskJson>("POST", `/api/tasks/${id}/switch`);
+        const lines = [`Task ${t.id} is now the current task on ${t.branch}.`];
+        if (t.branch !== branch) lines.push(switchTo(t.branch));
+        return text(lines.join("\n"));
+      }),
+    );
+
+    server.registerTool(
+      "task_name",
+      {
+        title: "Name the task",
+        description: "Name the current task: what it's for.",
+        inputSchema: { name: z.string() },
+        annotations: EDIT,
+      },
+      guard(async ({ name }) => {
+        const { client, branch, task } = await current();
+        if (!task) return text(`There's no current task on ${branch} to name: the first edit starts one, or task_new.`);
+        await client.json("PATCH", `/api/tasks/${task.id}`, { name });
+        return text(`Named task ${task.id}.`);
+      }),
+    );
+
+    interface BranchJson {
+      name: string;
+      head: string;
+      parent: string | null;
+      archived: boolean;
+    }
+
+    server.registerTool(
+      "branch_list",
+      {
+        title: "Branches",
+        description: "The branches, each with its parent, and the one being worked on marked.",
+        annotations: READ,
+      },
+      guard(async () => {
+        const { client, branch } = remote();
+        const list = await client.json<BranchJson[]>("GET", "/api/branches");
+        return json(list.map((b) => ({ name: b.name, parent: b.parent, head: b.head.slice(0, 8), ...(b.name === branch ? { current: true } : {}) })));
+      }),
+    );
+
+    server.registerTool(
+      "branch_create",
+      {
+        title: "Create a branch",
+        description: "Create a branch from another's head (default: the current branch). Only when the user asks.",
+        inputSchema: {
+          name: z.string(),
+          from: z.string().optional(),
+          switch: z.boolean().optional().describe("Work on the new branch from now on"),
+        },
+        annotations: EDIT,
+      },
+      guard(async ({ name, from, switch: go }) => {
+        const { client, branch } = remote();
+        await client.json("POST", "/api/branches", { name, from: from ?? branch });
+        const lines = [`Created branch ${name} from ${from ?? branch}.`];
+        if (go) lines.push(switchTo(name));
+        return text(lines.join("\n"));
+      }),
+    );
+
+    server.registerTool(
+      "branch_switch",
+      {
+        title: "Switch branches",
+        description: "Work on another branch from now on: reads and edits go to the user's current task there. Only when the user asks.",
+        inputSchema: { name: z.string() },
+        annotations: EDIT,
+      },
+      guard(async ({ name }) => {
+        const { client } = remote();
+        const b = await client.json<BranchJson>("GET", `/api/branches/${enc(name)}`);
+        if (b.archived) return { ...text(`Branch ${name} is discarded.`), isError: true };
+        return text(switchTo(name));
+      }),
+    );
 
     server.registerTool(
       "log",

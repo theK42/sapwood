@@ -149,7 +149,10 @@ describe("the MCP server, on a server", () => {
     expect((await sw("login", "--server", URL, "--token", token())).code).toBe(0);
     const { call, json, tools, instructions } = await llm({}, io);
     // No tools to land, merge or discard.
-    expect(await tools()).toEqual(["apply_schema", "get", "log", "patch", "query", "redo", "schema", "task_status", "undo", "validate"]);
+    expect(await tools()).toEqual([
+      "apply_schema", "branch_create", "branch_list", "branch_switch", "get", "log", "patch", "query", "redo", "schema",
+      "task_list", "task_name", "task_new", "task_status", "task_switch", "undo", "validate",
+    ]);
     expect(instructions).toContain(`This connection works on the Sapwood server ${URL}.`);
     expect((await call("task_status")).text).toBe("There's no current task on main yet: the first edit starts one.");
 
@@ -168,6 +171,50 @@ describe("the MCP server, on a server", () => {
     expect((await sw("task", "land", "-m", "Faster ammo")).code).toBe(0);
     const log = await json("log");
     expect(log[0]).toMatchObject({ author: "bob", message: "Faster ammo" });
+  });
+
+  it("starts and switches tasks and branches when asked, and the CLI follows", async () => {
+    const { io, sw, token } = setup();
+    expect((await sw("login", "--server", URL, "--token", token())).code).toBe(0);
+    const { call, json } = await llm({}, io);
+    expect((await call("patch", { patches: [{ op: "set", id: "a1", fields: { speed: 1 } }] })).text).toContain("(in task 1)");
+
+    // A new task becomes the current one, for the CLI too.
+    expect((await call("task_new", { name: "Slower ammo" })).text).toBe("Started task 2 on main; it's the current task there now.");
+    expect((await call("patch", { patches: [{ op: "set", id: "a2", fields: { speed: 2 } }] })).text).toContain("(in task 2)");
+    expect((await sw("task")).out).toMatch(/^Task 2 "Slower ammo" on main/);
+    expect((await call("task_name", { name: "Much slower ammo" })).text).toBe("Named task 2.");
+    expect(await json("task_list")).toEqual({
+      branch: "main",
+      tasks: [
+        { id: 1, name: null, owner: "bob", state: "open", changes: 1 },
+        { id: 2, name: "Much slower ammo", owner: "bob", state: "open", changes: 1, current: true },
+      ],
+    });
+    expect((await call("task_switch", { id: 1 })).text).toBe("Task 1 is now the current task on main.");
+    expect(await json("get", { id: "a2" })).toMatchObject({ speed: 600 });
+
+    // A branch, switched to: saved, so the CLI is on it too.
+    expect((await call("branch_create", { name: "dev", switch: true })).text).toBe("Created branch dev from main.\nNow on branch dev, for the sapwood command too.");
+    expect((await sw("branch")).out).toContain("* dev");
+    expect((await call("patch", { patches: [{ op: "set", id: "a1", fields: { speed: 3 } }] })).text).toContain("(in task 3)");
+    expect((await json("branch_list")).map((b: { name: string; current?: true }) => [b.name, b.current ?? false])).toEqual([["main", false], ["dev", true]]);
+    // Switching to a task elsewhere moves to its branch.
+    expect((await call("task_switch", { id: 2 })).text).toBe("Task 2 is now the current task on main.\nNow on branch main, for the sapwood command too.");
+    expect((await sw("task")).out).toMatch(/^Task 2 /);
+    expect((await call("branch_switch", { name: "nope" })).text).toMatch(/\[not-found\]$/);
+  });
+
+  it("keeps a branch switch to itself when --branch fixed the branch", async () => {
+    const { io, sw, token } = setup();
+    expect((await sw("login", "--server", URL, "--token", token())).code).toBe(0);
+    expect((await sw("branch", "create", "dev")).code).toBe(0);
+    expect((await sw("branch", "switch", "dev")).code).toBe(0);
+    const { call } = await llm({ branch: "dev" }, io);
+    expect((await call("branch_switch", { name: "main" })).text).toBe("Now on branch main here (the sapwood command keeps its own).");
+    expect((await call("patch", { patches: [{ op: "set", id: "a1", fields: { speed: 3 } }] })).text).toContain("(in task 1)");
+    expect((await sw("task", "status", "--branch", "main")).out).toMatch(/^Task 1 on main/);
+    expect((await sw("whoami")).out).toContain("branch dev");
   });
 
   it("follows the branch you switch to, takes $SAPWOOD_TOKEN, and says when you aren't logged in", async () => {
