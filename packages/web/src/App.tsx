@@ -6,6 +6,8 @@ import type { Op, Project } from "@thek42/sapwood-core";
 import { Api, ApiError, type BranchInfo, type CommitInfo, type Health, type Me, type TaskInfo } from "./api.ts";
 import { listen } from "./events.ts";
 import { HeadView } from "./head.ts";
+import { ChangesPage, CommitPage, HistoryPage } from "./History.tsx";
+import { routeFromPath, routePath, type Route } from "./routes.ts";
 import { IssuePanel } from "./IssuePanel.tsx";
 import { refList } from "./refs.ts";
 import { RefsPanel } from "./RefsPanel.tsx";
@@ -90,16 +92,6 @@ function branchFromPath(): string | null {
   return m ? decodeURIComponent(m[1]!) : null;
 }
 
-function sheetFromPath(): string | null {
-  const m = /^\/branches\/[^/]+\/sheets\/([^/]+)/.exec(location.pathname);
-  return m ? decodeURIComponent(m[1]!) : null;
-}
-
-function typeFromPath(): string | null {
-  const m = /^\/branches\/[^/]+\/types\/([^/]+)/.exec(location.pathname);
-  return m ? decodeURIComponent(m[1]!) : null;
-}
-
 /** What's beside the page: the issues, or the references to an ID. */
 type Side = { kind: "issues" } | { kind: "refs"; id: string } | null;
 
@@ -112,27 +104,25 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const [commits, setCommits] = useState<CommitInfo[]>([]);
   const [headTick, setHeadTick] = useState(0);
-  const [sheet, setSheet] = useState<string | null>(sheetFromPath());
-  const [typeName, setTypeName] = useState<string | null>(typeFromPath());
+  const [route, setRoute] = useState<Route>(routeFromPath());
+  const sheet = route.kind === "sheet" ? route.id : null;
   const [side, setSide] = useState<Side>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [jump, setJump] = useState<{ sheet: string; row: number; col: number | null; n: number } | null>(null);
   const starting = useRef<Promise<TaskSession> | null>(null);
   const canEdit = me.role !== "viewer" && me.scopes.readOnly !== true;
 
-  const go = (b: string, sh: string | null = null, type: string | null = null) => {
-    const rest = sh ? `/sheets/${encodeURIComponent(sh)}` : type ? `/types/${encodeURIComponent(type)}` : "";
-    history.pushState(null, "", `/branches/${encodeURIComponent(b)}${rest}`);
+  const go = (b: string, r: Route = { kind: "home" }) => {
+    history.pushState(null, "", routePath(b, r));
     setBranch(b);
-    setSheet(sh);
-    setTypeName(sh ? null : type);
+    setRoute(r);
     setJump(null); // a sheet opened another way starts where it starts
+    scrollTo(0, 0);
   };
   useEffect(() => {
     const back = () => {
       setBranch(branchFromPath() ?? "main");
-      setSheet(sheetFromPath());
-      setTypeName(typeFromPath());
+      setRoute(routeFromPath());
       setJump(null);
     };
     addEventListener("popstate", back);
@@ -249,7 +239,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
 
   /** Open a sheet at a cell (0-based; col null: the row). */
   const goTo = (sh: string, row: number, col: number | null) => {
-    if (sh !== sheet) go(branch, sh);
+    if (sh !== sheet) go(branch, { kind: "sheet", id: sh });
     setJump((j) => ({ sheet: sh, row, col, n: (j?.n ?? 0) + 1 }));
   };
   const findRefs = (id: string) => setSide({ kind: "refs", id });
@@ -303,6 +293,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           loadTasks();
         }}
         toggleIssues={() => setSide((x) => (x?.kind === "issues" ? null : { kind: "issues" }))}
+        showChanges={(t) => go(branch, { kind: "changes", task: t })}
       />
       {notice && (
         <p className="toast" role="status">
@@ -328,13 +319,13 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           showIssues={() => setSide({ kind: "issues" })}
           findRefs={findRefs}
           goToDefinition={goToDefinition}
-          openType={(t) => go(branch, null, t)}
+          openType={(t) => go(branch, { kind: "type", name: t })}
         />
-      ) : typeName ? (
+      ) : route.kind === "type" ? (
         <TypeView
-          key={typeName}
+          key={route.name}
           source={source}
-          type={typeName}
+          type={route.name}
           canEdit={canEdit && (session ? session.editable : true)}
           edit={edit}
           undo={() => void session?.undo()}
@@ -345,9 +336,35 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           goToDefinition={goToDefinition}
           showIssues={() => setSide({ kind: "issues" })}
         />
+      ) : route.kind === "history" ? (
+        <HistoryPage api={api} branch={branch} tick={headTick} open={(id) => go(branch, { kind: "commit", id })} href={(id) => routePath(branch, { kind: "commit", id })} back={() => go(branch)} />
+      ) : route.kind === "commit" ? (
+        <CommitPage
+          key={route.id}
+          api={api}
+          branch={branch}
+          id={route.id}
+          canEdit={canEdit}
+          back={() => go(branch, { kind: "history" })}
+          made={(t) => {
+            setCurrent(t);
+            loadTasks();
+            go(branch, { kind: "changes", task: t.id });
+          }}
+        />
+      ) : route.kind === "changes" ? (
+        <ChangesPage
+          key={route.task}
+          api={api}
+          task={route.task}
+          source={session && session.task.id === route.task ? session : null}
+          mine={!!session && session.task.id === route.task}
+          back={() => go(branch)}
+          goTo={goTo}
+        />
       ) : (
         <main className="body">
-          <Home source={source} atHead={source === head} commits={commits} others={others} open={(id) => go(branch, id)} href={(id) => `/branches/${encodeURIComponent(branch)}/sheets/${encodeURIComponent(id)}`} showIssues={() => setSide({ kind: "issues" })} openType={(t) => go(branch, null, t)} typeHref={(t) => `/branches/${encodeURIComponent(branch)}/types/${encodeURIComponent(t)}`} />
+          <Home source={source} atHead={source === head} commits={commits} others={others} open={(id) => go(branch, { kind: "sheet", id })} href={(id) => routePath(branch, { kind: "sheet", id })} showIssues={() => setSide({ kind: "issues" })} openType={(t) => go(branch, { kind: "type", name: t })} typeHref={(t) => routePath(branch, { kind: "type", name: t })} go={(r) => go(branch, r)} routeHref={(r) => routePath(branch, r)} />
         </main>
       )}
       {side?.kind === "issues" && source && (

@@ -23,6 +23,8 @@ interface Props {
   setCurrent(t: TaskInfo | null): void;
   /** Open or close the issues panel. */
   toggleIssues(): void;
+  /** Open a task's changes. */
+  showChanges(task: number): void;
 }
 
 export function TaskBar(p: Props) {
@@ -62,7 +64,9 @@ function OpenTask(p: Props & { session: TaskSession }) {
   return (
     <div className="taskbar">
       <TaskName api={p.api} session={s} />
-      <span className="muted">{plural(t.changes, "change")}</span>
+      <button className="link muted" onClick={() => p.showChanges(t.id)} title="See what this task changes">
+        {plural(t.changes, "change")}
+      </button>
       <button className={v.errors > 0 ? "badge error" : v.warnings > 0 ? "badge warn" : "badge ok"} onClick={p.toggleIssues} title="Show or hide the issues">
         {v.errors > 0 || v.warnings > 0 ? [v.errors && plural(v.errors, "error"), v.warnings && plural(v.warnings, "warning")].filter(Boolean).join(", ") : "Valid"}
       </button>

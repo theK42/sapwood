@@ -7,6 +7,7 @@ import type { CommitInfo, TaskInfo } from "./api.ts";
 import type { Source } from "./head.ts";
 import { packTree, type Counts, type PackNode } from "./home.ts";
 import { ago, plural, useSource } from "./hooks.ts";
+import type { Route } from "./routes.ts";
 
 interface Props {
   /** Your task, or the head when you have none. */
@@ -22,9 +23,24 @@ interface Props {
   /** Open a type view; and its address. */
   openType(type: string): void;
   typeHref(type: string): string;
+  /** Go to another page in the branch; and its address. */
+  go(r: Route): void;
+  routeHref(r: Route): string;
 }
 
-export function Home({ source, atHead, commits, others, open, href, showIssues, openType, typeHref }: Props) {
+export function Home({ source, atHead, commits, others, open, href, showIssues, openType, typeHref, go, routeHref }: Props) {
+  const nav = (r: Route, label: React.ReactNode) => (
+    <a
+      href={routeHref(r)}
+      onClick={(e) => {
+        if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+        e.preventDefault();
+        go(r);
+      }}
+    >
+      {label}
+    </a>
+  );
   const tick = useSource(source);
   // Entity types, with how many of each there are (commented-out ones too).
   const types = useMemo(() => {
@@ -73,14 +89,16 @@ export function Home({ source, atHead, commits, others, open, href, showIssues, 
           </ul>
         </section>
         <section className="panel" aria-label="Recent commits">
-          <h2>Recent commits</h2>
+          <h2>
+            Recent commits <span className="small">{nav({ kind: "history" }, "All history")}</span>
+          </h2>
           {commits.length === 0 ? (
             <p className="muted">None yet.</p>
           ) : (
             <ul className="list">
               {commits.slice(0, 12).map((c) => (
                 <li key={c.id}>
-                  <span className="line">{c.message || <span className="muted">(no message)</span>}</span>
+                  <span className="line">{nav({ kind: "commit", id: c.id }, c.message || <span className="muted">(no message)</span>)}</span>
                   <span className="muted small">
                     {c.author} · {ago(c.at)} · <code>{c.id.slice(0, 8)}</code>
                   </span>
@@ -97,7 +115,7 @@ export function Home({ source, atHead, commits, others, open, href, showIssues, 
             <ul className="list">
               {others.map((t) => (
                 <li key={t.id}>
-                  <span className="line">{t.name ?? `Task ${t.id}`}</span>
+                  <span className="line">{nav({ kind: "changes", task: t.id }, t.name ?? `Task ${t.id}`)}</span>
                   <span className="muted small">
                     {t.owner} · {plural(t.changes, "change")} · {ago(t.updatedAt)}
                   </span>

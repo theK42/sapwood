@@ -132,7 +132,13 @@ export class Api {
 
   branches = () => this.call<BranchInfo[]>("GET", "/api/branches");
   branch = (b: string) => this.call<BranchInfo>("GET", `/api/branches/${seg(b)}`);
-  commits = (b: string) => this.call<CommitInfo[]>("GET", `/api/branches/${seg(b)}/commits`);
+  commits = (b: string, limit = 50) => this.call<CommitInfo[]>("GET", `/api/branches/${seg(b)}/commits?limit=${limit}`);
+  commit = (id: string) => this.call<CommitInfo>("GET", `/api/commits/${seg(id)}`);
+  commitDoc = (id: string) => this.call<{ doc: DocJson }>("GET", `/api/commits/${seg(id)}/doc`);
+  /** A new task, your current one, undoing the commit. */
+  revert = (id: string) => this.call<TaskStatus>("POST", `/api/commits/${seg(id)}/revert`, {});
+  /** A new task, your current one, taking the branch back to the commit's state. */
+  restore = (b: string, commit: string) => this.call<TaskStatus>("POST", `/api/branches/${seg(b)}/restore`, { commit });
   headDoc = (b: string) => this.call<{ doc: DocJson }>("GET", `/api/branches/${seg(b)}/doc`);
 
   tasks = (b: string, state: TaskState = "open") => this.call<TaskInfo[]>("GET", `/api/branches/${seg(b)}/tasks?state=${state}`);
