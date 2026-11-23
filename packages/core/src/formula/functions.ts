@@ -437,6 +437,6 @@ export const FUNCTIONS: Record<string, Fn> = {
 };
 
 export function callFunction(name: string, args: Expr[], ctx: Ctx): Value {
-  const f = FUNCTIONS[name];
+  const f = Object.hasOwn(FUNCTIONS, name) ? FUNCTIONS[name] : undefined; // not "constructor"
   return f ? f(args, ctx) : err("#NAME?");
 }

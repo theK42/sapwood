@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Sapwood } from "@thek42/sapwood-core";
+import { docFromJson, docsEqual, Project, Sapwood } from "@thek42/sapwood-core";
 import { Auth, type Scopes } from "./auth.ts";
 import { Db } from "./db.ts";
 import { createApp } from "./http.ts";
@@ -233,5 +233,69 @@ describe("the HTTP API", () => {
     expect((await vic(`DELETE /api/branches/${enc}`)).status).toBe(403);
     expect((await bob(`DELETE /api/branches/${enc}`)).json.archived).toBe(true);
     expect((await vic("GET /api/branches?archived=1")).json).toHaveLength(2);
+  });
+
+  it("a client keeps its own copy of a task, writes ops into it, and is told when it's behind", async () => {
+    const { bob, ada, vic, tokenFor, as } = setup();
+    const id = (await bob("POST /api/branches/main/tasks", {})).json.id;
+    // The client builds its project from the task's document, with the task's ID salt.
+    const load = async () => {
+      const r = (await bob(`GET /api/tasks/${id}/doc`)).json;
+      const p = Project.fromDoc(docFromJson(r.doc));
+      p.wb.idSalt = `${id}_`;
+      return { p, rev: r.task.rev as number };
+    };
+    let { p, rev } = await load();
+    const same = async () => docsEqual(docFromJson((await bob(`GET /api/tasks/${id}/doc`)).json.doc), p.doc);
+    const weapons = p.sheetId("Weapons");
+    // Edits made here, then sent: the server ends up with the same document.
+    for (const e of [p.set(weapons, "C1", "12"), p.insert(weapons, "row", 3), p.set(weapons, "A3", "Weapon"), p.set(weapons, "B3", "w3"), p.set(weapons, "C3", "=C1+1")]) {
+      const w = await bob(`POST /api/tasks/${id}/ops`, { ops: e.ops, rev });
+      expect(w.status).toBe(200);
+      expect(w.json.task.rev).toBe(rev + 1);
+      rev = w.json.task.rev;
+    }
+    expect(await same()).toBe(true);
+    expect((await bob(`GET /api/tasks/${id}/entities/w3`)).json.damage.$value).toBe(13);
+    // Undo and redo answer with the ops they applied, for the client to apply too.
+    const u = await bob(`POST /api/tasks/${id}/undo`, { rev });
+    expect(u.json.done).toBe(true);
+    p.apply(u.json.ops);
+    rev = u.json.task.rev;
+    expect(await same()).toBe(true);
+    const r = await bob(`POST /api/tasks/${id}/redo`, { rev });
+    p.apply(r.json.ops);
+    rev = r.json.task.rev;
+    expect(await same()).toBe(true);
+    // Something else writes into the task (the CLI, an LLM): the client's next write is refused.
+    await bob(`POST /api/tasks/${id}/patches`, [{ op: "set", id: "w1", fields: { damage: 20 } }]);
+    const stale = await bob(`POST /api/tasks/${id}/ops`, { ops: p.set(weapons, "C1", "99").ops, rev });
+    expect(stale.status).toBe(409);
+    expect(stale.json.error).toMatchObject({ code: "stale", rev: rev + 1 });
+    expect((await bob(`POST /api/tasks/${id}/undo`, { rev })).json.error.code).toBe("stale");
+    ({ p, rev } = await load());
+    expect(p.engine.cellById(weapons, p.doc.sheets.get(weapons)!.rows.order[0]!, p.doc.sheets.get(weapons)!.cols.order[2]!).value).toBe(20);
+    // Another task lands: the next read rebases this one, and its revision moves on.
+    const other = (await ada("POST /api/branches/main/patches", [{ op: "set", id: "a2", fields: { speed: 650 } }])).json.task.id;
+    await ada(`POST /api/tasks/${other}/land`, {});
+    const after = (await bob(`GET /api/tasks/${id}/doc`)).json;
+    expect(after.task.rev).toBeGreaterThan(rev);
+    expect(after.task.base).toBe((await vic("GET /api/branches/main")).json.head);
+    // A head, or a commit, gives its document too.
+    expect(docFromJson((await vic("GET /api/branches/main/doc")).json.doc).sheets.size).toBe(2);
+    // Refused: a Viewer, a malformed op, an op that doesn't apply, a pack by an Editor, a landed task.
+    expect((await vic(`POST /api/tasks/${id}/ops`, { ops: [] })).status).toBe(403);
+    const bad = await bob(`POST /api/tasks/${id}/ops`, { ops: [{ kind: "setCell", sheet: weapons }] });
+    expect(bad.status).toBe(422);
+    expect(bad.json.error).toMatchObject({ code: "bad-op", message: "ops[0].row: expected a non-empty string" });
+    expect((await bob(`POST /api/tasks/${id}/ops`, { ops: [{ kind: "setCell", sheet: "nowhere", row: "r1", col: "c1", content: null }] })).json.error.code).toBe("bad-op");
+    expect((await bob(`POST /api/tasks/${id}/ops`, { ops: [{ kind: "createPack", pack: "px", name: "dlc", parent: "root" }] })).status).toBe(403);
+    expect((await bob(`POST /api/tasks/${id}/ops`, { ops: [{ kind: "setSchema", id: "t1", key: "name", value: "X" }] })).json.error.message).toContain("YAML");
+    await bob(`POST /api/tasks/${id}/land`, {});
+    expect((await bob(`POST /api/tasks/${id}/ops`, { ops: p.set(weapons, "C2", "1").ops })).json.error.code).toBe("state");
+    // A Developer may make a pack.
+    const dev = as(tokenFor("ada", { role: "developer" }));
+    const t2 = (await dev("POST /api/branches/main/tasks", {})).json.id;
+    expect((await dev(`POST /api/tasks/${t2}/ops`, { ops: [{ kind: "createPack", pack: "px", name: "dlc", parent: "root" }] })).status).toBe(200);
   });
 });

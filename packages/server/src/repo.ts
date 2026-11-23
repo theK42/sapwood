@@ -14,7 +14,7 @@ import {
 } from "@thek42/sapwood-core";
 import { now, type Db } from "./db.ts";
 
-export type RepoErrorCode = "not-found" | "exists" | "conflict" | "invalid" | "state" | "bad-request" | "forbidden" | "upstream";
+export type RepoErrorCode = "not-found" | "exists" | "conflict" | "invalid" | "state" | "bad-request" | "forbidden" | "upstream" | "stale";
 
 export class RepoError extends Error {
   override name = "RepoError";
@@ -62,6 +62,12 @@ export interface TaskInfo {
   changes: number;
   canUndo: boolean;
   canRedo: boolean;
+  /**
+   * Goes up whenever the task's document or state changes: an edit, undo or redo, a rebase,
+   * a land, abandon or reopen. A client holding a copy of the task writes "after rev N",
+   * and is refused if the task moved on, so it reloads instead of diverging.
+   */
+  rev: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -152,6 +158,7 @@ interface TaskRow {
   landed_commit: string | null;
   created_at: string;
   updated_at: string;
+  rev: number;
 }
 
 interface ChangeRow {
@@ -504,6 +511,7 @@ export class Repo {
       changes: Number(counts.live),
       canUndo: r.state === "open" && Number(counts.live) > 0,
       canRedo: r.state === "open" && Number(counts.undone) > 0,
+      rev: Number(r.rev),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };
@@ -565,10 +573,12 @@ export class Repo {
    * Make a change in a task: `fn` writes to the task's project (any `Sapwood` write) and
    * its change is recorded. A refused write changes nothing.
    */
-  write<C extends Change>(id: number, actor: string, fn: (s: Sapwood) => C): C {
+  write<C extends Change>(id: number, actor: string, fn: (s: Sapwood) => C, opts: { rev?: number } = {}): C {
     const t = this.openTask(id, actor);
     if (t.base !== this.branch(t.branch).head) this.tryAutoRebase(t);
-    const v = this.viewOf(this.task(id));
+    const cur = this.task(id);
+    this.checkRev(cur, opts.rev);
+    const v = this.viewOf(cur);
     const change = fn(v.s);
     if (change.ops.length === 0) return change;
     try {
@@ -586,34 +596,49 @@ export class Repo {
   }
 
   undo(id: number, actor: string): boolean {
-    this.openTask(id, actor);
+    return this.undoChange(id, actor) !== null;
+  }
+
+  redo(id: number, actor: string): boolean {
+    return this.redoChange(id, actor) !== null;
+  }
+
+  /** Undo the task's last change: the ops that undid it, or null when there was nothing to undo. `rev` as for write. */
+  undoChange(id: number, actor: string, opts: { rev?: number } = {}): Op[] | null {
+    this.checkRev(this.openTask(id, actor), opts.rev);
     const r = this.db.one<ChangeRow>("SELECT * FROM task_changes WHERE task = ? AND undone = 0 ORDER BY seq DESC LIMIT 1", id);
-    if (!r) return false;
+    if (!r) return null;
     const v = this.viewOf(this.task(id));
-    v.s.project.apply(JSON.parse(r.inverse) as Op[]);
+    const ops = JSON.parse(r.inverse) as Op[];
+    v.s.project.apply(ops);
     this.db.tx(() => {
       this.db.run("UPDATE task_changes SET undone = 1 WHERE task = ? AND seq = ?", id, r.seq);
       this.touch(id);
       this.taskEvent(id, "changed", actor);
     });
-    return true;
+    return ops;
   }
 
-  redo(id: number, actor: string): boolean {
-    this.openTask(id, actor);
+  /** Redo the task's next undone change: its ops, or null when there was nothing to redo. */
+  redoChange(id: number, actor: string, opts: { rev?: number } = {}): Op[] | null {
+    this.checkRev(this.openTask(id, actor), opts.rev);
     const r = this.db.one<ChangeRow>("SELECT * FROM task_changes WHERE task = ? AND undone = 1 ORDER BY seq LIMIT 1", id);
-    if (!r) return false;
+    if (!r) return null;
     const v = this.viewOf(this.task(id));
-    const inverse = v.s.project.apply(JSON.parse(r.ops) as Op[]);
+    const ops = JSON.parse(r.ops) as Op[];
+    const inverse = v.s.project.apply(ops);
     this.db.tx(() => {
       this.db.run("UPDATE task_changes SET undone = 0, inverse = ? WHERE task = ? AND seq = ?", JSON.stringify(inverse), id, r.seq);
       this.touch(id);
       this.taskEvent(id, "changed", actor);
     });
-    return true;
+    return ops;
   }
 
-  /** The task's ops in effect, in order: its diff against its base. */
+  private checkRev(t: TaskInfo, rev: number | undefined): void {
+    if (rev !== undefined && t.rev !== rev) throw new RepoError("stale", `Task ${t.id} changed since revision ${rev} (it's at ${t.rev}): read it again`, { rev: t.rev });
+  }
+
   taskOps(id: number): Op[] {
     this.task(id);
     return this.db.all<{ ops: string }>("SELECT ops FROM task_changes WHERE task = ? AND undone = 0 ORDER BY seq", id).flatMap((r) => JSON.parse(r.ops) as Op[]);
@@ -686,7 +711,7 @@ export class Repo {
     if (v.errors) throw new RepoError("invalid", `Landing task ${id} would leave ${v.errors} validation error${v.errors === 1 ? "" : "s"}`, { validation: v });
     const { commit, next } = this.db.tx(() => {
       const c = this.addCommit(b.name, b.head, null, id, actor, opts.message ?? t.name ?? `Task ${id}`, ops, s.doc);
-      this.db.run("UPDATE tasks SET state = 'landed', landed_commit = ?, updated_at = ? WHERE id = ?", c.id, now(), id);
+      this.db.run("UPDATE tasks SET state = 'landed', landed_commit = ?, updated_at = ?, rev = rev + 1 WHERE id = ?", c.id, now(), id);
       const wasCurrent = this.db.one("SELECT 1 FROM current_tasks WHERE task = ? AND user = ?", id, t.owner) !== undefined;
       this.db.run("DELETE FROM current_tasks WHERE task = ?", id);
       // What was undone goes on in a new task on the landed commit, still undone.
@@ -717,7 +742,7 @@ export class Repo {
 
   abandon(id: number, actor: string): TaskInfo {
     this.openTask(id, actor);
-    this.db.run("UPDATE tasks SET state = 'abandoned', updated_at = ? WHERE id = ?", now(), id);
+    this.db.run("UPDATE tasks SET state = 'abandoned', updated_at = ?, rev = rev + 1 WHERE id = ?", now(), id);
     this.db.run("DELETE FROM current_tasks WHERE task = ?", id);
     this.views.delete(id);
     this.taskEvent(id, "abandoned", actor);
@@ -729,7 +754,7 @@ export class Repo {
     const t = this.ownTask(id, actor);
     if (t.state !== "abandoned") throw new RepoError("state", `Task ${id} is ${t.state}, not abandoned`);
     this.liveBranch(t.branch);
-    this.db.run("UPDATE tasks SET state = 'open', updated_at = ? WHERE id = ?", now(), id);
+    this.db.run("UPDATE tasks SET state = 'open', updated_at = ?, rev = rev + 1 WHERE id = ?", now(), id);
     this.setCurrent(actor, t.branch, id);
     this.taskEvent(id, "reopened", actor);
     return this.task(id);
@@ -824,7 +849,7 @@ export class Repo {
   }
 
   private touch(id: number): void {
-    this.db.run("UPDATE tasks SET updated_at = ? WHERE id = ?", now(), id);
+    this.db.run("UPDATE tasks SET updated_at = ?, rev = rev + 1 WHERE id = ?", now(), id);
   }
 
   private headEntry(branch: string) {
@@ -965,7 +990,7 @@ export class Repo {
       this.db.run("DELETE FROM task_changes WHERE task = ?", t.id);
       rows.forEach((c, i) => this.db.run("INSERT INTO task_changes (task, seq, ops, inverse, undone) VALUES (?, ?, ?, ?, 0)", t.id, i + 1, JSON.stringify(c.ops), JSON.stringify(c.inverse)));
       this.addUndone(t.id, rows.length, undone);
-      this.db.run("UPDATE tasks SET base = ?, updated_at = ? WHERE id = ?", head, now(), t.id);
+      this.db.run("UPDATE tasks SET base = ?, updated_at = ?, rev = rev + 1 WHERE id = ?", head, now(), t.id);
     });
     if (!this.moveView(t, head, path)) this.views.set(t.id, { base: head, s: taskProject(doc, t.id) });
   }

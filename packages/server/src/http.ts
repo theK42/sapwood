@@ -13,13 +13,13 @@ import { Hono, type Context } from "hono";
 import { WebSocketServer } from "ws";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import {
-  ApiError, ExportRefused, Sapwood, sha256, whereFilter,
+  ApiError, checkOps, docToJson, ExportRefused, OpError, PACK_OP_KINDS, Sapwood, sha256, whereFilter,
   type ApiErrorCode, type ExportFile, type JsonValue, type Patch, type QueryOptions,
 } from "@thek42/sapwood-core";
 import { demand, isRole, type Auth, type Principal, type Role, type Scopes } from "./auth.ts";
 import { Events } from "./events.ts";
 import type { GitHub } from "./github.ts";
-import { RepoError, type Repo, type Resolutions, type TaskState } from "./repo.ts";
+import { RepoError, type Repo, type Resolutions, type TaskInfo, type TaskState } from "./repo.ts";
 
 type Env = { Variables: { me: Principal; token: string; byCookie: boolean } };
 type C = Context<Env>;
@@ -28,6 +28,8 @@ interface Place {
   s: Sapwood;
   branch: string;
   files(allowInvalid: boolean): ExportFile[];
+  /** At a task: the task, as it is once read (a read can rebase it). */
+  task?: TaskInfo;
 }
 
 const API_STATUS: Record<ApiErrorCode, number> = {
@@ -45,7 +47,7 @@ const API_STATUS: Record<ApiErrorCode, number> = {
   confirm: 409,
 };
 
-const REPO_STATUS = { "not-found": 404, exists: 409, conflict: 409, invalid: 422, state: 409, "bad-request": 400, forbidden: 403, upstream: 502 } as const;
+const REPO_STATUS = { "not-found": 404, exists: 409, conflict: 409, invalid: 422, state: 409, "bad-request": 400, forbidden: 403, upstream: 502, stale: 409 } as const;
 
 export interface AppOptions {
   /** GitHub sign-in; without it, only tokens made with sapwood-server token work. */
@@ -82,6 +84,7 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
   app.onError((e, c) => {
     if (e instanceof ApiError) return c.json({ error: { code: e.code, message: e.message } }, API_STATUS[e.code] as 400);
     if (e instanceof RepoError) return c.json({ error: { code: e.code, message: e.message, ...(e.detail as object | undefined) } }, REPO_STATUS[e.code] as 400);
+    if (e instanceof OpError) return c.json({ error: { code: "bad-op", message: e.message } }, 422);
     if (e instanceof ExportRefused) return c.json({ error: { code: "invalid", message: e.message, errors: e.validation.errors, warnings: e.validation.warnings } }, 422);
     console.error(e);
     return c.json({ error: { code: "internal", message: "Something went wrong on the server" } }, 500);
@@ -362,12 +365,14 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     const b = await body(c);
     return c.json(repo.renameTask(t.id, me(c).login, b.name === null ? null : str(b.name, "name")));
   });
+  /** `{ rev }` (optional) refuses it if the task changed since; the answer has the ops it applied. */
   for (const verb of ["undo", "redo"] as const)
-    app.post(`/api/tasks/:t/${verb}`, (c) => {
+    app.post(`/api/tasks/:t/${verb}`, async (c) => {
       const t = task(c);
       may(c, "editor", "write", t.branch);
-      const done = repo[verb](t.id, me(c).login);
-      return c.json({ done, task: repo.task(t.id) });
+      const b = await body(c, true);
+      const ops = repo[verb === "undo" ? "undoChange" : "redoChange"](t.id, me(c).login, revOf(b));
+      return c.json({ done: ops !== null, ops: ops ?? [], task: repo.task(t.id) });
     });
   app.post("/api/tasks/:t/switch", (c) => {
     const t = task(c);
@@ -416,6 +421,20 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     return c.json({ task: repo.task(id), ops: change.ops.length, formulas: change.formulas, rules: change.rules, scratch: change.scratch, notes: change.notes });
   };
 
+  /**
+   * Ops straight into a task (DESIGN §8.1), as one change: what the web app sends, having
+   * applied them to its own copy. `{ ops, rev }`: with `rev`, refused (409 stale) if the task
+   * changed since, so the client reloads rather than diverging. Schema ops aren't taken here.
+   */
+  app.post("/api/tasks/:t/ops", async (c) => {
+    const t = task(c);
+    may(c, "editor", "write", t.branch);
+    const b = await body(c);
+    const ops = checkOps(b.ops);
+    if (ops.some((o) => PACK_OP_KINDS.has(o.kind))) may(c, "developer", "write", t.branch);
+    const change = repo.write(t.id, me(c).login, (s) => s.applyOps(ops), revOf(b));
+    return c.json({ task: repo.task(t.id), ops: change.ops.length });
+  });
   app.post("/api/tasks/:t/patches", (c) => {
     const t = task(c);
     may(c, "editor", "write", t.branch);
@@ -448,7 +467,7 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     const t = task(c);
     may(c, "viewer", "read", t.branch);
     const s = repo.view(t.id);
-    return { s, branch: t.branch, files: (any) => s.export({ branch: t.branch, allowInvalid: any }) };
+    return { s, branch: t.branch, task: repo.task(t.id), files: (any) => s.export({ branch: t.branch, allowInvalid: any }) };
   });
   reads(app, "/api/commits/:c", (c) => {
     const info = repo.commit(c.req.param("c")!);
@@ -461,6 +480,11 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
 }
 
 function reads(app: Hono<Env>, prefix: string, place: (c: C) => Place): void {
+  /** The whole document (DocJson), for a client that keeps its own copy; at a task, with the task. */
+  app.get(`${prefix}/doc`, (c) => {
+    const p = place(c);
+    return c.json({ doc: docToJson(p.s.doc), ...(p.task ? { task: p.task } : {}) });
+  });
   app.get(`${prefix}/entities/:id`, (c) => c.json(place(c).s.get(c.req.param("id")!)));
   app.get(`${prefix}/singletons/:type`, (c) => c.json(place(c).s.singleton(c.req.param("type")!)));
   /** `?where=damage>10&where=element=fire` (the CLI's --where syntax), `&pack=`, `&inactive=1`. */
@@ -491,6 +515,12 @@ function reads(app: Hono<Env>, prefix: string, place: (c: C) => Place): void {
     if (matches(c.req.header("if-none-match"), tag)) return c.body(null, 304, headers);
     return c.body(f.content, 200, { ...headers, "Content-Type": "application/json; charset=utf-8" });
   });
+}
+
+function revOf(b: Record<string, unknown>): { rev?: number } {
+  if (b.rev === undefined) return {};
+  if (!Number.isInteger(b.rev)) throw new RepoError("bad-request", "rev: expected a whole number");
+  return { rev: b.rev as number };
 }
 
 const etag = (f: ExportFile): string => `"${sha256(f.content)}"`;

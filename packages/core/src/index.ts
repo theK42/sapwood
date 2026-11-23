@@ -18,6 +18,7 @@ export { sha256 } from "./export/sha256.ts";
 export * from "./formula/content.ts";
 export * from "./ops/doc.ts";
 export * from "./ops/ops.ts";
+export * from "./ops/check.ts";
 export {
   renameEnumMemberOps, renameFieldMentions, renameFieldOps, renameIdFormulas, renameIdWrites, renameMemberMentions,
   renameTypeMentions, renameTypeOps, rewriteRefs, rewriteText,
