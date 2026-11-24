@@ -167,6 +167,22 @@ describe("DESIGN §8.5 conflicts", () => {
     expect(land([mv("r3")], [mv("r4")]).ids).toEqual(["move S/row/r1"]);
     expect(land([mv("r3")], [mv("r3")]).ids).toEqual([]);
   });
+
+  // Shrunk from the property test (seed 1175420530 at RUNS=20000). Theirs moves r1 and r2 to the
+  // top; mine moves r1 below r2, then inserts m1 after r2 and m2 after r1. However the move
+  // conflict is resolved, mine's new rows keep mine's order. It used to come out m2, m1 when mine
+  // won: mine's r1 landed above theirs' r2 at the top (the row being moved stopped the skip past
+  // theirs' rows), then m1 skipped past r1 as if theirs still owned that placement.
+  it("rows inserted next to a row both moved keep mine's order, however the move is resolved", () => {
+    const S = (after: string | null, ids: string[], kind: "move" | "insert" = "move"): Op => ({ kind, sheet: "S", axis: "row", after, ids });
+    const theirs = [S(null, ["r1", "r2"])];
+    const mine = [S("r2", ["r1"]), S("r2", ["m1"], "insert"), S("r1", ["m2"], "insert")];
+    const asMine = land(theirs, mine, () => "mine");
+    expect(asMine.ids).toEqual(["move S/row/r1"]);
+    expect(rows(asMine.state)).toEqual(["r2", "m1", "r1", "m2", "r3", "r4"]);
+    const asTheirs = land(theirs, mine, () => "theirs");
+    expect(rows(asTheirs.state)).toEqual(["r1", "r2", "m1", "m2", "r3", "r4"]);
+  });
 });
 
 describe("sheets, packs and layouts", () => {
