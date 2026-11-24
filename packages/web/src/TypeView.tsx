@@ -12,6 +12,7 @@ import { plural, useSource } from "./hooks.ts";
 import { idsAt } from "./refs.ts";
 import { cellContent, drawIssue, ISSUE, useTheme } from "./SheetView.tsx";
 import { TypeGrid, type Home } from "./typeview.ts";
+import type { PanelCell } from "./ValuePanel.tsx";
 
 interface Props {
   source: Source;
@@ -26,6 +27,10 @@ interface Props {
   findRefs(id: string): void;
   goToDefinition(id: string): void;
   showIssues(): void;
+  /** Edit a struct, union, list or json cell in the panel (its home cell). */
+  openPanel(at: PanelCell): void;
+  /** The selected cell's home, for the panel to follow while it's open. */
+  selected?(at: PanelCell | null, panel: boolean): void;
 }
 
 const empty = (): GridSelection => ({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
@@ -48,6 +53,23 @@ export function TypeView(p: Props) {
   const [widths, setWidths] = useState<Record<number, number>>({});
   const theme = useTheme();
   useEffect(() => setTip(null), [t]);
+
+  /** A cell's home by stable IDs, for the panel. */
+  const homeAt = (row: number, col: number): PanelCell | null => {
+    const h = t?.home(row, col);
+    if (!h) return null;
+    const s = p.source.project.wb.sheet(h.sheet);
+    return { sheet: h.sheet, row: s.rows.idAt(h.row + 1), col: s.cols.idAt(h.col + 1) };
+  };
+  const openPanel = (row: number, col: number) => {
+    const at = homeAt(row, col);
+    if (at && t?.cell(row, col).panel) p.openPanel(at);
+  };
+  const sel = selection.current?.cell;
+  useEffect(() => {
+    if (!t || !sel) return p.selected?.(null, false);
+    p.selected?.(homeAt(sel[1], sel[0]), !!t.cell(sel[1], sel[0]).panel);
+  }, [t, sel?.[0], sel?.[1]]);
 
   const columns = useMemo<GridColumn[]>(() => (t ? Array.from({ length: t.cols }, (_, i) => ({ id: String(i), title: t.columnName(i), width: widths[i] ?? (i < 2 ? 140 : 120) })) : []), [t, widths]);
 
@@ -186,10 +208,25 @@ export function TypeView(p: Props) {
               setSelection(s);
               setDraft(null);
             }}
+            onKeyDown={(e) => {
+              // A struct, union, list or json cell isn't edited in place: a key typed there goes to the formula bar.
+              const at = selection.current?.cell;
+              // Enter opens it in the panel (Glide doesn't always report Enter as an activation here).
+              if (e.key === "Enter" && !e.shiftKey && at && t.cell(at[1], at[0]).panel && t.home(at[1], at[0])) {
+                e.cancel();
+                openPanel(at[1], at[0]);
+                return;
+              }
+              if (!p.canEdit || e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1 || !at || !t.home(at[1], at[0]) || !t.cell(at[1], at[0]).panel) return;
+              e.cancel();
+              setDraft(e.key);
+              requestAnimationFrame(() => bar.current?.focus());
+            }}
             onCellActivated={([col, row]) => {
               // Enter or a double-click on the Sheet column goes to the row there.
               const h = t.home(row, 1);
               if (col === 0 && h) p.goTo({ ...h, col: 0 });
+              else openPanel(row, col);
             }}
             onCellContextMenu={([col, row], e) => {
               e.preventDefault();
@@ -220,6 +257,7 @@ export function TypeView(p: Props) {
           at={menu}
           close={() => setMenu(null)}
           items={[
+            ...(t.cell(menu.row, menu.col).panel && t.home(menu.row, menu.col) ? [{ label: p.canEdit ? "Edit in the panel" : "Show in the panel", run: () => openPanel(menu.row, menu.col) }] : []),
             ...(rowHome ? [{ label: `Go to the row on ${rowHome.sheetName}`, run: () => p.goTo({ sheet: rowHome.sheet, row: rowHome.row, col: Math.max(0, t.home(menu.row, menu.col)?.col ?? 0) }) }] : []),
             ...(menuIds?.defines ? [{ label: `Find references to “${menuIds.defines}”`, run: () => p.findRefs(menuIds.defines!) }] : []),
             ...(menuIds?.names ?? []).slice(0, 3).flatMap((id) => [

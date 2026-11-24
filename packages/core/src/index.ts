@@ -13,6 +13,7 @@ export * from "./project/rows.ts";
 export * from "./project/project.ts";
 export * from "./project/load.ts";
 export * from "./project/validate.ts";
+export * from "./project/jsonSchema.ts";
 export * from "./project/refs.ts";
 export * from "./project/diff.ts";
 export * from "./export/json.ts";

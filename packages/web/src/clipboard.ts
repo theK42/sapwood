@@ -29,13 +29,15 @@ export function copyPayload(g: SheetGrid, rect: Rect): { text: string; html: str
     const tds: string[] = [];
     for (let c = rect.col; c < rect.col + rect.cols; c++) {
       const v = g.cell(r, c);
-      line.push(/[\t\n"]/.test(v.text) ? `"${v.text.replace(/"/g, '""')}"` : v.text);
+      // A struct's summary would lose it: elsewhere it goes as its JSON.
+      const text = v.panel && !v.formula ? v.input : v.text;
+      line.push(/[\t\n"]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text);
       let attrs = ` data-sapwood-input="${esc(v.input)}"`;
       const f = v.formula ? formulaR1C1(v.input, r + 1, c + 1) : null;
       if (f) attrs += ` data-sheets-formula="${esc(f)}"`;
       if (v.format) attrs += ` data-sapwood-format="${esc(JSON.stringify(v.format))}"`;
       const style = v.format ? styleOf(v.format) : "";
-      tds.push(`<td${attrs}${style ? ` style="${esc(style)}"` : ""}>${esc(v.text).replace(/\n/g, "<br>")}</td>`);
+      tds.push(`<td${attrs}${style ? ` style="${esc(style)}"` : ""}>${esc(text).replace(/\n/g, "<br>")}</td>`);
     }
     tsv.push(line.join("\t"));
     trs.push(`<tr>${tds.join("")}</tr>`);

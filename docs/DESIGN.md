@@ -148,6 +148,7 @@ Type, trait and field names can't contain `.`, because `.` separates names in si
 Applies to all types:
 
 - **Presence.** Each field is `required` (blank cell is an error), `optional` (blank exports as omitted), or has a `default` (blank exports the default). **Decided default:** `optional`, with blanks omitted from export.
+- **JSON Schema** (a `json` field's `jsonSchema`) is checked by validation, and the panel editor builds its form from it. Understood: `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `items`, `minItems`, `maxItems`, `uniqueItems`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `minLength`, `maxLength`, `pattern` and `anyOf`. Other keywords (`$ref`, `if`, formats) are ignored, so such a schema checks less than it says, never more.
 - **Time is UTC everywhere.** **Decided.** Storage, display and export are all UTC. Teams across timezones share one human-readable standard. A per-user display timezone may come later as an opt-in.
 - **Formulas see datetimes** as spreadsheet serial numbers (days since epoch) and durations as days, so date arithmetic works like Excel. Conversion happens at the bound-cell boundary.
 - **No built-in asset or hash types.** Asset paths are `string`s with game-specific custom rules (e.g. `=ENDSWITH(script, ".lua")`). Hashing IDs for a client is a job for an export plugin (§10.4), not a field type.

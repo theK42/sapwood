@@ -7,8 +7,9 @@
 
 import {
   classify, columnSpecs, defaultSpecs, display, isErr, numberToCol, sheetLayout, validate,
-  moveFormula, type ColId, type Edit, type FieldType, type Format, type Issue, type Op, type Project, type RowClass, type RowId, type SheetId,
+  moveFormula, type ColId, type Edit, type FieldDef, type FieldType, type Format, type Issue, type Op, type Project, type RowClass, type RowId, type SheetId,
 } from "@thek42/sapwood-core";
+import { inPanel, summary, type CellField } from "./panel.ts";
 
 /** Empty rows and columns shown past the sheet's end. */
 export const SPARE_ROWS = 100;
@@ -24,6 +25,8 @@ export interface CellView {
   error: boolean;
   format: Format | null;
   issue: Issue | null;
+  /** A struct, union, list of them or json value: shown as its summary, edited in the panel. */
+  panel?: boolean;
 }
 
 export interface CellEdit {
@@ -170,7 +173,51 @@ export class SheetGrid {
     const format = this.project.format(this.sheet, r, c);
     if (input === "" && !issue && !format) return EMPTY;
     const { value, formula } = this.project.engine.cellById(this.sheet, r, c);
-    return { text: shown(value), input, formula, number: typeof value === "number", error: isErr(value), format, issue };
+    const view: CellView = { text: shown(value), input, formula, number: typeof value === "number", error: isErr(value), format, issue };
+    const f = this.fieldAt(row, col);
+    if (f && inPanel(f.type)) {
+      view.panel = true;
+      // JSON that reads shows as its summary; anything else as it is, so the problem shows.
+      if (typeof value === "string" && !formula) {
+        try {
+          view.text = summary(this.project.schema, f.type, JSON.parse(value));
+        } catch {
+          // not JSON: shown as typed
+        }
+      }
+    }
+    return view;
+  }
+
+  /**
+   * The field a cell holds whole: on an entity row, a column holding a whole field; on a
+   * singleton's field row, column B. Null for anything else (split columns among them).
+   */
+  fieldAt(row: number, col: number): CellField | null {
+    if (this.kind !== "data") return null;
+    const k = this.rowClass(row);
+    const schema = this.project.schema;
+    if (k.kind === "entity" && col >= 2) {
+      const def = schema.types.get(k.type)?.fieldByName.get(this.columnName(k.type, col))?.def;
+      return def ? { def, type: def.type, label: def.name } : null;
+    }
+    if (k.kind === "field" && col === 1) {
+      const type = k.type ?? this.blockType(row);
+      let def: FieldDef | undefined = type === null ? undefined : schema.types.get(type)?.fieldByName.get(k.path[0]!)?.def;
+      for (const name of k.path.slice(1)) def = def?.type.kind === "struct" ? schema.structs.get(def.type.name)?.fields.find((x) => x.name === name) : undefined;
+      return def ? { def, type: def.type, label: k.path.join(".") } : null;
+    }
+    return null;
+  }
+
+  /** The singleton a `.field` row belongs to: the nearest header above it, as long as no entity row comes between. */
+  private blockType(row: number): string | null {
+    for (let r = row - 1; r >= 0; r--) {
+      const k = this.rowClass(r);
+      if (k.kind === "header") return k.type;
+      if (k.kind === "entity") return null;
+    }
+    return null;
   }
 
   /** What column A makes the row (§6.2). */

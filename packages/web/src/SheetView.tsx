@@ -23,6 +23,7 @@ import type { Source } from "./head.ts";
 import { plural, useSource } from "./hooks.ts";
 import { useHeaderDrag } from "./headerDrag.ts";
 import { idsAt } from "./refs.ts";
+import type { PanelCell } from "./ValuePanel.tsx";
 
 export interface SheetProps {
   source: Source;
@@ -42,6 +43,10 @@ export interface SheetProps {
   findRefs(id: string): void;
   goToDefinition(id: string): void;
   openType(type: string): void;
+  /** Edit a struct, union, list or json cell in the panel. */
+  openPanel(at: PanelCell): void;
+  /** The selected cell, for the panel to follow while it's open. */
+  selected?(at: PanelCell | null, panel: boolean): void;
 }
 
 /** How long a cell flashes for (§6.7: a brief pulse, once). */
@@ -108,6 +113,20 @@ export function SheetView(p: SheetProps) {
   }, [p.jump?.n]);
 
   const cur = selection.current?.cell;
+  /** A cell by its stable IDs, for the panel; null past the sheet's end. */
+  const cellAt = (row: number, col: number): PanelCell | null => {
+    const s = p.source.project.wb.sheet(p.sheet);
+    return row < s.rows.length && col < s.cols.length ? { sheet: p.sheet, row: s.rows.idAt(row + 1), col: s.cols.idAt(col + 1) } : null;
+  };
+  const openPanel = (row: number, col: number) => {
+    const at = cellAt(row, col);
+    if (at && g?.cell(row, col).panel) p.openPanel(at);
+  };
+  useEffect(() => {
+    if (!g || !cur) return p.selected?.(null, false);
+    p.selected?.(cellAt(cur[1], cur[0]), !!g.cell(cur[1], cur[0]).panel);
+  }, [g, cur?.[0], cur?.[1]]);
+
   const headerType = useMemo(() => {
     if (!g) return null;
     if (pinned) return pinned;
@@ -420,11 +439,20 @@ export function SheetView(p: SheetProps) {
             // Glide 6.0.4-alpha24 doesn't start editing on a key typed in column A when columns
             // are frozen beside the row numbers (its visible-region check is off by one): the
             // key goes to the formula bar instead, and Enter writes it as usual.
-            if (!p.canEdit || e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1 || selection.current?.cell[0] !== 0) return;
+            // A struct, union, list or json cell isn't edited in place (Enter opens the panel):
+            // a key typed there goes to the formula bar the same way.
+            const at = selection.current?.cell;
+            if (e.key === "Enter" && !e.shiftKey && at && g.cell(at[1], at[0]).panel) {
+              e.cancel();
+              openPanel(at[1], at[0]);
+              return;
+            }
+            if (!p.canEdit || e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1 || !at || (at[0] !== 0 && !g.cell(at[1], at[0]).panel)) return;
             e.cancel();
             setDraft(e.key);
             requestAnimationFrame(() => bar.current?.focus());
           }}
+          onCellActivated={([col, row]) => openPanel(row, col)}
           onColumnResize={(_c, w, i) => setWidths((x) => ({ ...x, [i]: w }))}
           onItemHovered={(e) => {
             if (e.kind !== "cell") return setTip(null);
@@ -454,6 +482,7 @@ export function SheetView(p: SheetProps) {
           change={change}
           clear={clear}
           navigate={(f) => (setMenu(null), f(p))}
+          openPanel={() => (setMenu(null), menu.cell && openPanel(menu.cell.row, menu.cell.col))}
         />
       )}
       {tip && (
@@ -481,7 +510,8 @@ export function cellContent(v: CellView, canEdit: boolean, theme: { formula: str
     kind: GridCellKind.Text,
     data: v.input,
     displayData: v.text,
-    allowOverlay: canEdit,
+    // A struct, union, list or json cell opens in the panel instead.
+    allowOverlay: canEdit && !v.panel,
     readonly: !canEdit,
     contentAlign: v.number ? "right" : "left",
     ...(Object.keys(override).length ? { themeOverride: override } : {}),
@@ -493,6 +523,7 @@ function SheetMenu(p: {
   grid: SheetGrid;
   at: { x: number; y: number; rect: Rect; cell: { row: number; col: number } | null; whole: Axis | null };
   navigate(f: (s: SheetProps) => void): void;
+  openPanel(): void;
   canEdit: boolean;
   close(): void;
   change(fn: (g: SheetGrid) => { ops: Op[] }): void;
@@ -545,6 +576,7 @@ function SheetMenu(p: {
   const type = rowType && !g.project.schema.types.get(rowType)?.def.singleton ? rowType : null;
   const quote = (id: string) => `“${id.length > 24 ? id.slice(0, 23) + "…" : id}”`;
   const about = [
+    ...(c && g.cell(c.row, c.col).panel ? [item(p.canEdit ? "Edit in the panel" : "Show in the panel", true, p.openPanel)] : []),
     ...(ids.defines ? [item(`Find references to ${quote(ids.defines)}`, true, () => p.navigate((s) => s.findRefs(ids.defines!)))] : []),
     ...ids.names.slice(0, 3).flatMap((id) => [
       item(`Go to ${quote(id)}`, true, () => p.navigate((s) => s.goToDefinition(id))),

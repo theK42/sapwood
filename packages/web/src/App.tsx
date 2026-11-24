@@ -11,6 +11,7 @@ import { routeFromPath, routePath, type Route } from "./routes.ts";
 import { IssuePanel } from "./IssuePanel.tsx";
 import { refList } from "./refs.ts";
 import { RefsPanel } from "./RefsPanel.tsx";
+import { ValuePanel, type PanelCell } from "./ValuePanel.tsx";
 import { TypeView } from "./TypeView.tsx";
 import { Home } from "./Home.tsx";
 import { TaskSession } from "./session.ts";
@@ -92,8 +93,8 @@ function branchFromPath(): string | null {
   return m ? decodeURIComponent(m[1]!) : null;
 }
 
-/** What's beside the page: the issues, or the references to an ID. */
-type Side = { kind: "issues" } | { kind: "refs"; id: string } | null;
+/** What's beside the page: the issues, the references to an ID, or a cell's value as a form. */
+type Side = { kind: "issues" } | { kind: "refs"; id: string } | { kind: "value"; at: PanelCell } | null;
 
 function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const [branches, setBranches] = useState<BranchInfo[]>([]);
@@ -243,6 +244,10 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
     setJump((j) => ({ sheet: sh, row, col, n: (j?.n ?? 0) + 1 }));
   };
   const findRefs = (id: string) => setSide({ kind: "refs", id });
+  const openPanel = (at: PanelCell) => setSide({ kind: "value", at });
+  /** While the panel is open, it follows the selection to another cell it edits. */
+  const selected = (at: PanelCell | null, panel: boolean) =>
+    setSide((x) => (x?.kind === "value" && at && panel && (x.at.sheet !== at.sheet || x.at.row !== at.row || x.at.col !== at.col) ? { kind: "value", at } : x));
   const goToDefinition = (id: string) => {
     if (!source) return;
     const defs = refList(source.project, id).filter((x) => x.kind === "definition");
@@ -320,6 +325,8 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           findRefs={findRefs}
           goToDefinition={goToDefinition}
           openType={(t) => go(branch, { kind: "type", name: t })}
+          openPanel={openPanel}
+          selected={selected}
         />
       ) : route.kind === "type" ? (
         <TypeView
@@ -335,6 +342,8 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           findRefs={findRefs}
           goToDefinition={goToDefinition}
           showIssues={() => setSide({ kind: "issues" })}
+          openPanel={openPanel}
+          selected={selected}
         />
       ) : route.kind === "history" ? (
         <HistoryPage api={api} branch={branch} tick={headTick} open={(id) => go(branch, { kind: "commit", id })} href={(id) => routePath(branch, { kind: "commit", id })} back={() => go(branch)} />
@@ -375,6 +384,16 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           jump={(x) => {
             if (x.sheet && x.row !== null) goTo(x.sheet.id, x.row, x.col);
           }}
+        />
+      )}
+      {side?.kind === "value" && source && (
+        <ValuePanel
+          source={source}
+          at={side.at}
+          canEdit={canEdit && (session ? session.editable : true)}
+          edit={edit}
+          goTo={goTo}
+          close={() => setSide(null)}
         />
       )}
       {side?.kind === "refs" && source && <RefsPanel key={side.id} source={source} id={side.id} close={() => setSide(null)} jump={(x) => goTo(x.sheet, x.row, x.col)} />}

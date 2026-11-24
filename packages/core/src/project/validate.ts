@@ -10,7 +10,8 @@ import { display, isErr, scalar, toBool, type Value } from "../formula/values.ts
 import type { FieldDef, FieldType } from "../schema/model.ts";
 import { refAccepts } from "../schema/resolve.ts";
 import type { Entity, FieldEntry, Issue, Location, Project, Projection, SingletonEntry } from "./project.ts";
-import { datetime, duration, Ref, type FieldValue } from "./values.ts";
+import { checkJsonSchema } from "./jsonSchema.ts";
+import { datetime, duration, Ref, type FieldValue, type Json } from "./values.ts";
 
 export interface Validation {
   projection: Projection;
@@ -321,8 +322,14 @@ function checkValue(
       }
       return;
     }
+    case "json":
+      // Its JSON Schema, if it has one; any JSON otherwise.
+      if (def.jsonSchema !== undefined)
+        for (const i of checkJsonSchema(def.jsonSchema, (v as Json).value))
+          issues.push({ level: "error", code: "field.schema", message: `${label}${i.path}${/^is(n't)? /.test(i.message) ? " " : ": "}${i.message}`, at });
+      return;
     default:
-      return; // bool, enum and json are fully checked by parsing
+      return; // bool and enum are fully checked by parsing
   }
 }
 

@@ -122,7 +122,7 @@ code { font: 12px ui-monospace, "Cascadia Mono", Consolas, monospace; }
 .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
 
 /* the sheet */
-.sheet { display: grid; grid-template-rows: auto auto 1fr; min-height: 0; position: relative; }
+.sheet { display: grid; grid-template-rows: auto auto 1fr; grid-template-columns: minmax(0, 1fr); min-height: 0; min-width: 0; position: relative; }
 .sheet-bar, .formula-bar { display: flex; align-items: center; gap: 10px; padding: 6px 16px; border-bottom: 1px solid var(--line); }
 /* One line each, always: a badge or an issue appearing mustn't push the grid down under the pointer.
    When there's no room, the sheet's name, the header picker and the issue's message give way. */
@@ -217,3 +217,38 @@ button.link { border: 0; background: none; padding: 0; font: inherit; color: var
 .tag.changed { color: var(--warn); border-color: var(--warn); }
 button.link.muted { color: var(--muted); text-decoration: none; }
 button.link.muted:hover { text-decoration: underline; }
+
+/* the panel editor: a struct, union, list or json cell as a form */
+.work.with-issues:has(.value-panel) { grid-template-columns: minmax(0, 1fr) minmax(300px, 420px); }
+.value-panel .pad { padding: 8px 16px; }
+.value-panel .issues-filter .spacer { flex: 1; }
+.tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.tabs button { border: 0; background: none; color: var(--text); font: inherit; font-size: 12px; padding: 2px 10px; cursor: pointer; }
+.tabs button.on { background: var(--line); }
+.tabs button:disabled { color: var(--muted); cursor: default; }
+.vf { padding: 8px 16px 16px; font-size: 13px; }
+.vf-fields, .vf-list { display: grid; gap: 4px; }
+.vf-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.vf-name { flex: 0 0 auto; min-width: 5.5em; color: var(--muted); font-size: 12px; }
+.vf-req { color: var(--error); }
+.vf-input, .vf select, .vf textarea { font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; min-width: 0; }
+.vf-input { flex: 1; }
+.vf-input.num { max-width: 9em; text-align: right; font-variant-numeric: tabular-nums; }
+.vf-input:focus, .vf select:focus, .vf textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.vf-section { border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px 6px; }
+.vf-section > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 3px 0; min-width: 0; }
+.vf-section > summary::marker { color: var(--muted); }
+.vf-section[open] > summary { margin-bottom: 4px; }
+.vf-sum { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vf-section[open] > summary .vf-sum { visibility: hidden; }
+.vf-tools { display: inline-flex; gap: 2px; margin-left: auto; }
+.vf .button.small { padding: 1px 7px; font-size: 12px; }
+.vf-union { display: grid; gap: 4px; }
+.issues-list .vf-issues { list-style: none; margin: 2px 0 4px; padding: 0 0 0 calc(5.5em + 8px); font-size: 12px; }
+.issues-list.vf > .vf-issues { padding-left: 0; }
+.vf-issues .error { color: var(--error); }
+.vf-issues .warning { color: var(--warn); }
+.vf-bad { color: var(--error); }
+.vf-json { display: grid; gap: 6px; }
+.vf-json textarea { width: 100%; box-sizing: border-box; font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; resize: vertical; }
+.vf-actions { display: flex; gap: 6px; }
