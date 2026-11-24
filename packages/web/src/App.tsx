@@ -2,7 +2,7 @@
 // The branch is in the address (/branches/<name>), so a link or a reload keeps it.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Op, Project } from "@thek42/sapwood-core";
+import type { Op, PackId, Project } from "@thek42/sapwood-core";
 import { Api, ApiError, type BranchInfo, type CommitInfo, type Health, type Me, type TaskInfo } from "./api.ts";
 import { listen } from "./events.ts";
 import { HeadView } from "./head.ts";
@@ -12,6 +12,8 @@ import { IssuePanel } from "./IssuePanel.tsx";
 import { refList } from "./refs.ts";
 import { RefsPanel } from "./RefsPanel.tsx";
 import { ValuePanel, type PanelCell } from "./ValuePanel.tsx";
+import { FormPanel, NewEntityPanel, type FormRow } from "./FormPanel.tsx";
+import { entityAt } from "./form.ts";
 import { TypeView } from "./TypeView.tsx";
 import { Home } from "./Home.tsx";
 import { TaskSession } from "./session.ts";
@@ -94,7 +96,13 @@ function branchFromPath(): string | null {
 }
 
 /** What's beside the page: the issues, the references to an ID, or a cell's value as a form. */
-type Side = { kind: "issues" } | { kind: "refs"; id: string } | { kind: "value"; at: PanelCell } | null;
+type Side =
+  | { kind: "issues" }
+  | { kind: "refs"; id: string }
+  | { kind: "value"; at: PanelCell }
+  | { kind: "form"; at: FormRow }
+  | { kind: "new"; type: string | null; pack: PackId | null; n: number }
+  | null;
 
 function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const [branches, setBranches] = useState<BranchInfo[]>([]);
@@ -245,9 +253,16 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   };
   const findRefs = (id: string) => setSide({ kind: "refs", id });
   const openPanel = (at: PanelCell) => setSide({ kind: "value", at });
-  /** While the panel is open, it follows the selection to another cell it edits. */
+  const openForm = (at: FormRow) => setSide({ kind: "form", at });
+  const newEntity = (type: string | null, pack: PackId | null) => setSide((x) => ({ kind: "new", type, pack, n: (x?.kind === "new" ? x.n : 0) + 1 }));
+  /** While the panel or the form is open, it follows the selection to another cell or entity. */
   const selected = (at: PanelCell | null, panel: boolean) =>
-    setSide((x) => (x?.kind === "value" && at && panel && (x.at.sheet !== at.sheet || x.at.row !== at.row || x.at.col !== at.col) ? { kind: "value", at } : x));
+    setSide((x) => {
+      if (!at) return x;
+      if (x?.kind === "value" && panel && (x.at.sheet !== at.sheet || x.at.row !== at.row || x.at.col !== at.col)) return { kind: "value", at };
+      if (x?.kind === "form" && (x.at.sheet !== at.sheet || x.at.row !== at.row) && source && entityAt(source.project, at.sheet, at.row)) return { kind: "form", at: { sheet: at.sheet, row: at.row } };
+      return x;
+    });
   const goToDefinition = (id: string) => {
     if (!source) return;
     const defs = refList(source.project, id).filter((x) => x.kind === "definition");
@@ -327,6 +342,8 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           openType={(t) => go(branch, { kind: "type", name: t })}
           openPanel={openPanel}
           selected={selected}
+          openForm={openForm}
+          newEntity={newEntity}
         />
       ) : route.kind === "type" ? (
         <TypeView
@@ -344,6 +361,8 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           showIssues={() => setSide({ kind: "issues" })}
           openPanel={openPanel}
           selected={selected}
+          openForm={openForm}
+          newEntity={newEntity}
         />
       ) : route.kind === "history" ? (
         <HistoryPage api={api} branch={branch} tick={headTick} open={(id) => go(branch, { kind: "commit", id })} href={(id) => routePath(branch, { kind: "commit", id })} back={() => go(branch)} />
@@ -393,6 +412,32 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           canEdit={canEdit && (session ? session.editable : true)}
           edit={edit}
           goTo={goTo}
+          close={() => setSide(null)}
+        />
+      )}
+      {side?.kind === "form" && source && (
+        <FormPanel
+          source={source}
+          at={side.at}
+          canEdit={canEdit && (session ? session.editable : true)}
+          edit={edit}
+          goTo={goTo}
+          newEntity={newEntity}
+          close={() => setSide(null)}
+        />
+      )}
+      {side?.kind === "new" && source && (
+        <NewEntityPanel
+          key={side.n}
+          source={source}
+          type={side.type}
+          pack={side.pack}
+          canEdit={canEdit && (session ? session.editable : true)}
+          edit={edit}
+          made={(at, row) => {
+            setSide({ kind: "form", at });
+            goTo(at.sheet, row, null);
+          }}
           close={() => setSide(null)}
         />
       )}

@@ -194,6 +194,10 @@ export class SheetGrid {
    * The field a cell holds whole: on an entity row, a column holding a whole field; on a
    * singleton's field row, column B. Null for anything else (split columns among them).
    */
+  rowId(row: number): RowId {
+    return this.rowIds[row]!;
+  }
+
   fieldAt(row: number, col: number): CellField | null {
     if (this.kind !== "data") return null;
     const k = this.rowClass(row);

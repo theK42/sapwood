@@ -20,7 +20,7 @@ import { useSuggest } from "./Suggest.tsx";
 import type { RefTarget } from "./suggest.ts";
 
 /** The project and the pack the cell is in, for ref suggestions. */
-const RefScope = createContext<{ project: Project; from: PackId } | null>(null);
+export const RefScope = createContext<{ project: Project; from: PackId } | null>(null);
 
 /** The cell the panel edits, by stable IDs, so it stays on it as rows and columns move. */
 export interface PanelCell {
@@ -146,7 +146,7 @@ export function ValuePanel(p: Props) {
   );
 }
 
-function Issues({ list }: { list: Issue[] | undefined }) {
+export function Issues({ list }: { list: Issue[] | undefined }) {
   if (!list?.length) return null;
   return (
     <ul className="vf-issues">
@@ -159,7 +159,7 @@ function Issues({ list }: { list: Issue[] | undefined }) {
   );
 }
 
-interface ValueProps {
+export interface ValueProps {
   schema: ResolvedSchema;
   /** The field the value is for (its constraints), or null inside a json value. */
   def: FieldDef | null;
@@ -174,7 +174,7 @@ interface ValueProps {
 }
 
 /** One value of a field type, as a form. */
-function Value(p: ValueProps) {
+export function Value(p: ValueProps) {
   const t = p.type;
   const scope = useContext(RefScope);
   switch (t.kind) {
@@ -261,7 +261,7 @@ function Absent(p: ValueProps) {
 const nested = (t: FieldType) => t.kind === "struct" || t.kind === "union" || t.kind === "list" || t.kind === "json";
 
 /** A struct's fields, or a union variant's: one row each, nested ones in sections that fold. */
-function Fields(p: ValueProps & { fields: readonly FieldDef[]; obj: Obj }) {
+export function Fields(p: ValueProps & { fields: readonly FieldDef[]; obj: Obj }) {
   const known = new Set(p.fields.map((f) => f.name));
   const extra = Object.keys(p.obj).filter((k) => !known.has(k) && !(p.type.kind === "union" && k === p.schema.unions.get(p.type.name)?.discriminator));
   const setField = (name: string, v: unknown) => {

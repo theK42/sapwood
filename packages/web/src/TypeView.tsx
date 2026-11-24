@@ -6,13 +6,14 @@
 import "@glideapps/glide-data-grid/dist/index.css";
 import { CompactSelection, DataEditor, GridCellKind, type DataEditorRef, type DrawCellCallback, type ProvideEditorCallback, type ProvideEditorCallbackResult, type EditListItem, type GridCell, type GridColumn, type GridSelection, type Item } from "@glideapps/glide-data-grid";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Issue, Op, Project } from "@thek42/sapwood-core";
+import type { Issue, Op, PackId, Project } from "@thek42/sapwood-core";
 import type { Source } from "./head.ts";
 import { plural, useSource } from "./hooks.ts";
 import { idsAt } from "./refs.ts";
 import { cellContent, drawIssue, ISSUE, useTheme } from "./SheetView.tsx";
 import { TypeGrid, type Home } from "./typeview.ts";
 import type { PanelCell } from "./ValuePanel.tsx";
+import type { FormRow } from "./FormPanel.tsx";
 import { RefCellEditor, RefEditorContext, useSuggest } from "./Suggest.tsx";
 import type { RefTarget } from "./suggest.ts";
 
@@ -33,6 +34,9 @@ interface Props {
   openPanel(at: PanelCell): void;
   /** The selected cell's home, for the panel to follow while it's open. */
   selected?(at: PanelCell | null, panel: boolean): void;
+  /** Open an entity's row in the form; make a new entity from one. */
+  openForm?(at: FormRow): void;
+  newEntity?(type: string, pack: PackId): void;
 }
 
 const empty = (): GridSelection => ({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
@@ -175,6 +179,12 @@ export function TypeView(p: Props) {
             {[counts.errors && plural(counts.errors, "error"), counts.warnings && plural(counts.warnings, "warning")].filter(Boolean).join(", ")}
           </button>
         )}
+        <span className="spacer" />
+        {p.canEdit && p.newEntity && (
+          <button className="button quiet small" onClick={() => p.newEntity!(t.type, t.project.wb.root)} title={`A new ${t.type}, from a form`}>
+            + New {t.type}
+          </button>
+        )}
       </div>
       <div className="formula-bar">
         <span className="addr wide">{cur ? t.address(cur[1], cur[0]) : ""}</span>
@@ -286,6 +296,7 @@ export function TypeView(p: Props) {
           close={() => setMenu(null)}
           items={[
             ...(t.cell(menu.row, menu.col).panel && t.home(menu.row, menu.col) ? [{ label: p.canEdit ? "Edit in the panel" : "Show in the panel", run: () => openPanel(menu.row, menu.col) }] : []),
+            ...(rowHome && p.openForm ? [{ label: "Open in the form", run: () => p.openForm!({ sheet: rowHome.sheet, row: rowHome.rowId }) }] : []),
             ...(rowHome ? [{ label: `Go to the row on ${rowHome.sheetName}`, run: () => p.goTo({ sheet: rowHome.sheet, row: rowHome.row, col: Math.max(0, t.home(menu.row, menu.col)?.col ?? 0) }) }] : []),
             ...(menuIds?.defines ? [{ label: `Find references to “${menuIds.defines}”`, run: () => p.findRefs(menuIds.defines!) }] : []),
             ...(menuIds?.names ?? []).slice(0, 3).flatMap((id) => [

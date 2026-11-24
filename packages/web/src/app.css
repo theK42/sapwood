@@ -252,6 +252,17 @@ button.link.muted:hover { text-decoration: underline; }
 .vf-json { display: grid; gap: 6px; }
 .vf-json textarea { width: 100%; box-sizing: border-box; font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; resize: vertical; }
 .vf-actions { display: flex; gap: 6px; }
+.vf-input[readonly] { background: transparent; border-style: dashed; color: var(--muted); }
+.vf-input[readonly]:focus { outline: 0; }
+
+/* The form view: an entity's fields, and a new entity */
+.vf-hint { margin: 0 0 4px calc(5.5em + 8px); }
+.vf-note { margin: 0 0 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.vf-formula { display: grid; gap: 2px; margin: 2px 0 4px calc(5.5em + 8px); }
+.vf-formula code { color: var(--accent); overflow-wrap: anywhere; }
+.vf-formula .vf-actions { flex-wrap: wrap; gap: 4px 12px; }
+.vf-h { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin: 14px 0 6px; }
+.vf-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
 
 /* ID suggestions under a box where a ref is typed */
 .suggest { position: fixed; z-index: 1000; list-style: none; margin: 0; padding: 4px; max-height: 260px; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.22); font-size: 13px; color: var(--text); }

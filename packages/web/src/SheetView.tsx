@@ -15,7 +15,7 @@ import {
   type DataEditorRef, type DrawCellCallback, type ProvideEditorCallback, type ProvideEditorCallbackResult, type DrawHeaderCallback, type EditListItem, type GridCell, type GridColumn, type GridSelection, type Item, type Theme,
 } from "@glideapps/glide-data-grid";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Format, Issue, Op, Project } from "@thek42/sapwood-core";
+import type { Format, Issue, Op, PackId, Project } from "@thek42/sapwood-core";
 import { numberToCol } from "@thek42/sapwood-core";
 import { copyPayload, parsePaste } from "./clipboard.ts";
 import { SheetGrid, typeColor, type Axis, type CellEdit, type CellView, type Rect } from "./grid.ts";
@@ -26,6 +26,7 @@ import { idsAt } from "./refs.ts";
 import { RefCellEditor, RefEditorContext, useSuggest } from "./Suggest.tsx";
 import type { RefTarget } from "./suggest.ts";
 import type { PanelCell } from "./ValuePanel.tsx";
+import type { FormRow } from "./FormPanel.tsx";
 
 export interface SheetProps {
   source: Source;
@@ -49,6 +50,9 @@ export interface SheetProps {
   openPanel(at: PanelCell): void;
   /** The selected cell, for the panel to follow while it's open. */
   selected?(at: PanelCell | null, panel: boolean): void;
+  /** Open an entity's row in the form; make a new entity from one. */
+  openForm?(at: FormRow): void;
+  newEntity?(type: string, pack: PackId): void;
 }
 
 /** How long a cell flashes for (§6.7: a brief pulse, once). */
@@ -611,6 +615,8 @@ function SheetMenu(p: {
       item(`Go to ${quote(id)}`, true, () => p.navigate((s) => s.goToDefinition(id))),
       item(`Find references to ${quote(id)}`, true, () => p.navigate((s) => s.findRefs(id))),
     ]),
+    ...(c && g.rowClass(c.row).kind === "entity" ? [item("Open in the form", true, () => p.navigate((s) => s.openForm?.({ sheet: g.sheet, row: g.rowId(c.row) })))] : []),
+    ...(type && p.canEdit ? [item(`New ${type}…`, true, () => p.navigate((s) => s.newEntity?.(type, g.project.wb.sheet(g.sheet).pack)))] : []),
     ...(type ? [item(`Show every ${type}`, true, () => p.navigate((s) => s.openType(type)))] : []),
   ];
   return (
