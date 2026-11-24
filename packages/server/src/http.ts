@@ -317,6 +317,23 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     may(c, "viewer", "read", b);
     return c.json(repo.log(b, Math.min(Number(c.req.query("limit") ?? 50) || 50, 1000)));
   });
+  /** An entity's history on the branch (DESIGN §8.7), newest first: each commit that changed it, before and after. */
+  app.get("/api/branches/:b/history/entities/:id", (c) => {
+    const b = c.req.param("b");
+    may(c, "viewer", "read", b);
+    return c.json(repo.entityHistory(b, c.req.param("id")!, Math.min(Number(c.req.query("limit") ?? 50) || 50, 500)));
+  });
+  /** A cell's history on the branch, by stable IDs: `?sheet=&row=&col=`. */
+  app.get("/api/branches/:b/history/cell", (c) => {
+    const b = c.req.param("b");
+    may(c, "viewer", "read", b);
+    const q = (k: string) => {
+      const v = c.req.query(k);
+      if (!v) throw new RepoError("bad-request", `Say which cell: ${k} is missing`);
+      return v;
+    };
+    return c.json(repo.cellHistory(b, q("sheet"), q("row"), q("col"), Math.min(Number(c.req.query("limit") ?? 50) || 50, 500)));
+  });
   app.get("/api/commits/:c", (c) => {
     const info = repo.commit(c.req.param("c"));
     may(c, "viewer", "read", info.branch);

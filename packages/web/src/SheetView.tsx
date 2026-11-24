@@ -27,6 +27,7 @@ import { RefCellEditor, RefEditorContext, useSuggest } from "./Suggest.tsx";
 import type { RefTarget } from "./suggest.ts";
 import type { PanelCell } from "./ValuePanel.tsx";
 import type { FormRow } from "./FormPanel.tsx";
+import type { HistoryOf } from "./HistoryPanel.tsx";
 
 export interface SheetProps {
   source: Source;
@@ -55,6 +56,8 @@ export interface SheetProps {
   newEntity?(type: string, pack: PackId): void;
   /** Move entities, by ID, to another pack. */
   moveEntities?(ids: string[]): void;
+  /** The history of an entity or a cell. */
+  history?(of: HistoryOf): void;
 }
 
 /** How long a cell flashes for (§6.7: a brief pulse, once). */
@@ -649,6 +652,9 @@ function SheetMenu(p: {
     ...(c && g.rowClass(c.row).kind === "entity" ? [item("Open in the form", true, () => p.navigate((s) => s.openForm?.({ sheet: g.sheet, row: g.rowId(c.row) })))] : []),
     ...(type && p.canEdit ? [item(`New ${type}…`, true, () => p.navigate((s) => s.newEntity?.(type, g.project.wb.sheet(g.sheet).pack)))] : []),
     ...(type ? [item(`Show every ${type}`, true, () => p.navigate((s) => s.openType(type)))] : []),
+    // History: of the entity on this row, and of this cell.
+    ...(c && g.rowClass(c.row).kind === "entity" && g.cell(c.row, 1).input.trim() ? [item(`History of “${g.cell(c.row, 1).input.trim()}”`, true, () => p.navigate((s) => s.history?.({ kind: "entity", id: g.cell(c.row, 1).input.trim() })))] : []),
+    ...(c && c.row < g.liveRows && g.colId(c.col) ? [item("History of this cell", true, () => p.navigate((s) => s.history?.({ kind: "cell", sheet: g.sheet, row: g.rowId(c.row), col: g.colId(c.col)!, label: `${g.name}!${g.address(c.row, c.col)}` })))] : []),
     // The entities in the rows the menu is for: moved to another pack, together.
     ...(() => {
       if (!p.canEdit || g.kind !== "data" || p.at.whole === "col") return [];

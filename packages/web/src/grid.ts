@@ -244,6 +244,11 @@ export class SheetGrid {
     }
   }
 
+  /** A column's stable ID, or undefined past the sheet's last column. */
+  colId(col: number): ColId | undefined {
+    return this.colIds[col];
+  }
+
   rowId(row: number): RowId {
     return this.rowIds[row]!;
   }

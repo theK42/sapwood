@@ -17,6 +17,7 @@ import { EntitiesPage } from "./EntitiesPage.tsx";
 import { MovePanel } from "./MovePanel.tsx";
 import { SuggestPanel } from "./SuggestPanel.tsx";
 import { SchemaPage } from "./SchemaPage.tsx";
+import { HistoryPanel, type HistoryOf } from "./HistoryPanel.tsx";
 import { entityAt } from "./form.ts";
 import { TypeView } from "./TypeView.tsx";
 import { Home } from "./Home.tsx";
@@ -108,6 +109,7 @@ type Side =
   | { kind: "new"; type: string | null; pack: PackId | null; n: number }
   | { kind: "move"; ids: string[]; n: number; pack?: string }
   | { kind: "suggest"; pack: string | null }
+  | { kind: "history"; of: HistoryOf }
   | null;
 
 function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
@@ -265,6 +267,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const findRefs = (id: string) => setSide({ kind: "refs", id });
   const openPanel = (at: PanelCell) => setSide({ kind: "value", at });
   const openForm = (at: FormRow) => setSide({ kind: "form", at });
+  const showHistory = (of: HistoryOf) => setSide({ kind: "history", of });
   const moveEntities = (ids: string[]) => setSide((x) => ({ kind: "move", ids, n: (x?.kind === "move" ? x.n : 0) + 1 }));
   const newEntity = (type: string | null, pack: PackId | null) => setSide((x) => ({ kind: "new", type, pack, n: (x?.kind === "new" ? x.n : 0) + 1 }));
   /** While the panel or the form is open, it follows the selection to another cell or entity. */
@@ -357,6 +360,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           openForm={openForm}
           newEntity={newEntity}
           moveEntities={moveEntities}
+          history={showHistory}
         />
       ) : route.kind === "type" ? (
         <TypeView
@@ -377,6 +381,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           openForm={openForm}
           newEntity={newEntity}
           moveEntities={moveEntities}
+          history={showHistory}
         />
       ) : route.kind === "entities" ? (
         <EntitiesPage
@@ -390,6 +395,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           openGrid={(t) => go(branch, { kind: "type", name: t })}
           goTo={goTo}
           moveEntities={moveEntities}
+          history={(id) => showHistory({ kind: "entity", id })}
         />
       ) : route.kind === "schema" ? (
         <SchemaPage
@@ -470,6 +476,20 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           goTo={goTo}
           newEntity={newEntity}
           move={(id) => moveEntities([id])}
+          history={(id) => showHistory({ kind: "entity", id })}
+          close={() => setSide(null)}
+        />
+      )}
+      {side?.kind === "history" && source && (
+        <HistoryPanel
+          key={JSON.stringify(side.of)}
+          api={api}
+          branch={branch}
+          of={side.of}
+          source={source}
+          canEdit={canEdit && (session ? session.editable : true)}
+          edit={edit}
+          openCommit={(id) => go(branch, { kind: "commit", id })}
           close={() => setSide(null)}
         />
       )}

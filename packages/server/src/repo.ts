@@ -9,8 +9,8 @@
 
 import { randomBytes } from "node:crypto";
 import {
-  applyOps, cloneDoc, conflictId, docFromJson, docsEqual, docToJson, rebase, reconcile, Sapwood,
-  type CellAddress, type Change, type Conflict, type Doc, type ExportFile, type Op, type Side, type ValidationJson,
+  applyOps, ApiError, cellTouches, cloneDoc, conflictId, display, docFromJson, docsEqual, docToJson, entityTouches, numberToCol, rebase, reconcile, Sapwood,
+  type CellAddress, type Change, type Conflict, type Doc, type EntityJson, type ExportFile, type HistoryStep, type Op, type Side, type ValidationJson,
 } from "@thek42/sapwood-core";
 import { now, type Db } from "./db.ts";
 
@@ -204,6 +204,34 @@ const BRANCH_NAME = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,99}$/;
 const DOC_CACHE = 16;
 
 const newId = (): string => randomBytes(8).toString("hex");
+
+/** One commit in an entity's history: it as it was before and after (null: not there). */
+export interface EntityChange {
+  commit: CommitInfo;
+  before: EntityJson | null;
+  after: EntityJson | null;
+}
+
+/** What a cell held: as typed (a formula's text), and as shown; and where it was. */
+export interface CellState {
+  input: string;
+  shown: string;
+  /** `Sheet!A1` at that commit. */
+  cell: string;
+}
+
+export interface CellChange {
+  commit: CommitInfo;
+  before: CellState | null;
+  after: CellState | null;
+}
+
+/** An entity's ID before a run of steps, from its ID after them: renames followed back. */
+function idAtStart(steps: readonly HistoryStep[], id: string): string {
+  let cur = id;
+  for (let i = steps.length - 1; i >= 0; i--) for (const op of [...steps[i]!.ops].reverse()) if (op.kind === "renameId" && op.to === cur) cur = op.from;
+  return cur;
+}
 
 export class Repo {
   private readonly snapshotEvery: number;
@@ -487,6 +515,73 @@ export class Repo {
       h.exports.set(key, files);
     }
     return files;
+  }
+
+  /**
+   * An entity's history on a branch (DESIGN §8.7), newest first: each commit that changed it,
+   * with the entity as it was before and after (null where it wasn't there). Followed by ID
+   * through renames and moves; the first commit, if it's there from the start.
+   */
+  entityHistory(branch: string, id: string, limit = 50): EntityChange[] {
+    const { root, steps } = this.history(branch);
+    const get = (commit: string, eid: string): EntityJson | null => {
+      try {
+        return this.at(commit).get(eid);
+      } catch (e) {
+        if (e instanceof ApiError) return null;
+        throw e;
+      }
+    };
+    const out: EntityChange[] = entityTouches(this.stateAt(root), steps, id).reverse().slice(0, limit).map((t) => ({
+      commit: this.commit(t.commit),
+      before: get(this.commitRow(t.commit).parent!, t.idBefore),
+      after: get(t.commit, t.idAfter),
+    }));
+    // There from the start: the first commit made it.
+    if (out.length < limit) {
+      const atRoot = get(root, idAtStart(steps, id));
+      if (atRoot) out.push({ commit: this.commit(root), before: null, after: atRoot });
+    }
+    return out;
+  }
+
+  /**
+   * A cell's history on a branch (DESIGN §8.7), newest first: each commit that changed what's
+   * in it (or its format), or took its row or column away, with what it held before and after
+   * (null: not there). By stable IDs, so it follows the cell as rows and columns move.
+   */
+  cellHistory(branch: string, sheet: string, row: string, col: string, limit = 50): CellChange[] {
+    const { root, steps } = this.history(branch);
+    const at = (commit: string): CellState | null => {
+      const s = this.at(commit);
+      const sh = s.project.wb.sheets.get(sheet);
+      const r = sh?.rows.posOf(row);
+      const c = sh?.cols.posOf(col);
+      if (!sh || r == null || c == null) return null;
+      const a1 = `${numberToCol(c)}${r}`;
+      const formula = s.project.engine.formula(sheet, a1);
+      const v = s.project.engine.cellById(sheet, row, col).value;
+      const shown = v === null ? "" : display(v);
+      return { input: formula ?? shown, shown, cell: `${sh.name}!${a1}` };
+    };
+    const out: CellChange[] = cellTouches(this.stateAt(root), steps, sheet, row, col).reverse().slice(0, limit).map((t) => ({
+      commit: this.commit(t.commit),
+      before: at(this.commitRow(t.commit).parent!),
+      after: at(t.commit),
+    }));
+    if (out.length < limit) {
+      const first = at(root);
+      if (first && first.input !== "") out.push({ commit: this.commit(root), before: null, after: first });
+    }
+    return out;
+  }
+
+  /** A branch's commits after its first, oldest first, following first parents, with their ops. */
+  private history(branch: string): { root: string; steps: HistoryStep[] } {
+    const ids: string[] = [];
+    for (let id: string | null = this.branch(branch).head; id !== null; id = this.commitRow(id).parent) ids.push(id);
+    ids.reverse();
+    return { root: ids[0]!, steps: ids.slice(1).map((c) => ({ commit: c, ops: this.commitOps(c) })) };
   }
 
   /** The project at any commit, for reading. */

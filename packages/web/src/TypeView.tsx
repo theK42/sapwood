@@ -14,6 +14,7 @@ import { cellContent, drawIssue, ISSUE, useTheme } from "./SheetView.tsx";
 import { TypeGrid, type Home } from "./typeview.ts";
 import type { PanelCell } from "./ValuePanel.tsx";
 import type { FormRow } from "./FormPanel.tsx";
+import type { HistoryOf } from "./HistoryPanel.tsx";
 import { RefCellEditor, RefEditorContext, useSuggest } from "./Suggest.tsx";
 import type { RefTarget } from "./suggest.ts";
 
@@ -39,6 +40,8 @@ interface Props {
   newEntity?(type: string, pack: PackId): void;
   /** Move entities, by ID, to another pack. */
   moveEntities?(ids: string[]): void;
+  /** The history of an entity or a cell. */
+  history?(of: HistoryOf): void;
 }
 
 const empty = (): GridSelection => ({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
@@ -299,6 +302,7 @@ export function TypeView(p: Props) {
           items={[
             ...(t.cell(menu.row, menu.col).panel && t.home(menu.row, menu.col) ? [{ label: p.canEdit ? "Edit in the panel" : "Show in the panel", run: () => openPanel(menu.row, menu.col) }] : []),
             ...(rowHome && p.openForm ? [{ label: "Open in the form", run: () => p.openForm!({ sheet: rowHome.sheet, row: rowHome.rowId }) }] : []),
+            ...(rowHome && p.history && t.cell(menu.row, 1).input.trim() ? [{ label: `History of “${t.cell(menu.row, 1).input.trim()}”`, run: () => p.history!({ kind: "entity", id: t.cell(menu.row, 1).input.trim() }) }] : []),
             ...(() => {
               // The selected rows' entities, if the menu's row is among them; else that row's.
               const range = selection.current?.range;

@@ -3,7 +3,7 @@
 // The shapes here mirror the server's (packages/server/src/repo.ts), which the app doesn't
 // import: that code runs on Node.
 
-import type { Conflict, DocJson, Op } from "@thek42/sapwood-core";
+import type { Conflict, DocJson, EntityJson, Op } from "@thek42/sapwood-core";
 
 export type Role = "viewer" | "editor" | "developer" | "admin";
 export type TaskState = "open" | "landed" | "abandoned";
@@ -22,6 +22,26 @@ export interface BranchInfo {
   archived: boolean;
   createdBy: string;
   createdAt: string;
+}
+
+/** One commit in an entity's history: it before and after (null: not there). */
+export interface EntityChange {
+  commit: CommitInfo;
+  before: EntityJson | null;
+  after: EntityJson | null;
+}
+
+/** What a cell held at a commit: as typed, as shown, and where. */
+export interface CellState {
+  input: string;
+  shown: string;
+  cell: string;
+}
+
+export interface CellChange {
+  commit: CommitInfo;
+  before: CellState | null;
+  after: CellState | null;
 }
 
 export interface CommitInfo {
@@ -134,6 +154,11 @@ export class Api {
   branch = (b: string) => this.call<BranchInfo>("GET", `/api/branches/${seg(b)}`);
   commits = (b: string, limit = 50) => this.call<CommitInfo[]>("GET", `/api/branches/${seg(b)}/commits?limit=${limit}`);
   commit = (id: string) => this.call<CommitInfo>("GET", `/api/commits/${seg(id)}`);
+  /** An entity's history on a branch, newest first (DESIGN §8.7). */
+  entityHistory = (b: string, id: string) => this.call<EntityChange[]>("GET", `/api/branches/${seg(b)}/history/entities/${seg(id)}`);
+  /** A cell's history on a branch, by stable IDs. */
+  cellHistory = (b: string, sheet: string, row: string, col: string) =>
+    this.call<CellChange[]>("GET", `/api/branches/${seg(b)}/history/cell?sheet=${encodeURIComponent(sheet)}&row=${encodeURIComponent(row)}&col=${encodeURIComponent(col)}`);
   commitDoc = (id: string) => this.call<{ doc: DocJson }>("GET", `/api/commits/${seg(id)}/doc`);
   /** A new task, your current one, undoing the commit. */
   revert = (id: string) => this.call<TaskStatus>("POST", `/api/commits/${seg(id)}/revert`, {});
