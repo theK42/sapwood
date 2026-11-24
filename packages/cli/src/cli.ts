@@ -56,6 +56,8 @@ Data (on a server: reads show your current task, writes go into it)
                                   Set fields; blank clears, =… is a formula,
                                   $id=… renames, $active=false comments out
   create <type> <id> [<field>=<value>…] [--sheet <s>] [--pack <p>] [--after <id>]
+                                  In root unless --pack; on the only sheet there with
+                                  the type, else on the sheet named after the type
   comment-out <id>  |  uncomment <id>  |  delete <id>
   apply <patch.jsonl>             Patches, one JSON object per line, all or nothing
 Packs and sheets

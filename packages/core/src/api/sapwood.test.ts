@@ -171,36 +171,48 @@ describe("writes", () => {
     fails("unknown-type", () => s.create("Sprit", { $id: "x" }));
   });
 
-  it("a new type's first entity needs a sheet, which gets the columns it needs", () => {
+  it("a new type's first entity goes on the sheet named after it, made for it (DESIGN §9.3)", () => {
     const s = Sapwood.load(SMALL, { sheets: [{ name: "A", rows: [] }, { name: "B", rows: [] }] });
-    fails("no-sheet", () => s.create("Ammo", { $id: "a1", speed: 3 }));
     const before = canonDoc(cloneDoc(s.doc));
-    s.create("Ammo", { $id: "a1", speed: 3 }, { sheet: "B" });
-    expect(s.get("a1")).toMatchObject({ $sheet: "B", speed: 3 });
+    s.create("Ammo", { $id: "a1", speed: 3 });
+    expect(s.get("a1")).toMatchObject({ $sheet: "Ammo", speed: 3 });
+    expect(s.validate().errors).toBe(0);
     s.undo();
     expect(canonDoc(s.doc)).toEqual(before);
+    s.redo();
+    expect(s.get("a1").$sheet).toBe("Ammo");
+    // Named, it goes there, and the sheet gets the columns it needs.
+    s.create("Ammo", { $id: "a2", speed: 4 }, { sheet: "B" });
+    expect(s.get("a2")).toMatchObject({ $sheet: "B", speed: 4 });
+    // Even when there's only one data sheet: it isn't the type's until it has one.
+    const t = Sapwood.load(SMALL, { sheets: [{ name: "Data", rows: [] }] });
+    t.create("Ammo", { $id: "a1" });
+    expect(t.get("a1").$sheet).toBe("Ammo");
   });
 
-  it("the only data sheet is used for a new type, unless it's named after another type", () => {
-    const s = Sapwood.load(SMALL, { sheets: [{ name: "Data", rows: [] }] });
-    s.create("Ammo", { $id: "a1", speed: 3 });
+  it("the only sheet with the type; with several, the type-named one, never a guess", () => {
+    // A commented-out row counts: the sheet has the type.
+    const s = Sapwood.load(SMALL, { sheets: [{ name: "Data", rows: [["#Ammo", "old"], ["Weapon", "w1", 10]] }, { name: "Other", rows: [["Weapon", "w2", 1]] }] });
+    s.create("Ammo", { $id: "a1" });
     expect(s.get("a1").$sheet).toBe("Data");
-
-    const t = Sapwood.load(SMALL, { sheets: [{ name: "Weapon", rows: [["Weapon", "w1", 10]] }] });
-    const before = canonDoc(cloneDoc(t.doc));
-    t.create("Ammo", { $id: "a1", speed: 3 });
-    expect(t.get("a1")).toMatchObject({ $sheet: "Ammo", speed: 3 });
-    expect(t.validate().errors).toBe(0);
-    t.undo();
-    expect(canonDoc(t.doc)).toEqual(before);
-    t.redo();
-    expect(t.get("a1").$sheet).toBe("Ammo");
-
-    const u = Sapwood.load(SMALL, { sheets: [{ name: "Ammo", rows: [] }] });
-    u.create("Ammo", { $id: "a1", speed: 3 });
+    expect(s.query("Ammo", { inactive: true }).map((e) => e.$id)).toEqual(["old", "a1"]); // after the last of its type
+    s.create("Weapon", { $id: "w3" });
+    expect(s.get("w3").$sheet).toBe("Weapon");
+    // An existing type-named sheet is used; a scratch one isn't.
+    const u = Sapwood.load(SMALL, { sheets: [{ name: "Ammo", rows: [] }, { name: "B", rows: [["Ammo", "b1"]] }, { name: "C", rows: [["Ammo", "c1"]] }] });
+    u.create("Ammo", { $id: "a1" });
     expect(u.get("a1").$sheet).toBe("Ammo");
     const v = Sapwood.load(SMALL, { sheets: [{ name: "Weapon", rows: [] }, { name: "Ammo", kind: "scratch", rows: [] }] });
     fails("no-sheet", () => v.create("Ammo", { $id: "a1" }));
+  });
+
+  it("the pack is the root unless given", () => {
+    const s = Sapwood.load(SMALL, { packs: [{ name: "dlc" }], sheets: [{ name: "Ammo", pack: "dlc", rows: [["Ammo", "d1"]] }] });
+    s.create("Ammo", { $id: "a1" });
+    expect(s.get("a1")).toMatchObject({ $pack: "root", $sheet: "Ammo" });
+    s.create("Ammo", { $id: "a2" }, { pack: "dlc" });
+    expect(s.get("a2")).toMatchObject({ $pack: "dlc", $sheet: "Ammo" });
+    expect(s.query("Ammo", { pack: "dlc" }).map((e) => e.$id)).toEqual(["d1", "a2"]);
   });
 
   it("renaming through $id rewrites refs and lists the formulas that mention it", () => {

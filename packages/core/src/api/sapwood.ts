@@ -86,7 +86,11 @@ export type Patch =
   | { op: "createPack"; name: string; parent?: string }
   | { op: "createSheet"; name: string; pack?: string; kind?: SheetKind };
 
-/** Where a new entity goes. By default: after the last one of its type, or on the only data sheet. */
+/**
+ * Where a new entity goes (DESIGN §9.3). The pack is the root unless given. With no sheet:
+ * the only data sheet in the pack with a row of the type; with none or several, the sheet
+ * named after the type, made if need be. It goes after the last row of its type there.
+ */
 export interface Placement {
   /** Sheet name. */
   sheet?: string;
@@ -546,18 +550,24 @@ export class Sapwood {
       if (found[0]!.kind !== "data") throw new ApiError("bad-value", `${where.sheet} is a scratch sheet: entities live on data sheets`);
       sheet = found[0]!.id;
     }
-    // After the last entity of the type, on the sheet (or anywhere in the pack).
-    const same = this.project.project().entities.filter((e) => e.type === type && (sheet === undefined || e.at.sheet === sheet) && (pack === undefined || e.pack === pack));
-    const last = same.at(-1);
-    if (last) return { sheet: last.at.sheet, after: last.at.row };
+    // DESIGN §9.3. The pack is the one given, or the root.
+    const home = pack ?? wb.root;
     if (sheet === undefined) {
-      const data = [...wb.sheets.values()].filter((s) => s.kind === "data" && (pack === undefined || s.pack === pack));
-      if (data.length === 0) return { sheet: this.newSheet(type, pack ?? this.project.wb.root), after: null }; // a project's first entity
-      if (data.length !== 1) throw new ApiError("no-sheet", `No sheet has a ${type} yet, and there are several data sheets: say which sheet`);
-      const only = data[0]!;
-      // A sheet named after another type is that type's: the new type gets a sheet of its own.
-      sheet = only.name !== type && this.schema.types.has(only.name) ? this.newSheet(type, only.pack) : only.id;
+      // Data sheets in the pack with a row of the type, active or commented out.
+      const has = new Set(this.project.project().entities.filter((e) => e.type === type && e.pack === home).map((e) => e.at.sheet));
+      const found = [...wb.sheets.values()].filter((s) => s.pack === home && s.kind === "data" && has.has(s.id));
+      if (found.length === 1) sheet = found[0]!.id;
+      else {
+        // None, or several: the sheet named after the type (made if it isn't there). Never a guess between sheets.
+        const named = wb.findSheet(home, type);
+        if (named === undefined) return { sheet: this.newSheet(type, home), after: null };
+        if (named.kind !== "data") throw new ApiError("no-sheet", `${type} would go on the sheet named after it, but ${type} is a scratch sheet: say which sheet`);
+        sheet = named.id;
+      }
     }
+    // After the last row of the type on the sheet, active or commented out; else at the end.
+    const last = this.project.project().entities.filter((e) => e.type === type && e.at.sheet === sheet).at(-1);
+    if (last) return { sheet, after: last.at.row };
     return { sheet, after: this.lastUsedRow(sheet) };
   }
 
