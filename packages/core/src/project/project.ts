@@ -458,6 +458,9 @@ export class Project {
       }
       const extra: ColId[] = [];
       const pins: Op[] = [];
+      // A removed type's layouts go with it: left behind, they'd apply to a type given its
+      // name later (in this edit or another), with columns for fields it doesn't have.
+      for (const t of now.types.values()) if (!byId.has(t.def.id) && doc.layouts.has(t.def.name)) pins.push({ kind: "setLayout", sheet: s.id, type: t.def.name, layout: null });
       for (const [key, type] of types) {
         const old = now.types.get(type)!;
         const t = byId.get(old.def.id);

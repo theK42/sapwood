@@ -159,6 +159,22 @@ describe("schema apply", () => {
 
 describe("schema apply (properties)", () => {
   const RUNS = Number(process.env.RUNS ?? 150);
+  it("a removed type's pinned layout goes with it, so a type renamed to its name starts afresh", () => {
+    // Found by the property below: one edit at a time, removing a field pinned Weapon's
+    // layout, removing Weapon left the pin, and Ammo renamed to Weapon took it over.
+    const s = project();
+    const other = Sapwood.fromDoc(cloneDoc(s.doc));
+    const p = other.project;
+    p.removeField("Weapon", "damage");
+    expect(p.doc.sheets.get(p.sheetId("Weapons"))!.layouts.has("Weapon")).toBe(true);
+    p.removeDef("Weapon");
+    expect(p.doc.sheets.get(p.sheetId("Weapons"))!.layouts.has("Weapon")).toBe(false);
+    p.renameType("Ammo", "Weapon");
+    s.applySchema(other.schemaYaml(), { force: true });
+    expect(s.validate()).toEqual(other.validate());
+    expect(s.get("w1")).toEqual(other.get("w1"));
+  });
+
   const NAMES = ["Ammo", "Weapon", "Cost", "Shield", "Element"];
   const FIELDS = ["speed", "spin", "damage", "element", "price", "hp", "amount"];
 
