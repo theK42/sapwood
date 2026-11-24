@@ -524,6 +524,11 @@ function reads(app: Hono<Env>, prefix: string, place: (c: C) => Place): void {
   });
   app.get(`${prefix}/schema`, (c) => c.body(place(c).s.schemaYaml(), 200, { "Content-Type": "application/yaml; charset=utf-8" }));
   app.get(`${prefix}/validate`, (c) => c.json(place(c).s.validate()));
+  /** What moving entities would do (DESIGN §7.4), changing nothing: `?ids=a&ids=b&pack=dlc&sheet=`. */
+  app.get(`${prefix}/move-preview`, (c) => {
+    const sheet = c.req.query("sheet");
+    return c.json(place(c).s.previewMove(c.req.queries("ids") ?? [], c.req.query("pack") ?? "", sheet ? { sheet } : {}));
+  });
   /** The export's files (§10), each with the ETag its download will carry. */
   app.get(`${prefix}/export`, (c) => {
     const files = place(c).files(c.req.query("allowInvalid") === "1");

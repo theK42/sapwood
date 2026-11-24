@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   parseSchema, resolveSchema,
-  type EntityJson, type ExportFile, type Patch, type ResolvedSchema, type ValidationJson,
+  type EntityJson, type ExportFile, type MoveReport, type Patch, type ResolvedSchema, type ValidationJson,
 } from "@thek42/sapwood-core";
 import type { Backend, QueryArgs, Readable, SchemaWritten, Written } from "./backend.ts";
 import { saveFile } from "./fsutil.ts";
@@ -216,6 +216,14 @@ export class RemoteBackend implements Backend {
 
   async validate(): Promise<ValidationJson> {
     return this.client.json("GET", `${await this.readPlace()}/validate`);
+  }
+
+  async previewMove(ids: string[], pack: string, sheet?: string): Promise<MoveReport> {
+    const params = new URLSearchParams();
+    for (const id of ids) params.append("ids", id);
+    params.set("pack", pack);
+    if (sheet !== undefined) params.set("sheet", sheet);
+    return this.client.json("GET", `${await this.readPlace()}/move-preview?${params}`);
   }
 
   async export(allowInvalid: boolean): Promise<ExportFile[]> {

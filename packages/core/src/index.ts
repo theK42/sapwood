@@ -3,6 +3,7 @@ export const SAPWOOD_CORE_VERSION = "0.0.0";
 // The project API: start here (DESIGN §9.4). The rest is the model under it, for the server.
 export * from "./api/sapwood.ts";
 export * from "./api/where.ts";
+export * from "./api/move.ts";
 
 export * from "./schema/model.ts";
 export * from "./schema/yaml.ts";

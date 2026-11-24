@@ -12,7 +12,8 @@ import type { ColId, PackId, RowId, SheetId, SheetKind } from "../formula/model.
 import { numberToCol } from "../formula/parse.ts";
 import { exportJson, valueJson, type ExportFile, type ExportOptions, type JsonOut } from "../export/json.ts";
 import type { Doc } from "../ops/doc.ts";
-import { cloneDoc, OpError } from "../ops/doc.ts";
+import { cellKey, cloneDoc, OpError, splitCellKey } from "../ops/doc.ts";
+import { followMove, moveReach, type Moved, type ReachBreak } from "./move.ts";
 import { applyOp, undoAll, type Op } from "../ops/ops.ts";
 import { renameFieldMentions, renameIdFormulas, renameMemberMentions, renameTypeMentions, type Mention } from "../ops/rename.ts";
 import { isSection, schemaNodes } from "../ops/schema.ts";
@@ -88,7 +89,8 @@ export type Patch =
   | { op: "renamePack"; name: string; to: string }
   | { op: "movePack"; name: string; parent: string }
   | { op: "renameSheet"; name: string; to: string; pack?: string }
-  | { op: "moveSheet"; name: string; to: string; pack?: string };
+  | { op: "moveSheet"; name: string; to: string; pack?: string }
+  | { op: "moveEntities"; ids: string[]; pack: string; sheet?: string };
 
 /**
  * Where a new entity goes (DESIGN §9.3). The pack is the root unless given. With no sheet:
@@ -120,6 +122,22 @@ export interface SchemaChange extends Change {
   scratch: CellAddress[];
   /** What the text asked for that isn't applied, such as reordering. */
   notes: string[];
+}
+
+/** What moving entities to another pack does, or would do (DESIGN §7.4). */
+export interface MoveReport {
+  /** Each entity moved, and where it went. Ones already there are left out. */
+  moved: { id: string; sheet: string; pack: string }[];
+  /** Refs in the moved entities to entities the new pack can't reach: moving those along mends them. */
+  needs: ReachBreak[];
+  /** Refs to the moved entities from entities that won't reach them there: moving those along mends them. */
+  breaks: ReachBreak[];
+  /** Formulas that couldn't follow the move, and why. The rest were pointed at the new cells. */
+  formulas: { cell: CellAddress; why: string }[];
+  /** Cells of the moved rows outside any field, such as notes: they go with the old rows. */
+  lost: CellAddress[];
+  /** Issues the move adds. */
+  issues: IssueJson[];
 }
 
 export interface CellAddress {
@@ -423,6 +441,142 @@ export class Sapwood {
     return found[0]!.id;
   }
 
+  /**
+   * Move entities to another pack (DESIGN §7.4), each onto the sheet there that a new entity
+   * of its type would go on (§9.3), or the sheet named, after the last of its type. One change.
+   * Every cell of a field goes with it, formats too; formulas pointing at those cells, here or
+   * anywhere, are pointed at the new ones, and formulas in the moved rows likewise. The report
+   * says what didn't follow, and what the move puts out of reach. An entity already on the
+   * sheet it would go to is left as it is.
+   */
+  moveEntities(ids: readonly string[], pack: string, opts: { sheet?: string } = {}): Change & { report: MoveReport } {
+    const before = this.validate().issues;
+    let report!: Omit<MoveReport, "issues" | "formulas">;
+    let formulas: { sheet: SheetId; row: RowId; col: ColId; why: string }[] = [];
+    const change = this.write(() => {
+      const r = this.moveOps(ids, pack, opts);
+      report = r.report;
+      formulas = r.formulas;
+      return { ops: r.ops, formulas: [] };
+    });
+    // Formula cells as they are now the old rows are gone.
+    const where = formulas.map((f) => ({ cell: this.address(f.sheet, f.row, f.col), why: f.why }));
+    return { ...change, report: { ...report, formulas: where, issues: newIssues(before, this.validate().issues) } };
+  }
+
+  /** What moveEntities would do, without doing it. */
+  previewMove(ids: readonly string[], pack: string, opts: { sheet?: string } = {}): MoveReport {
+    const copy = Sapwood.fromDoc(cloneDoc(this.project.doc));
+    copy.project.wb.idSalt = this.project.wb.idSalt;
+    return copy.moveEntities(ids, pack, opts).report;
+  }
+
+  private moveOps(ids: readonly string[], packName: string, opts: { sheet?: string }): { ops: Op[]; report: Omit<MoveReport, "issues" | "formulas">; formulas: { sheet: SheetId; row: RowId; col: ColId; why: string }[] } {
+    if (!Array.isArray(ids) || ids.length === 0) throw new ApiError("bad-value", "Say which entities to move");
+    const pack = this.packId(packName);
+    const wb = this.project.wb;
+    const doc = this.project.doc;
+    const seen = new Set<string>();
+    const ents = ids.map((id) => this.find(id)).filter((e) => !seen.has(`${e.at.sheet}|${e.at.row}`) && seen.add(`${e.at.sheet}|${e.at.row}`));
+    const { needs, breaks } = moveReach(this.project, ents, pack);
+    const moved = new Map<string, Moved>();
+    const rows = new Set<string>();
+    const lk = (c: LayoutColumn) => `${c.field}|${c.path.join(".")}|${c.index ?? ""}`;
+    const plans: { e: Entity; to: SheetId; row: RowId; whole: Set<string>; layout: Layout }[] = [];
+    const report: Omit<MoveReport, "issues" | "formulas"> = { moved: [], needs, breaks, lost: [] };
+    const formulas: { sheet: SheetId; row: RowId; col: ColId; why: string }[] = [];
+
+    // Each entity's new row, made now (with its type and ID), so the next of its type goes after it.
+    for (const e of ents) {
+      const where: Placement = { pack: packName };
+      if (opts.sheet !== undefined) where.sheet = opts.sheet;
+      const { sheet: to, after } = this.placement(e.type, where);
+      if (to === e.at.sheet) continue;
+      const from = wb.sheet(e.at.sheet);
+      const row = wb.sheet(to).rows.freshIds(1)[0]!;
+      this.stage({ kind: "insert", sheet: to, axis: "row", after, ids: [row] });
+      this.growColumns(to, 2);
+      rows.add(`${e.at.sheet}|${e.at.row}`);
+      for (const pos of [1, 2]) {
+        const col = from.cols.idAt(pos);
+        const dest = wb.sheet(to).cols.idAt(pos);
+        moved.set(`${e.at.sheet}|${e.at.row}|${col}`, { sheet: to, row, col: dest });
+        this.stage(this.cellOp(to, row, dest, doc.sheets.get(e.at.sheet)!.cells.get(cellKey(e.at.row, col)) ?? null));
+      }
+      // Each field's column there: the same one (by field, sub-field and index), added if the
+      // sheet's default layout runs short. One it lacks (split there, say) is written as a value.
+      const t = this.schema.types.get(e.type)!;
+      const old = this.project.layout(e.at.sheet, e.type);
+      let there = this.project.layout(to, e.type);
+      const whole = new Set<string>();
+      for (const c of old) {
+        let dest = there.find((x) => lk(x) === lk(c));
+        if (!dest && !doc.sheets.get(to)!.layouts.has(e.type) && !c.path.length && c.index === undefined) {
+          this.growColumns(to, 3 + t.fields.findIndex((f) => f.def.id === c.field));
+          there = this.project.layout(to, e.type);
+          dest = there.find((x) => lk(x) === lk(c));
+        }
+        if (dest) moved.set(`${e.at.sheet}|${e.at.row}|${c.col}`, { sheet: to, row, col: dest.col });
+        else whole.add(c.field);
+      }
+      plans.push({ e, to, row, whole, layout: old });
+      report.moved.push({ id: e.id!, sheet: wb.sheet(to).name, pack: packName });
+    }
+
+    // The cells, each to its new place; formulas in them follow too.
+    const ops: Op[] = [];
+    for (const { e, to, row, whole, layout } of plans) {
+      const s = doc.sheets.get(e.at.sheet)!;
+      const fieldCols = new Map(layout.map((c) => [c.col, c.field]));
+      for (const [k, content] of s.cells) {
+        const [r, col] = splitCellKey(k);
+        if (r !== e.at.row) continue;
+        const dest = moved.get(`${e.at.sheet}|${r}|${col}`);
+        const format = s.formats.get(k);
+        if (dest && format) ops.push({ kind: "setFormat", sheet: to, row, col: dest.col, format });
+        if (content === null) continue;
+        if (!dest) {
+          if (!whole.has(fieldCols.get(col) ?? "")) report.lost.push(this.address(e.at.sheet, r, col));
+          continue;
+        }
+        if (dest.col === wb.sheet(to).cols.idAt(1) || dest.col === wb.sheet(to).cols.idAt(2)) continue; // made already
+        let c = content;
+        if ("f" in c) {
+          const f = followMove(c.f, to, moved, rows, wb, pack, true);
+          c = { f: f.expr };
+          for (const why of f.problems) formulas.push({ sheet: to, row, col: dest.col, why });
+        }
+        ops.push(this.cellOp(to, row, dest.col, c));
+      }
+      // Fields the sheet there holds differently: written as values.
+      const here: Entity = { ...e, at: { sheet: to, row } };
+      for (const id of whole) {
+        const entry = [...e.fields.values()].find((x) => x.field.id === id);
+        if (!entry || entry.value === undefined) continue;
+        const first = this.project.layout(to, e.type).find((c) => c.field === id);
+        if (entry.formula && first) formulas.push({ sheet: to, row, col: first.col, why: `${entry.field.name} is laid out differently on ${wb.sheet(to).name}, so it's written there as its value` });
+        ops.push(...this.fieldOps(here, entry.field.name, valueJson(this.schema, entry.field.type, entry.value, { ref: (id) => id, defaults: false }) as JsonValue, true));
+      }
+    }
+
+    // Formulas anywhere else that read the moved cells.
+    for (const s of doc.sheets.values())
+      for (const [k, content] of s.cells) {
+        if (content === null || !("f" in content)) continue;
+        const [r, col] = splitCellKey(k);
+        if (rows.has(`${s.id}|${r}`)) continue;
+        const f = followMove(content.f, s.id, moved, rows, wb, s.pack, false);
+        if (f.changed) ops.push(this.cellOp(s.id, r, col, { f: f.expr }));
+        for (const why of f.problems) formulas.push({ sheet: s.id, row: r, col, why });
+      }
+
+    // Then the old rows go.
+    const gone = new Map<SheetId, RowId[]>();
+    for (const { e } of plans) gone.set(e.at.sheet, [...(gone.get(e.at.sheet) ?? []), e.at.row]);
+    for (const [sheet, ids2] of gone) ops.push({ kind: "delete", sheet, axis: "row", ids: ids2 });
+    return { ops, report, formulas };
+  }
+
   /** Make an empty sheet in a pack (root unless named): a data sheet, or a scratch one. Names are unique in a pack. */
   createSheet(name: string, opts: { pack?: string; kind?: SheetKind } = {}): Change {
     return this.write(() => {
@@ -499,6 +653,8 @@ export class Sapwood {
         return this.createPack(p.name, p.parent);
       case "renamePack":
         return this.renamePack(p.name, p.to);
+      case "moveEntities":
+        return this.moveEntities(p.ids, p.pack, p.sheet === undefined ? {} : { sheet: p.sheet });
       case "movePack":
         return this.movePack(p.name, p.parent);
       case "renameSheet":
@@ -1132,6 +1288,18 @@ export class Sapwood {
     }
     return out;
   }
+}
+
+/** Issues in `after` that `before` hasn't (as many times), by code, message and entity. */
+function newIssues(before: readonly IssueJson[], after: readonly IssueJson[]): IssueJson[] {
+  const key = (i: IssueJson) => `${i.code}|${i.message}|${i.entity?.type ?? ""}|${i.entity?.id ?? ""}`;
+  const count = new Map<string, number>();
+  for (const i of before) count.set(key(i), (count.get(key(i)) ?? 0) + 1);
+  return after.filter((i) => {
+    const n = count.get(key(i)) ?? 0;
+    if (n > 0) count.set(key(i), n - 1);
+    return n === 0;
+  });
 }
 
 interface Planned {

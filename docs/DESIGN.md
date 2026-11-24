@@ -474,7 +474,7 @@ Formulas follow the §7.2 default rule (own pack plus ancestors) for every sheet
 
 Moving a sheet to another pack, or moving rows to a sheet in another pack, is allowed. Validation reports any references or formulas the move breaks, in the task, before landing.
 
-**Planned** (ROADMAP Phase 4, steps 6 and 7):
+**Moving entities** (done; ROADMAP Phase 4 step 6) and **suggested moves** (planned, step 7):
 
 - **Moving entities** to another pack, one or a group, with a preview first: what they refer to that won't reach from the new pack (offered to move along), and what refers to them that won't reach them any more (a warning, offering to move those too where that mends it).
   - **Formulas follow the move. Decided.** In the same change, a formula that points at a moved entity's field cell is rewritten to that field's new cell, and formulas in the moved rows are rewritten to match: a reference to the same row stays on the row, and one to another cell of the old sheet becomes a cross-sheet reference. What can't follow (a scratch cell, a sheet the new pack can't reach) is listed in the preview and becomes `#REF!` or `#REACH!`. `ENTITY("id")` needs nothing.

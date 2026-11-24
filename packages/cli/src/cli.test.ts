@@ -94,6 +94,22 @@ describe("the sapwood command", () => {
     expect((await sw("pack", "list")).code).toBe(2);
   });
 
+  it("moves entities to another pack, saying first what that breaks", async () => {
+    const { sw, json } = await setup();
+    await sw("pack", "create", "dlc");
+    const dry = await sw("move", "a1", "--to", "dlc", "--dry-run");
+    expect(dry.code).toBe(0);
+    expect(dry.out).toContain("Would move a1 to dlc (Ammo)");
+    expect(dry.out).toContain("w1.shots names a1, and won't reach it there: move w1 too to mend it");
+    expect((await json("get", "a1")).$pack).toBe("root");
+    const real = await sw("move", "a1", "w1", "--to", "dlc");
+    expect(real.out).toContain("Moved 2 entities.");
+    expect(await json("get", "a1")).toMatchObject({ $pack: "dlc", $sheet: "Ammo" });
+    expect(await json("get", "w1")).toMatchObject({ $pack: "dlc", $sheet: "Weapon" });
+    expect((await sw("move", "a1", "--to", "dlc")).out).toContain("Nothing to move");
+    expect((await sw("move", "a1")).code).toBe(2);
+  });
+
   it("renames and moves packs and sheets", async () => {
     const { sw, json } = await setup();
     await sw("pack", "create", "dlc");

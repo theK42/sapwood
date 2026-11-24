@@ -53,6 +53,8 @@ export interface SheetProps {
   /** Open an entity's row in the form; make a new entity from one. */
   openForm?(at: FormRow): void;
   newEntity?(type: string, pack: PackId): void;
+  /** Move entities, by ID, to another pack. */
+  moveEntities?(ids: string[]): void;
 }
 
 /** How long a cell flashes for (§6.7: a brief pulse, once). */
@@ -636,6 +638,17 @@ function SheetMenu(p: {
     ...(c && g.rowClass(c.row).kind === "entity" ? [item("Open in the form", true, () => p.navigate((s) => s.openForm?.({ sheet: g.sheet, row: g.rowId(c.row) })))] : []),
     ...(type && p.canEdit ? [item(`New ${type}…`, true, () => p.navigate((s) => s.newEntity?.(type, g.project.wb.sheet(g.sheet).pack)))] : []),
     ...(type ? [item(`Show every ${type}`, true, () => p.navigate((s) => s.openType(type)))] : []),
+    // The entities in the rows the menu is for: moved to another pack, together.
+    ...(() => {
+      if (!p.canEdit || g.kind !== "data" || p.at.whole === "col") return [];
+      const ids: string[] = [];
+      for (let y = r.row; y < r.row + r.rows && y < g.liveRows; y++) {
+        const id = g.rowClass(y).kind === "entity" ? g.cell(y, 1).input.trim() : "";
+        if (id && !ids.includes(id)) ids.push(id);
+      }
+      if (!ids.length) return [];
+      return [item(`Move ${ids.length === 1 ? `“${ids[0]}”` : `${ids.length} entities`} to another pack…`, true, () => p.navigate((s) => s.moveEntities?.(ids)))];
+    })(),
   ];
   // How the column's field sits in the columns (DESIGN §6.3, §6.4): a struct split or not, a list spread or not.
   const fc = p.canEdit && p.at.whole !== "row" ? g.fieldColumnsAt(p.columnType, c?.col ?? r.col) : null;

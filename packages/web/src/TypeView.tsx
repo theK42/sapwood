@@ -37,6 +37,8 @@ interface Props {
   /** Open an entity's row in the form; make a new entity from one. */
   openForm?(at: FormRow): void;
   newEntity?(type: string, pack: PackId): void;
+  /** Move entities, by ID, to another pack. */
+  moveEntities?(ids: string[]): void;
 }
 
 const empty = (): GridSelection => ({ columns: CompactSelection.empty(), rows: CompactSelection.empty() });
@@ -297,6 +299,14 @@ export function TypeView(p: Props) {
           items={[
             ...(t.cell(menu.row, menu.col).panel && t.home(menu.row, menu.col) ? [{ label: p.canEdit ? "Edit in the panel" : "Show in the panel", run: () => openPanel(menu.row, menu.col) }] : []),
             ...(rowHome && p.openForm ? [{ label: "Open in the form", run: () => p.openForm!({ sheet: rowHome.sheet, row: rowHome.rowId }) }] : []),
+            ...(() => {
+              // The selected rows' entities, if the menu's row is among them; else that row's.
+              const range = selection.current?.range;
+              const rows = range && menu.row >= range.y && menu.row < range.y + range.height ? Array.from({ length: range.height }, (_, i) => range.y + i) : [menu.row];
+              const ids = [...new Set(rows.map((y) => (y < t.rows.length ? t.cell(y, 1).input.trim() : "")).filter(Boolean))];
+              if (!p.canEdit || !p.moveEntities || !ids.length) return [];
+              return [{ label: `Move ${ids.length === 1 ? `“${ids[0]}”` : `${ids.length} entities`} to another pack…`, run: () => p.moveEntities!(ids) }];
+            })(),
             ...(rowHome ? [{ label: `Go to the row on ${rowHome.sheetName}`, run: () => p.goTo({ sheet: rowHome.sheet, row: rowHome.row, col: Math.max(0, t.home(menu.row, menu.col)?.col ?? 0) }) }] : []),
             ...(menuIds?.defines ? [{ label: `Find references to “${menuIds.defines}”`, run: () => p.findRefs(menuIds.defines!) }] : []),
             ...(menuIds?.names ?? []).slice(0, 3).flatMap((id) => [

@@ -395,6 +395,13 @@ export class Engine {
 
   /** Forget a sheet's layouts (the sheet is being removed; it must be empty). */
   dropSheet(sheet: SheetId): void {
+    // Its entity rows go from the type index too: left there, sorting a type's rows would look the sheet up.
+    for (const [row, rec] of this.rowEnt)
+      if (rec.sheet === sheet) {
+        this.rowEnt.delete(row);
+        this.typeRows.get(rec.type)?.delete(row);
+        this.byType.delete(rec.type);
+      }
     this.layouts.delete(sheet);
     this.layoutCols.delete(sheet);
     this.grid.delete(sheet);

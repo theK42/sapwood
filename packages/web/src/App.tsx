@@ -14,6 +14,7 @@ import { RefsPanel } from "./RefsPanel.tsx";
 import { ValuePanel, type PanelCell } from "./ValuePanel.tsx";
 import { FormPanel, NewEntityPanel, type FormRow } from "./FormPanel.tsx";
 import { EntitiesPage } from "./EntitiesPage.tsx";
+import { MovePanel } from "./MovePanel.tsx";
 import { entityAt } from "./form.ts";
 import { TypeView } from "./TypeView.tsx";
 import { Home } from "./Home.tsx";
@@ -103,6 +104,7 @@ type Side =
   | { kind: "value"; at: PanelCell }
   | { kind: "form"; at: FormRow }
   | { kind: "new"; type: string | null; pack: PackId | null; n: number }
+  | { kind: "move"; ids: string[]; n: number }
   | null;
 
 function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
@@ -260,6 +262,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const findRefs = (id: string) => setSide({ kind: "refs", id });
   const openPanel = (at: PanelCell) => setSide({ kind: "value", at });
   const openForm = (at: FormRow) => setSide({ kind: "form", at });
+  const moveEntities = (ids: string[]) => setSide((x) => ({ kind: "move", ids, n: (x?.kind === "move" ? x.n : 0) + 1 }));
   const newEntity = (type: string | null, pack: PackId | null) => setSide((x) => ({ kind: "new", type, pack, n: (x?.kind === "new" ? x.n : 0) + 1 }));
   /** While the panel or the form is open, it follows the selection to another cell or entity. */
   const selected = (at: PanelCell | null, panel: boolean) =>
@@ -350,6 +353,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           selected={selected}
           openForm={openForm}
           newEntity={newEntity}
+          moveEntities={moveEntities}
         />
       ) : route.kind === "type" ? (
         <TypeView
@@ -369,6 +373,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           selected={selected}
           openForm={openForm}
           newEntity={newEntity}
+          moveEntities={moveEntities}
         />
       ) : route.kind === "entities" ? (
         <EntitiesPage
@@ -381,6 +386,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           showId={(t, id) => (t === route.type ? show : (r: Route) => go(branch, r))({ kind: "entities", type: t, id })}
           openGrid={(t) => go(branch, { kind: "type", name: t })}
           goTo={goTo}
+          moveEntities={moveEntities}
         />
       ) : route.kind === "history" ? (
         <HistoryPage api={api} branch={branch} tick={headTick} open={(id) => go(branch, { kind: "commit", id })} href={(id) => routePath(branch, { kind: "commit", id })} back={() => go(branch)} />
@@ -441,8 +447,12 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           edit={edit}
           goTo={goTo}
           newEntity={newEntity}
+          move={(id) => moveEntities([id])}
           close={() => setSide(null)}
         />
+      )}
+      {side?.kind === "move" && source && (
+        <MovePanel key={side.n} source={source} ids={side.ids} canEdit={canEdit && (session ? session.editable : true)} edit={edit} close={() => setSide(null)} />
       )}
       {side?.kind === "new" && source && (
         <NewEntityPanel

@@ -23,6 +23,8 @@ interface Props {
   /** The type's grid (its type view). */
   openGrid(type: string): void;
   goTo(sheet: SheetId, row: number, col: number | null): void;
+  /** Move entities to another pack. */
+  moveEntities?(ids: string[]): void;
 }
 
 export function EntitiesPage(p: Props) {
@@ -142,7 +144,7 @@ export function EntitiesPage(p: Props) {
             close={() => setMaking(null)}
           />
         ) : chosen ? (
-          <FormPanel embedded source={p.source} at={chosen} canEdit={p.canEdit} edit={p.edit} goTo={p.goTo} newEntity={(_, pack) => setMaking((m) => ({ pack, n: (m?.n ?? 0) + 1 }))} />
+          <FormPanel embedded source={p.source} at={chosen} canEdit={p.canEdit} edit={p.edit} goTo={p.goTo} {...(p.moveEntities ? { move: (id: string) => p.moveEntities!([id]) } : {})} newEntity={(_, pack) => setMaking((m) => ({ pack, n: (m?.n ?? 0) + 1 }))} />
         ) : (
           type && <p className="muted pad">Pick {aOrAn(type)} from the list{p.canEdit ? `, or add a new one` : ""}.</p>
         )}

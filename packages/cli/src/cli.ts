@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { ApiError, Sapwood, type CellAddress, type Patch, type ValidationJson } from "@thek42/sapwood-core";
+import { ApiError, Sapwood, type CellAddress, type MoveReport, type Patch, type ValidationJson } from "@thek42/sapwood-core";
 import { LocalBackend, type Backend, type Written } from "./backend.ts";
 import { Client, configPath, enc, readConfig, RemoteBackend, ServerError, serverUrl, writeConfig, type Config, type Fetch, type ReadAt, type TaskJson } from "./remote.ts";
 import { findProject, loadProjectFile, PROJECT_FILE, saveProjectFile } from "./store.ts";
@@ -59,6 +59,9 @@ Data (on a server: reads show your current task, writes go into it)
                                   In root unless --pack; on the only sheet there with
                                   the type, else on the sheet named after the type
   comment-out <id>  |  uncomment <id>  |  delete <id>
+  move <id>… --to <pack> [--sheet <s>] [--dry-run]
+                                  To another pack, with formulas following; says
+                                  what it would put out of reach first
   apply <patch.jsonl>             Patches, one JSON object per line, all or nothing
 Packs and sheets
   pack create <name> [--parent <p>]   A pack, under root unless --parent (a Developer's)
@@ -259,6 +262,22 @@ async function command(argv: string[], io: Io): Promise<number> {
       const w = await b.patch([patch]);
       const e = await b.get(id!).catch(() => null);
       return wrote(w, `Created ${type} ${id}${e && "$sheet" in e ? ` on ${e.$sheet}` : ""}.`);
+    }
+
+    case "move": {
+      const p = parse(args, { task: { type: "string" }, to: { type: "string" }, sheet: { type: "string" }, "dry-run": { type: "boolean" } });
+      const ids = p.positionals;
+      if (!ids.length) throw new UsageError("Say which entities to move: sapwood move <id>… --to <pack>");
+      const to = p.values.to as string | undefined;
+      if (to === undefined) throw new UsageError("Say which pack to move them to: --to <pack>");
+      const sheet = p.values.sheet as string | undefined;
+      const b = backend(p, io).b;
+      const r = await b.previewMove(ids, to, sheet);
+      const dry = p.values["dry-run"] === true;
+      for (const line of moveLines(r, dry)) io.out(line);
+      if (dry || !r.moved.length) return 0;
+      const patch: Patch = { op: "moveEntities", ids, pack: to, ...(sheet === undefined ? {} : { sheet }) };
+      return wrote(await b.patch([patch]), `Moved ${plural(r.moved.length, "entity", "entities")}.`);
     }
 
     case "comment-out":
@@ -795,4 +814,17 @@ function conflictLines(cs: ConflictJson[]): string[] {
     const detail = k.kind === "cell" && c.where ? `${c.where.sheet}!${c.where.cell}: mine ${shown(k.mine)}, theirs ${shown(k.theirs)}` : c.id;
     return `  ${i + 1}. ${detail}`;
   });
+}
+/** A move's report, as lines: where each goes, then what it would break. */
+function moveLines(r: MoveReport, dry: boolean): string[] {
+  const at = (c: CellAddress) => `${c.sheet}!${c.cell}`;
+  const out: string[] = [];
+  if (!r.moved.length) out.push("Nothing to move: they're there already.");
+  for (const m of r.moved) out.push(`${dry ? "Would move" : "Moving"} ${m.id} to ${m.pack} (${m.sheet})`);
+  for (const n of r.needs) out.push(`  ${n.from}.${n.field} names ${n.to}, which ${r.moved[0]?.pack ?? "the pack"} can't reach: move ${n.to} too to mend it`);
+  for (const n of r.breaks) out.push(`  ${n.from}.${n.field} names ${n.to}, and won't reach it there: move ${n.from} too to mend it`);
+  for (const f of r.formulas) out.push(`  Formula ${at(f.cell)}: ${f.why}`);
+  if (r.lost.length) out.push(`  Left behind, with the old rows: ${r.lost.map(at).join(", ")}`);
+  if (r.issues.length) out.push(`  ${plural(r.issues.length, "new issue")}: ${r.issues.slice(0, 5).map((i) => i.message).join("; ")}${r.issues.length > 5 ? "; …" : ""}`);
+  return out;
 }

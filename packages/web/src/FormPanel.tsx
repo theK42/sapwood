@@ -36,6 +36,8 @@ interface Props {
   /** Absent on the entity page, where the form isn't closed. */
   close?: () => void;
   embedded?: boolean;
+  /** Move this entity to another pack. */
+  move?: (id: string) => void;
 }
 
 const nested = (k: string) => k === "struct" || k === "union" || k === "list" || k === "json";
@@ -118,6 +120,11 @@ export function FormPanel(p: Props) {
         </button>
         {e.pack !== project.wb.root && <span className="muted"> · {project.wb.packName(e.pack)}</span>}
         <span className="spacer" />
+        {p.canEdit && p.move && e.id !== null && (
+          <button className="button quiet small" onClick={() => p.move!(e.id!)} title="Move it to another pack">
+            Move…
+          </button>
+        )}
         {p.canEdit && (
           <button className="button quiet small" onClick={() => p.newEntity(e.type, e.pack)} title={`A new ${e.type}, from a form`}>
             + New {e.type}
