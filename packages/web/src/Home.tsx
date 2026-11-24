@@ -31,9 +31,11 @@ interface Props {
   canSheets: boolean;
   canPacks: boolean;
   edit(fn: (p: Project) => { ops: Op[] }): void;
+  /** Suggested moves down the tree: for a pack and below, or (null) everything. */
+  suggestMoves(pack: string | null): void;
 }
 
-export function Home({ source, atHead, commits, others, open, href, showIssues, openType, typeHref, go, routeHref, canSheets, canPacks, edit }: Props) {
+export function Home({ source, atHead, commits, others, open, href, showIssues, openType, typeHref, go, routeHref, canSheets, canPacks, edit, suggestMoves }: Props) {
   // A change to the tree that the API refuses says why, above the tree.
   const [refused, setRefused] = useState<string | null>(null);
   const act = (fn: (s: Sapwood) => Change) =>
@@ -73,6 +75,11 @@ export function Home({ source, atHead, commits, others, open, href, showIssues, 
       <section className="panel tree" aria-label="Packs and sheets">
         <h2>
           Packs and sheets <span className="muted small">{atHead ? "on the branch head" : "in your task"}</span>
+          {tree.root.packs.length > 0 && (
+            <button className="link small tree-suggest" onClick={() => suggestMoves(null)} title="Entities used only from packs below theirs">
+              Suggest moves
+            </button>
+          )}
         </h2>
         {(tree.project.errors > 0 || tree.project.warnings > 0) && (
           <p className="small">
@@ -90,7 +97,7 @@ export function Home({ source, atHead, commits, others, open, href, showIssues, 
             </button>
           </p>
         )}
-        <PackTree root={tree.root} open={open} href={href} actions={{ sheets: canSheets, packs: canPacks, act }} />
+        <PackTree root={tree.root} open={open} href={href} actions={{ sheets: canSheets, packs: canPacks, act, suggest: suggestMoves }} />
       </section>
       <aside className="side">
         <section className="panel" aria-label="Entities">

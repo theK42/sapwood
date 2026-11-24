@@ -82,6 +82,7 @@ export function FormPanel(p: Props) {
   const rowPos = (sheet.rows.posOf(e.at.row) ?? 1) - 1;
   const colPos = (c: FormField["cell"]) => (c?.col === undefined ? null : (sheet.cols.posOf(c.col) ?? 1) - 1);
   const readOnly = !p.canEdit;
+  const kept = project.doc.sheets.get(e.at.sheet)?.rowFlags.get(e.at.row)?.has("keepHere") ?? false;
 
   /** A write through the API, by the entity's ID as it is when the write is made. */
   const write = (fields: Record<string, JsonValue>, force = false) =>
@@ -153,6 +154,12 @@ export function FormPanel(p: Props) {
               </label>
               {e.id !== null && !readOnly && <p className="muted small vf-hint">A new ID renames it, and the refs to it.</p>}
             </div>
+            {e.id !== null && (
+              <label className="vf-row vf-keep small">
+                <input type="checkbox" checked={kept} disabled={readOnly} onChange={(x) => write({ $keepHere: x.target.checked })} />
+                <span>📌 Don't suggest moving it to another pack</span>
+              </label>
+            )}
             {form.fields.map((f) => (
               <FieldRow key={f.def.id} project={project} f={f} readOnly={readOnly || e.id === null} write={write} show={() => p.goTo(e.at.sheet, rowPos, colPos(f.cell))} />
             ))}

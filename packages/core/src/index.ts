@@ -4,6 +4,7 @@ export const SAPWOOD_CORE_VERSION = "0.0.0";
 export * from "./api/sapwood.ts";
 export * from "./api/where.ts";
 export * from "./api/move.ts";
+export * from "./api/suggest.ts";
 
 export * from "./schema/model.ts";
 export * from "./schema/yaml.ts";

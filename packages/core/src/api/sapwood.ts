@@ -14,6 +14,7 @@ import { exportJson, valueJson, type ExportFile, type ExportOptions, type JsonOu
 import type { Doc } from "../ops/doc.ts";
 import { cellKey, cloneDoc, OpError, splitCellKey } from "../ops/doc.ts";
 import { followMove, moveReach, type Moved, type ReachBreak } from "./move.ts";
+import { suggestMoves, type MoveSuggestion } from "./suggest.ts";
 import { applyOp, undoAll, type Op } from "../ops/ops.ts";
 import { renameFieldMentions, renameIdFormulas, renameMemberMentions, renameTypeMentions, type Mention } from "../ops/rename.ts";
 import { isSection, schemaNodes } from "../ops/schema.ts";
@@ -42,6 +43,8 @@ export interface EntityJson {
   $pack: string;
   $sheet: string;
   $active: boolean;
+  /** Marked "don't suggest moving" (§7.4); absent when not. */
+  $keepHere?: true;
   [field: string]: JsonValue;
 }
 
@@ -173,7 +176,7 @@ export interface QueryOptions {
   inactive?: boolean;
 }
 
-const META = new Set(["$type", "$id", "$pack", "$sheet", "$active"]);
+const META = new Set(["$type", "$id", "$pack", "$sheet", "$active", "$keepHere"]);
 
 export class Sapwood {
   readonly project: Project;
@@ -464,6 +467,15 @@ export class Sapwood {
     return { ...change, report: { ...report, formulas: where, issues: newIssues(before, this.validate().issues) } };
   }
 
+  /**
+   * Entities that could move down the pack tree (DESIGN §7.4): everything using them is in
+   * one branch below them. Each with the lowest pack all its users reach. Ones marked
+   * `$keepHere` aren't suggested. `pack` limits it to that pack and its sub-packs.
+   */
+  suggestMoves(opts: { pack?: string } = {}): MoveSuggestion[] {
+    return suggestMoves(this.project, opts.pack === undefined ? undefined : this.packId(opts.pack));
+  }
+
   /** What moveEntities would do, without doing it. */
   previewMove(ids: readonly string[], pack: string, opts: { sheet?: string } = {}): MoveReport {
     const copy = Sapwood.fromDoc(cloneDoc(this.project.doc));
@@ -497,6 +509,8 @@ export class Sapwood {
       this.stage({ kind: "insert", sheet: to, axis: "row", after, ids: [row] });
       this.growColumns(to, 2);
       rows.add(`${e.at.sheet}|${e.at.row}`);
+      // Its row's flags go with it.
+      for (const flag of doc.sheets.get(e.at.sheet)!.rowFlags.get(e.at.row) ?? []) this.stage({ kind: "setRowFlag", sheet: to, row, flag, on: true });
       for (const pos of [1, 2]) {
         const col = from.cols.idAt(pos);
         const dest = wb.sheet(to).cols.idAt(pos);
@@ -758,6 +772,12 @@ export class Sapwood {
       const active = fields.$active;
       if (typeof active !== "boolean") throw new ApiError("bad-value", "$active is true or false");
       if (active !== e.active) ops.push(this.cellOp(e.at.sheet, e.at.row, this.colAt(e.at.sheet, 1), { v: active ? e.type : `#${e.type}` }));
+    }
+    if ("$keepHere" in fields) {
+      const keep = fields.$keepHere;
+      if (typeof keep !== "boolean") throw new ApiError("bad-value", "$keepHere is true or false");
+      const now = this.project.doc.sheets.get(e.at.sheet)!.rowFlags.get(e.at.row)?.has("keepHere") ?? false;
+      if (keep !== now) ops.push({ kind: "setRowFlag", sheet: e.at.sheet, row: e.at.row, flag: "keepHere", on: keep });
     }
     for (const k of ["$type", "$pack", "$sheet"]) if (k in fields) throw new ApiError("bad-value", `${k} can't be set: create the entity anew where it should be, and delete this one`);
     if ("$id" in fields && fields.$id !== e.id) {
@@ -1234,6 +1254,7 @@ export class Sapwood {
   private entityJson(e: Entity): EntityJson {
     const wb = this.project.wb;
     const out: EntityJson = { $type: e.type, $id: e.id!, $pack: wb.packs.get(e.pack)!.name, $sheet: wb.sheet(e.at.sheet).name, $active: e.active };
+    if (this.project.doc.sheets.get(e.at.sheet)?.rowFlags.get(e.at.row)?.has("keepHere")) out.$keepHere = true;
     const schema = this.schema;
     const ref = (id: string): JsonOut => id;
     for (const f of schema.types.get(e.type)!.fields) {

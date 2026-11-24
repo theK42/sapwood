@@ -62,6 +62,8 @@ Data (on a server: reads show your current task, writes go into it)
   move <id>… --to <pack> [--sheet <s>] [--dry-run]
                                   To another pack, with formulas following; says
                                   what it would put out of reach first
+  suggest-moves [--pack <p>]      Entities used only from a pack below theirs, and
+                                  where they could go (set $keepHere=true to stop one)
   apply <patch.jsonl>             Patches, one JSON object per line, all or nothing
 Packs and sheets
   pack create <name> [--parent <p>]   A pack, under root unless --parent (a Developer's)
@@ -278,6 +280,16 @@ async function command(argv: string[], io: Io): Promise<number> {
       if (dry || !r.moved.length) return 0;
       const patch: Patch = { op: "moveEntities", ids, pack: to, ...(sheet === undefined ? {} : { sheet }) };
       return wrote(await b.patch([patch]), `Moved ${plural(r.moved.length, "entity", "entities")}.`);
+    }
+
+    case "suggest-moves": {
+      const p = parse(args, { task: { type: "string" }, pack: { type: "string" } });
+      positionals(p, []);
+      const list = await backend(p, io).b.suggestMoves(p.values.pack as string | undefined);
+      if (!list.length) io.out("No suggestions: nothing is used only from below where it is.");
+      for (const s of list) io.out(`${s.id} (${s.type}): ${s.from} → ${s.to}, used by ${s.usedBy.join(", ")}${s.uses > s.usedBy.length ? ` and ${s.uses - s.usedBy.length} more` : ""}`);
+      if (list.length) io.out(`Move one with: sapwood move <id> --to <pack>`);
+      return 0;
     }
 
     case "comment-out":

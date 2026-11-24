@@ -57,7 +57,7 @@ const isObject = (v: unknown): v is { [k: string]: JsonValue } => typeof v === "
 /**
  * Fields from `field=value` assignments, for an entity or singleton of `type` whose fields
  * are now `current`. `field.sub=value` sets one field of a struct and keeps the others.
- * `$id=…` renames, `$active=false` comments out.
+ * `$id=…` renames, `$active=false` comments out, `$keepHere=true` marks it "don't suggest moving".
  */
 export function assignments(schema: ResolvedSchema, type: string, args: readonly string[], current: Record<string, JsonValue> = {}): Record<string, JsonValue> {
   const t = schema.types.get(type);
@@ -70,7 +70,7 @@ export function assignments(schema: ResolvedSchema, type: string, args: readonly
     const top = path[0]!;
     if (top.startsWith("$")) {
       if (path.length > 1) throw new UsageError(`${top} has no parts`);
-      fields[top] = top === "$active" ? parseValue({ kind: "bool" }, text) : text;
+      fields[top] = top === "$active" || top === "$keepHere" ? parseValue({ kind: "bool" }, text) : text;
       continue;
     }
     const f = t?.fieldByName.get(top)?.def;

@@ -164,6 +164,17 @@ export function SheetView(p: SheetProps) {
           args.ctx.fillRect(args.rect.x, args.rect.y, 4, args.rect.height);
           args.ctx.restore();
         }
+        // "Don't suggest moving": a small pin at the cell's right.
+        if (g!.keptHere(args.row)) {
+          args.ctx.save();
+          args.ctx.font = "11px system-ui, sans-serif";
+          args.ctx.textAlign = "right";
+          args.ctx.textBaseline = "middle";
+          args.ctx.globalAlpha = 0.7;
+          args.ctx.fillStyle = typeColor(t ?? "");
+          args.ctx.fillText("📌", args.rect.x + args.rect.width - 4, args.rect.y + args.rect.height / 2);
+          args.ctx.restore();
+        }
       }
       const issue = g!.cell(args.row, args.col).issue;
       if (issue) drawIssue(args.ctx, args.rect, issue.level);
@@ -647,7 +658,15 @@ function SheetMenu(p: {
         if (id && !ids.includes(id)) ids.push(id);
       }
       if (!ids.length) return [];
-      return [item(`Move ${ids.length === 1 ? `“${ids[0]}”` : `${ids.length} entities`} to another pack…`, true, () => p.navigate((s) => s.moveEntities?.(ids)))];
+      // Marked "don't suggest moving", or not: the first row says which way the item goes.
+      const rowOf = (y: number) => y >= r.row && y < r.row + r.rows && g.rowClass(y).kind === "entity";
+      let first = r.row;
+      while (first < r.row + r.rows && !rowOf(first)) first++;
+      const kept = g.keptHere(first);
+      return [
+        item(`Move ${ids.length === 1 ? `“${ids[0]}”` : `${ids.length} entities`} to another pack…`, true, () => p.navigate((s) => s.moveEntities?.(ids))),
+        item(kept ? `Suggest moving ${ids.length === 1 ? "it" : "them"} again` : `Don't suggest moving ${ids.length === 1 ? "it" : "them"}`, true, () => p.change((x) => x.keepHere(ids, !kept))),
+      ];
     })(),
   ];
   // How the column's field sits in the columns (DESIGN §6.3, §6.4): a struct split or not, a list spread or not.

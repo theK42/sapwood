@@ -8,7 +8,7 @@
 import { sameContent, type Content } from "../formula/content.ts";
 import { anchorIndex, insertAfter, type ColId, type PackId, type RowId, type SheetId, type SheetKind } from "../formula/model.ts";
 import type { Layout } from "../project/layout.ts";
-import { axisOf, cellKey, OpError, hasId, isLive, splitCellKey, type Axis, type Doc, type Format, type SheetDoc } from "./doc.ts";
+import { axisOf, cellKey, OpError, hasId, isLive, splitCellKey, type Axis, type Doc, type Format, type RowFlag, type SheetDoc } from "./doc.ts";
 import type { Id } from "../schema/model.ts";
 import { renameEnumMemberOps, renameFieldOps, renameIdWrites, renameTypeOps } from "./rename.ts";
 import { addNode, removeNode, setNodeProp, type SchemaDef, type SchemaParent } from "./schema.ts";
@@ -34,6 +34,8 @@ export type Op =
   | { kind: "renameSheet"; sheet: SheetId; name: string }
   | { kind: "setSheetPack"; sheet: SheetId; pack: PackId }
   | { kind: "setLayout"; sheet: SheetId; type: string; layout: Layout | null }
+  /** Set or clear a flag on a row (§7.4: `keepHere` is "don't suggest moving"). */
+  | { kind: "setRowFlag"; sheet: SheetId; row: RowId; flag: RowFlag; on: boolean }
   | { kind: "createPack"; pack: PackId; name: string; parent: PackId }
   /** Undo a createPack: the pack must have no sheets or sub-packs. */
   | { kind: "removePack"; pack: PackId }
@@ -221,7 +223,7 @@ export function applyPlain(doc: Doc, op: Op): Op[] {
       doc.sheets.set(op.sheet, {
         id: op.sheet, name: op.name, pack: op.pack, kind: op.sheetKind,
         rows: { order: [], dead: new Set() }, cols: { order: [], dead: new Set() },
-        cells: new Map(), formats: new Map(), layouts: new Map(),
+        cells: new Map(), formats: new Map(), layouts: new Map(), rowFlags: new Map(),
       });
       return [{ kind: "removeSheet", sheet: op.sheet }];
     }
@@ -245,6 +247,19 @@ export function applyPlain(doc: Doc, op: Op): Op[] {
       const prev = s.pack;
       s.pack = op.pack;
       return [{ ...op, pack: prev }];
+    }
+    case "setRowFlag": {
+      const s = sheetOf(doc, op.sheet);
+      if (!hasId(s.rows, op.row)) throw new OpError(`setRowFlag: no row ${op.row}`);
+      const flags = s.rowFlags.get(op.row);
+      const was = flags?.has(op.flag) ?? false;
+      if (op.on) s.rowFlags.set(op.row, new Set([...(flags ?? []), op.flag]));
+      else if (flags) {
+        const left = new Set([...flags].filter((f) => f !== op.flag));
+        if (left.size) s.rowFlags.set(op.row, left);
+        else s.rowFlags.delete(op.row);
+      }
+      return [{ ...op, on: was }];
     }
     case "setLayout": {
       const s = sheetOf(doc, op.sheet);

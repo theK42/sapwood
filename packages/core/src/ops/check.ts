@@ -10,7 +10,7 @@ import type { Content } from "../formula/content.ts";
 import type { BoundPoint, Expr } from "../formula/bind.ts";
 import { ERROR_CODES, type BinOp, type ErrorCode } from "../formula/parse.ts";
 import type { Layout, LayoutColumn } from "../project/layout.ts";
-import { OpError, type Format } from "./doc.ts";
+import { OpError, ROW_FLAGS, type Format } from "./doc.ts";
 import type { Op } from "./ops.ts";
 
 /** Op kinds that change the schema. */
@@ -192,6 +192,11 @@ function op(x: unknown, at: At): Op {
       return { kind, sheet: sheet(), pack: str(o, "pack", at) };
     case "setLayout":
       return { kind, sheet: sheet(), type: str(o, "type", at), layout: layout(o.layout, at.in("layout")) };
+    case "setRowFlag": {
+      const on = o.on;
+      if (typeof on !== "boolean") return fail(at.in("on"), "expected true or false");
+      return { kind, sheet: sheet(), row: str(o, "row", at), flag: oneOf(o, "flag", ROW_FLAGS, at), on };
+    }
     case "createPack":
       return { kind, pack: str(o, "pack", at), name: str(o, "name", at), parent: str(o, "parent", at) };
     case "removePack":

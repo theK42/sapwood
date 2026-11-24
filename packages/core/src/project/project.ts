@@ -142,6 +142,7 @@ export class Project {
         if (a.order.length) ops.push({ kind: "insert", sheet: s.id, axis, after: null, ids: [...a.order] });
       }
       for (const [type, layout] of s.layouts) ops.push({ kind: "setLayout", sheet: s.id, type, layout });
+      for (const [row, flags] of s.rowFlags) for (const flag of flags) ops.push({ kind: "setRowFlag", sheet: s.id, row, flag, on: true });
     }
     // Cells on tombstones are written while their rows are live, then deleted.
     for (const s of doc.sheets.values()) {
@@ -234,6 +235,8 @@ export class Project {
         return e.setSheetPack(op.sheet, op.pack);
       case "setLayout":
         return this.syncLayouts(op.sheet);
+      case "setRowFlag":
+        return; // read from the document
       case "createPack":
         this.wb.addPack(op.name, op.parent, op.pack);
         return;

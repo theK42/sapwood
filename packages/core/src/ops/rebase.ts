@@ -608,6 +608,8 @@ function theirsSet(base: Doc, final: Doc, op: Op): boolean {
       return base.packs.has(op.pack) && base.packs.get(op.pack)!.name !== final.packs.get(op.pack)?.name;
     case "setPackParent":
       return base.packs.has(op.pack) && base.packs.get(op.pack)!.parent !== final.packs.get(op.pack)?.parent;
+    case "setRowFlag":
+      return (base.sheets.get(op.sheet)?.rowFlags.get(op.row)?.has(op.flag) ?? false) !== (final.sheets.get(op.sheet)?.rowFlags.get(op.row)?.has(op.flag) ?? false);
     default:
       return false;
   }

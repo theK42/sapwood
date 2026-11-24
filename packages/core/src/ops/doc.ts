@@ -42,7 +42,13 @@ export interface SheetDoc {
   formats: Map<string, Format>;
   /** Custom layouts by type name. Types without one use the default (§6.3). */
   layouts: Map<string, Layout>;
+  /** Flags on rows, by stable row ID: `keepHere` is "don't suggest moving" (§7.4). */
+  rowFlags: Map<RowId, Set<RowFlag>>;
 }
+
+/** A flag a row can carry. */
+export type RowFlag = "keepHere";
+export const ROW_FLAGS: readonly RowFlag[] = ["keepHere"];
 
 export interface PackDoc {
   id: PackId;
@@ -94,6 +100,7 @@ export function cloneDoc(doc: Doc): Doc {
       cells: new Map(s.cells),
       formats: new Map(s.formats),
       layouts: new Map(s.layouts),
+      rowFlags: new Map([...s.rowFlags].map(([r, f]) => [r, new Set(f)])),
     });
   const packs = new Map<PackId, PackDoc>();
   for (const [id, p] of doc.packs) packs.set(id, { ...p });
@@ -117,6 +124,7 @@ export function canonDoc(doc: Doc): unknown {
       cells: sorted(s.cells, contentKey),
       formats: sorted(s.formats, stableJson),
       layouts: sorted(s.layouts, stableJson),
+      rowFlags: sorted(s.rowFlags, (f) => [...f].sort()),
     })),
   };
 }
@@ -143,6 +151,7 @@ export function docsEqual(a: Doc, b: Doc): boolean {
     if (!sameEntries(s.cells, t.cells, (x, y) => contentKey(x) === contentKey(y))) return false;
     if (!sameEntries(s.formats, t.formats, (x, y) => stableJson(x) === stableJson(y))) return false;
     if (!sameEntries(s.layouts, t.layouts, (x, y) => stableJson(x) === stableJson(y))) return false;
+    if (!sameEntries(s.rowFlags, t.rowFlags, (x, y) => x.size === y.size && [...x].every((f) => y.has(f)))) return false;
   }
   return true;
 }
@@ -202,6 +211,8 @@ export interface DocJson {
     cells: [string, Content][];
     formats: [string, Format][];
     layouts: [string, Layout][];
+    /** [row, flags]; absent in documents from before row flags. */
+    rowFlags?: [string, RowFlag[]][];
   }[];
 }
 
@@ -223,6 +234,7 @@ export function docToJson(doc: Doc): DocJson {
       cells: sorted(s.cells),
       formats: sorted(s.formats),
       layouts: sorted(s.layouts),
+      rowFlags: [...s.rowFlags].filter(([, f]) => f.size).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)).map(([r, f]) => [r, [...f].sort()]),
     })),
   };
 }
@@ -238,7 +250,7 @@ export function docFromJson(json: unknown): Doc {
     sheets: new Map(
       j.sheets!.map((s) => [
         s.id,
-        { id: s.id, name: s.name, pack: s.pack, kind: s.kind, rows: axis(s.rows), cols: axis(s.cols), cells: new Map(s.cells), formats: new Map(s.formats), layouts: new Map(s.layouts) },
+        { id: s.id, name: s.name, pack: s.pack, kind: s.kind, rows: axis(s.rows), cols: axis(s.cols), cells: new Map(s.cells), formats: new Map(s.formats), layouts: new Map(s.layouts), rowFlags: new Map((s.rowFlags ?? []).map(([r, f]) => [r, new Set(f)])) },
       ]),
     ),
   };

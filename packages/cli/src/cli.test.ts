@@ -110,6 +110,17 @@ describe("the sapwood command", () => {
     expect((await sw("move", "a1")).code).toBe(2);
   });
 
+  it("suggests moves down the tree, and leaves a marked entity out", async () => {
+    const { sw, json } = await setup();
+    await sw("pack", "create", "dlc");
+    expect((await sw("suggest-moves")).out).toContain("No suggestions");
+    await sw("move", "w1", "--to", "dlc"); // now only dlc's w1 uses a1
+    expect((await sw("suggest-moves")).out).toContain("a1 (Ammo): root → dlc, used by w1");
+    expect((await sw("set", "a1", "$keepHere=true")).code).toBe(0);
+    expect((await json("get", "a1")).$keepHere).toBe(true);
+    expect((await sw("suggest-moves")).out).toContain("No suggestions");
+  });
+
   it("renames and moves packs and sheets", async () => {
     const { sw, json } = await setup();
     await sw("pack", "create", "dlc");

@@ -26,7 +26,7 @@ function base(): Doc {
     doc.sheets.set(id, {
       id, name: id, pack: "root", kind: "data",
       rows: { order: rows, dead: new Set() }, cols: { order: cols, dead: new Set() },
-      cells: new Map(cells.map(([r, c, v]) => [cellKey(r, c), v])), formats: new Map(), layouts: new Map(),
+      cells: new Map(cells.map(([r, c, v]) => [cellKey(r, c), v])), formats: new Map(), layouts: new Map(), rowFlags: new Map(),
     });
   sheet("S", ["r1", "r2", "r3", "r4"], [A, B, "c1", "c2", "c3"], [
     ["r1", A, lit("Weapon")], ["r1", B, lit("sword")], ["r1", "c1", lit("bolt")],

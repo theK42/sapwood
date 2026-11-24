@@ -46,7 +46,7 @@ function genDoc(g: Gen): Doc {
         const v = i === 0 ? pick(g, [null, lit("Weapon")]) : i === 1 ? pick(g, [null, ...IDS.map(lit)]) : pick(g, CONTENT);
         if (v) cells.set(cellKey(r, c), v);
       }
-    doc.sheets.set(sh, { id: sh, name: sh, pack: "root", kind: "data", rows: { order: rows, dead: new Set() }, cols: { order: cols, dead: new Set() }, cells, formats: new Map(), layouts: new Map() });
+    doc.sheets.set(sh, { id: sh, name: sh, pack: "root", kind: "data", rows: { order: rows, dead: new Set() }, cols: { order: cols, dead: new Set() }, cells, formats: new Map(), layouts: new Map(), rowFlags: new Map() });
   }
   return doc;
 }

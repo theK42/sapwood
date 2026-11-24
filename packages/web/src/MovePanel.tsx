@@ -13,6 +13,8 @@ interface Props {
   source: Source;
   /** The entities asked for, by ID. */
   ids: string[];
+  /** The pack to start on (from a suggestion), by name. */
+  pack?: string | undefined;
   canEdit: boolean;
   edit(fn: (p: Project) => { ops: Op[] }): void;
   close(): void;
@@ -31,7 +33,7 @@ export function MovePanel(p: Props) {
   const project = p.source.project;
   const packs = [...project.wb.packs.values()];
   const here = useMemo(() => new Set(p.ids.map((id) => project.project().entities.find((e) => e.id === id)?.pack)), [p.ids, project, tick]);
-  const [pack, setPack] = useState(() => packs.find((x) => !here.has(x.id))?.name ?? packs[0]!.name);
+  const [pack, setPack] = useState(() => p.pack ?? packs.find((x) => !here.has(x.id))?.name ?? packs[0]!.name);
   const [sheet, setSheet] = useState("");
   // Choices on the offers: ticked or not, by ID; an ID not here is as offered.
   const [choice, setChoice] = useState<Map<string, boolean>>(new Map());

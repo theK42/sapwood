@@ -15,6 +15,7 @@ import { ValuePanel, type PanelCell } from "./ValuePanel.tsx";
 import { FormPanel, NewEntityPanel, type FormRow } from "./FormPanel.tsx";
 import { EntitiesPage } from "./EntitiesPage.tsx";
 import { MovePanel } from "./MovePanel.tsx";
+import { SuggestPanel } from "./SuggestPanel.tsx";
 import { entityAt } from "./form.ts";
 import { TypeView } from "./TypeView.tsx";
 import { Home } from "./Home.tsx";
@@ -104,7 +105,8 @@ type Side =
   | { kind: "value"; at: PanelCell }
   | { kind: "form"; at: FormRow }
   | { kind: "new"; type: string | null; pack: PackId | null; n: number }
-  | { kind: "move"; ids: string[]; n: number }
+  | { kind: "move"; ids: string[]; n: number; pack?: string }
+  | { kind: "suggest"; pack: string | null }
   | null;
 
 function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
@@ -416,7 +418,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
         />
       ) : (
         <main className="body">
-          <Home source={source} atHead={source === head} commits={commits} others={others} canSheets={canEdit && (session ? session.editable : true)} canPacks={canEdit && (me.role === "developer" || me.role === "admin") && (session ? session.editable : true)} edit={edit} open={(id) => go(branch, { kind: "sheet", id })} href={(id) => routePath(branch, { kind: "sheet", id })} showIssues={() => setSide({ kind: "issues" })} openType={(t) => go(branch, { kind: "type", name: t })} typeHref={(t) => routePath(branch, { kind: "type", name: t })} go={(r) => go(branch, r)} routeHref={(r) => routePath(branch, r)} />
+          <Home suggestMoves={(pack) => setSide({ kind: "suggest", pack })} source={source} atHead={source === head} commits={commits} others={others} canSheets={canEdit && (session ? session.editable : true)} canPacks={canEdit && (me.role === "developer" || me.role === "admin") && (session ? session.editable : true)} edit={edit} open={(id) => go(branch, { kind: "sheet", id })} href={(id) => routePath(branch, { kind: "sheet", id })} showIssues={() => setSide({ kind: "issues" })} openType={(t) => go(branch, { kind: "type", name: t })} typeHref={(t) => routePath(branch, { kind: "type", name: t })} go={(r) => go(branch, r)} routeHref={(r) => routePath(branch, r)} />
         </main>
       )}
       {side?.kind === "issues" && source && (
@@ -452,7 +454,18 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
         />
       )}
       {side?.kind === "move" && source && (
-        <MovePanel key={side.n} source={source} ids={side.ids} canEdit={canEdit && (session ? session.editable : true)} edit={edit} close={() => setSide(null)} />
+        <MovePanel key={side.n} source={source} ids={side.ids} pack={side.pack} canEdit={canEdit && (session ? session.editable : true)} edit={edit} close={() => setSide(null)} />
+      )}
+      {side?.kind === "suggest" && source && (
+        <SuggestPanel
+          key={side.pack ?? ""}
+          source={source}
+          pack={side.pack}
+          canEdit={canEdit && (session ? session.editable : true)}
+          edit={edit}
+          review={(ids, pack) => setSide((x) => ({ kind: "move", ids, pack, n: (x?.kind === "move" ? x.n : 0) + 1 }))}
+          close={() => setSide(null)}
+        />
       )}
       {side?.kind === "new" && source && (
         <NewEntityPanel

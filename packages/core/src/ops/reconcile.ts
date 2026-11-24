@@ -1,6 +1,6 @@
 // The ops that take one document to another with the same schema shape, packs and sheets:
 // schema properties (names, types, enum members), rows and columns (added, removed, moved,
-// deleted), cells, formats, layouts, sheet names and packs. The difference, said plainly:
+// deleted), cells, formats, layouts, row flags, sheet names and packs. The difference, said plainly:
 // for when two ways of getting to one state disagree a little (a rebase in each direction
 // around a move or a rename), and for restoring an earlier state without undoing every
 // change since, one by one.
@@ -94,6 +94,12 @@ export function reconcile(from: Doc, to: Doc): Op[] | null {
         const want = t.layouts.get(type) ?? null;
         if (stableJson(s().layouts.get(type) ?? null) !== stableJson(want)) emit({ kind: "setLayout", sheet: sh, type, layout: want });
       }
+      // Row flags, before rows go.
+      for (const row of new Set([...s().rowFlags.keys(), ...t.rowFlags.keys()]))
+        for (const flag of new Set([...(s().rowFlags.get(row) ?? []), ...(t.rowFlags.get(row) ?? [])])) {
+          const want = t.rowFlags.get(row)?.has(flag) ?? false;
+          if ((s().rowFlags.get(row)?.has(flag) ?? false) !== want) emit({ kind: "setRowFlag", sheet: sh, row, flag, on: want });
+        }
       for (const axis of ["row", "col"] as const) if (extra[axis].size) emit({ kind: "purge", sheet: sh, axis, ids: [...extra[axis]] });
     }
   } catch (e) {

@@ -227,6 +227,23 @@ export class SheetGrid {
     }
   }
 
+  /** The row is marked "don't suggest moving" (DESIGN §7.4). */
+  keptHere(row: number): boolean {
+    const id = this.rowIds[row];
+    return id !== undefined && (this.project.doc.sheets.get(this.sheet)?.rowFlags.get(id)?.has("keepHere") ?? false);
+  }
+
+  /** Mark entities "don't suggest moving", or clear the mark. */
+  keepHere(ids: readonly string[], on: boolean): { ops: Op[] } {
+    const s = new Sapwood(this.project);
+    try {
+      return { ops: ids.flatMap((id) => s.set(id, { $keepHere: on }).ops) };
+    } catch (e) {
+      if (e instanceof ApiError) throw new OpError(e.message);
+      throw e;
+    }
+  }
+
   rowId(row: number): RowId {
     return this.rowIds[row]!;
   }

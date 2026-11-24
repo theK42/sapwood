@@ -524,6 +524,11 @@ function reads(app: Hono<Env>, prefix: string, place: (c: C) => Place): void {
   });
   app.get(`${prefix}/schema`, (c) => c.body(place(c).s.schemaYaml(), 200, { "Content-Type": "application/yaml; charset=utf-8" }));
   app.get(`${prefix}/validate`, (c) => c.json(place(c).s.validate()));
+  /** Entities that could move down the pack tree (DESIGN §7.4): `?pack=` for one pack and below. */
+  app.get(`${prefix}/move-suggestions`, (c) => {
+    const pack = c.req.query("pack");
+    return c.json(place(c).s.suggestMoves(pack ? { pack } : {}));
+  });
   /** What moving entities would do (DESIGN §7.4), changing nothing: `?ids=a&ids=b&pack=dlc&sheet=`. */
   app.get(`${prefix}/move-preview`, (c) => {
     const sheet = c.req.query("sheet");

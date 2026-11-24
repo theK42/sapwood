@@ -14,6 +14,8 @@ export interface TreeActions {
   packs: boolean;
   /** Make a change through the API; false (and the reason shown) if it's refused. */
   act(fn: (s: Sapwood) => Change): void;
+  /** Suggested moves down the tree, for a pack and below. */
+  suggest?(pack: string): void;
 }
 
 /** What's being typed in the tree: one thing at a time. */
@@ -59,6 +61,7 @@ function Pack({ node, parent, depth, tree }: { node: PackNode; parent: string | 
     ...(a.sheets ? [{ label: "New sheet…", run: () => (setOpen(true), setTyping({ kind: "newSheet", pack: node.id })) }] : []),
     ...(a.packs ? [{ label: "New pack inside…", run: () => (setOpen(true), setTyping({ kind: "newPack", pack: node.id })) }] : []),
     ...(a.packs ? [{ label: "Rename…", run: () => setTyping({ kind: "renamePack", pack: node.id }) }] : []),
+    ...(a.suggest && node.packs.length > 0 ? [{ label: "Suggest moves down…", run: () => a.suggest!(node.name) }] : []),
     ...(a.packs && !isRoot && tree.all.length > 2 ? [{ label: "Move to another pack…", run: () => setTyping({ kind: "movePack", pack: node.id }) }] : []),
   ];
   return (
