@@ -148,6 +148,9 @@ export class Api {
   renameTask = (id: number, name: string | null) => this.call<TaskInfo>("PATCH", `/api/tasks/${id}`, { name });
   taskStatus = (id: number) => this.call<TaskStatus>("GET", `/api/tasks/${id}`);
   taskDoc = (id: number) => this.call<{ doc: DocJson; task: TaskInfo }>("GET", `/api/tasks/${id}/doc`);
+  /** A schema change as YAML (DESIGN §5.8), into a task: a Developer's. `force` lets data cells become scratch. */
+  applySchema = (id: number, yaml: string, force: boolean) =>
+    this.call<{ task: TaskInfo; ops: number; scratch: { sheet: string; cell: string }[]; notes: string[] }>("POST", `/api/tasks/${id}/schema`, { yaml, force });
   writeOps = (id: number, ops: Op[], rev: number) => this.call<{ task: TaskInfo; ops: number }>("POST", `/api/tasks/${id}/ops`, { ops, rev });
   undo = (id: number, rev: number) => this.call<{ done: boolean; ops: Op[]; task: TaskInfo }>("POST", `/api/tasks/${id}/undo`, { rev });
   redo = (id: number, rev: number) => this.call<{ done: boolean; ops: Op[]; task: TaskInfo }>("POST", `/api/tasks/${id}/redo`, { rev });

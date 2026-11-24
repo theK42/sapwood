@@ -8,6 +8,8 @@ export type Route =
   /** The entity page: a type's entities, and one in the form. */
   | { kind: "entities"; type: string | null; id: string | null }
   | { kind: "history" }
+  /** The schema editor. */
+  | { kind: "schema" }
   | { kind: "commit"; id: string }
   | { kind: "changes"; task: number };
 
@@ -20,6 +22,7 @@ export function routeFromPath(path = location.pathname): Route {
   if (a === "types" && x) return { kind: "type", name: x };
   if (a === "entities") return { kind: "entities", type: x || null, id: c === undefined ? null : decodeURIComponent(c) };
   if (a === "history" && !x) return { kind: "history" };
+  if (a === "schema" && !x) return { kind: "schema" };
   if (a === "commits" && x) return { kind: "commit", id: x };
   if (a === "tasks" && /^\d+$/.test(x) && c === "changes") return { kind: "changes", task: Number(x) };
   return { kind: "home" };
@@ -28,6 +31,6 @@ export function routeFromPath(path = location.pathname): Route {
 export function routePath(branch: string, r: Route): string {
   const e = encodeURIComponent;
   if (r.kind === "entities") return `/branches/${e(branch)}/entities${r.type === null ? "" : `/${e(r.type)}${r.id === null ? "" : `/${e(r.id)}`}`}`;
-  const rest = { home: "", sheet: `/sheets/${e((r as { id: string }).id)}`, type: `/types/${e((r as { name: string }).name)}`, history: "/history", commit: `/commits/${e((r as { id: string }).id)}`, changes: `/tasks/${(r as { task: number }).task}/changes` }[r.kind];
+  const rest = { home: "", sheet: `/sheets/${e((r as { id: string }).id)}`, type: `/types/${e((r as { name: string }).name)}`, history: "/history", schema: "/schema", commit: `/commits/${e((r as { id: string }).id)}`, changes: `/tasks/${(r as { task: number }).task}/changes` }[r.kind];
   return `/branches/${e(branch)}${rest}`;
 }

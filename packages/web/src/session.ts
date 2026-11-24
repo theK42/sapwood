@@ -25,7 +25,7 @@ export interface SessionState {
   notice: string | null;
 }
 
-type ApiFor = Pick<Api, "taskDoc" | "writeOps" | "undo" | "redo">;
+type ApiFor = Pick<Api, "taskDoc" | "writeOps" | "undo" | "redo" | "applySchema">;
 
 export class TaskSession {
   project: Project;
@@ -82,6 +82,24 @@ export class TaskSession {
     this.changed();
     void this.run(() => this.send());
     return true;
+  }
+
+  /**
+   * A schema change, as YAML (DESIGN §5.8): the server applies it (schema ops go only that
+   * way), after anything not yet sent; then the task is read again. The reason, if refused.
+   */
+  async applySchema(yaml: string, force: boolean): Promise<string | null> {
+    if (!this.editable) return `Task ${this.task.id} is ${this.task.state}: it can't be edited`;
+    let refused: string | null = null;
+    await this.run(async () => {
+      try {
+        await this.api.applySchema(this.task.id, yaml, force);
+      } catch (e) {
+        refused = message(e);
+      }
+      await this.resync();
+    });
+    return refused;
   }
 
   undo(): Promise<void> {

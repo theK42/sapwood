@@ -122,6 +122,21 @@ describe("the web app's task session", () => {
     expect(s.editable).toBe(false);
     expect(s.edit((p) => p.set(sheet(s), "C1", "1"))).toBe(false);
   });
+
+  it("applies a schema change through the server, after edits not yet sent", async () => {
+    const { ada } = setup();
+    const t = await ada.newTask("main");
+    const s = await TaskSession.open(ada, t.id);
+    s.edit((p) => p.set(sheet(s), "C1", "12"));
+    const yaml = new Sapwood(s.project).schemaYaml().replace(/(\n\s*)speed: (\{[^}]*\}|float)/, "$1speed: $2$1spin: float");
+    expect(await s.applySchema(yaml, false)).toBeNull();
+    await agrees(ada, s);
+    expect(value(s, "w1", "damage")).toBe(12);
+    expect(s.project.schema.types.get("Ammo")!.fieldByName.has("spin")).toBe(true);
+    // Refused: text that doesn't parse. The reason comes back; nothing changes.
+    expect(await s.applySchema("types: [", false)).toMatch(/schema/i);
+    await agrees(ada, s);
+  });
 });
 
 /** A patch through the HTTP API, as the CLI would send it. */

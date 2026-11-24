@@ -100,6 +100,12 @@ export function Home({ source, atHead, commits, others, open, href, showIssues, 
         <PackTree root={tree.root} open={open} href={href} actions={{ sheets: canSheets, packs: canPacks, act, suggest: suggestMoves }} />
       </section>
       <aside className="side">
+        <section className="panel" aria-label="Schema">
+          <h2>
+            Schema <span className="muted small">{plural(source.project.schema.types.size, "type")}, {plural(source.project.schema.schema.rules.length, "rule")}</span>{" "}
+            <span className="small">{nav({ kind: "schema" }, "Open the schema")}</span>
+          </h2>
+        </section>
         <section className="panel" aria-label="Entities">
           <h2>
             Entities <span className="muted small">by type, each in a form; or every one of a type as a grid</span>

@@ -2,7 +2,7 @@
 // The branch is in the address (/branches/<name>), so a link or a reload keeps it.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Op, PackId, Project } from "@thek42/sapwood-core";
+import { colToNumber, type Op, type PackId, type Project } from "@thek42/sapwood-core";
 import { Api, ApiError, type BranchInfo, type CommitInfo, type Health, type Me, type TaskInfo } from "./api.ts";
 import { listen } from "./events.ts";
 import { HeadView } from "./head.ts";
@@ -16,6 +16,7 @@ import { FormPanel, NewEntityPanel, type FormRow } from "./FormPanel.tsx";
 import { EntitiesPage } from "./EntitiesPage.tsx";
 import { MovePanel } from "./MovePanel.tsx";
 import { SuggestPanel } from "./SuggestPanel.tsx";
+import { SchemaPage } from "./SchemaPage.tsx";
 import { entityAt } from "./form.ts";
 import { TypeView } from "./TypeView.tsx";
 import { Home } from "./Home.tsx";
@@ -389,6 +390,24 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           openGrid={(t) => go(branch, { kind: "type", name: t })}
           goTo={goTo}
           moveEntities={moveEntities}
+        />
+      ) : route.kind === "schema" ? (
+        <SchemaPage
+          source={source}
+          canEdit={canEdit && (me.role === "developer" || me.role === "admin") && (session ? session.editable : true)}
+          apply={async (yaml, force) => {
+            try {
+              return await (session ?? (await ensureSession())).applySchema(yaml, force);
+            } catch (e) {
+              return (e as Error).message;
+            }
+          }}
+          back={() => go(branch)}
+          goTo={(sheetName, cell) => {
+            const s = [...source.project.wb.sheets.values()].find((x) => x.name === sheetName);
+            const m = /^([A-Z]+)(\d+)$/.exec(cell);
+            if (s && m) goTo(s.id, Number(m[2]) - 1, colToNumber(m[1]!) - 1);
+          }}
         />
       ) : route.kind === "history" ? (
         <HistoryPage api={api} branch={branch} tick={headTick} open={(id) => go(branch, { kind: "commit", id })} href={(id) => routePath(branch, { kind: "commit", id })} back={() => go(branch)} />

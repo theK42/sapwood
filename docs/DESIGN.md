@@ -255,7 +255,7 @@ rules:
 
 ### 5.8 Schema authoring
 
-- **UI.** A schema editor in the web app.
+- **UI.** A schema editor in the web app (the Schema page): the schema as YAML, with what applying it would do shown as it's typed, worked out on a copy (changes, problems, data cells turned to scratch, formulas and rules a rename leaves alone, issues added or cleared), applied as YAML like the CLI's. Forms for each definition and a rule editor with live results are next (ROADMAP Phase 4 step 8).
 - **Text.** `sapwood schema get > schema.yaml` and `sapwood schema apply schema.yaml` (inside a task). The text form includes stable IDs, so renames are detected as renames, not as delete + add. `apply` diffs the text against the current schema and emits schema ops. **Decided** (2026-11-21):
   - Items are matched by ID. An item written without one matches the item of the same name in the same place (a rule: the same type and expression), so IDs are needed only to rename; new items get IDs no item has had.
   - A name changed under the same ID is a rename (`renameType`, `renameField`), which rewrites cells (§8.2). Names can be swapped. Enum members have no IDs: with the same number of members, one renamed in place to a name the enum didn't have is a rename (`renameEnumMember`); any other change to the list is a plain change, matched by name.
