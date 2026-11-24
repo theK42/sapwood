@@ -7,7 +7,7 @@ import { Api, ApiError, type BranchInfo, type CommitInfo, type Health, type Me, 
 import { listen } from "./events.ts";
 import { HeadView } from "./head.ts";
 import { ChangesPage, CommitPage, HistoryPage } from "./History.tsx";
-import { routeFromPath, routePath, type Route } from "./routes.ts";
+import { routeFromPath, routePath, TABS, tabOf, tabTarget, type Route, type Tab } from "./routes.ts";
 import { IssuePanel } from "./IssuePanel.tsx";
 import { refList } from "./refs.ts";
 import { RefsPanel } from "./RefsPanel.tsx";
@@ -268,6 +268,15 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const openPanel = (at: PanelCell) => setSide({ kind: "value", at });
   const openForm = (at: FormRow) => setSide({ kind: "form", at });
   const showHistory = (of: HistoryOf) => setSide({ kind: "history", of });
+  // Where you were in each tab, so a tab takes you back there; forgotten with the branch.
+  const lastInTab = useRef<Partial<Record<Tab, Route>>>({});
+  // Forgetting first: effects run in order, and on the first render both do.
+  useEffect(() => {
+    lastInTab.current = {};
+  }, [branch]);
+  useEffect(() => {
+    lastInTab.current[tabOf(route)] = route;
+  }, [route, branch]);
   const moveEntities = (ids: string[]) => setSide((x) => ({ kind: "move", ids, n: (x?.kind === "move" ? x.n : 0) + 1 }));
   const newEntity = (type: string | null, pack: PackId | null) => setSide((x) => ({ kind: "new", type, pack, n: (x?.kind === "new" ? x.n : 0) + 1 }));
   /** While the panel or the form is open, it follows the selection to another cell or entity. */
@@ -296,7 +305,17 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   return (
     <div className="app">
       <header className="top">
-        <span className="brand">Sapwood</span>
+        <a
+          className="brand"
+          href={routePath(branch, { kind: "home" })}
+          onClick={(e) => {
+            if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+            e.preventDefault();
+            go(branch);
+          }}
+        >
+          Sapwood
+        </a>
         <label className="branch">
           <span className="muted">Branch</span>
           <select value={branch} onChange={(e) => go(e.target.value)}>
@@ -307,6 +326,28 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
             ))}
           </select>
         </label>
+        <nav className="tabs-main" aria-label="Pages">
+          {TABS.map((t) => {
+            const to = tabTarget(t.tab, route, lastInTab.current);
+            const on = tabOf(route) === t.tab;
+            return (
+              <a
+                key={t.tab}
+                href={routePath(branch, to)}
+                className={on ? "on" : ""}
+                aria-current={on ? "page" : undefined}
+                title={on ? `${t.label}: back to its first page` : `${t.label}: back to where you were`}
+                onClick={(e) => {
+                  if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+                  e.preventDefault();
+                  go(branch, to);
+                }}
+              >
+                {t.label}
+              </a>
+            );
+          })}
+        </nav>
         <span className="spacer" />
         <span className="muted">
           {me.login} · {me.role}

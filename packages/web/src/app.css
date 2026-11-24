@@ -67,7 +67,11 @@ input, select {
 .work > * { min-height: 0; }
 .top, .taskbar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .top { background: var(--panel); }
-.brand { font-weight: 650; color: var(--accent); }
+.brand { font-weight: 650; color: var(--accent); text-decoration: none; }
+.tabs-main { display: flex; gap: 2px; margin-left: 8px; }
+.tabs-main a { color: var(--muted); text-decoration: none; padding: 4px 10px; border-radius: 6px; font-size: 14px; }
+.tabs-main a:hover { color: var(--text); background: color-mix(in srgb, var(--line) 50%, transparent); }
+.tabs-main a.on { color: var(--text); background: var(--line); }
 .branch { display: flex; align-items: center; gap: 6px; }
 .spacer { flex: 1; }
 .task-name { font-weight: 600; }

@@ -598,6 +598,8 @@ To resolve a conflict, the user picks *mine*, *theirs*, or edits the cell, per c
 
 ### 9.1 Home: the pack tree
 
+The top bar has tabs for the app's parts: **Sheets** (this page, sheets and type grids), **Entities** (the entity page, §9.3), **Schema** (§5.8) and **History** (§8.7). Each takes you back to where you were in it; the tab you're on goes to its first page.
+
 The landing page:
 
 - The pack tree, with sheets under each pack and per-pack and per-sheet validation badges.
