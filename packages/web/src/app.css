@@ -327,6 +327,30 @@ button.link.muted:hover { text-decoration: underline; }
 .schema-preview h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 12px 0 8px; font-weight: 600; }
 .schema-preview .link { margin-right: 6px; }
 .schema-warn { border: 1px solid var(--warn); border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; }
+.schema-forms { display: grid; grid-template-columns: minmax(150px, 200px) minmax(0, 1fr); min-height: 0; border-right: 1px solid var(--line); }
+.schema-forms > * { min-height: 0; overflow: auto; }
+.schema-defs { border-right: 1px solid var(--line); padding-bottom: 12px; }
+.schema-defs h3 { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 12px 12px 4px; font-weight: 600; }
+.schema-defs ul { list-style: none; margin: 0; padding: 0; }
+.schema-defs li > button { display: flex; gap: 6px; align-items: baseline; width: 100%; border: 0; background: none; color: var(--text); font: inherit; text-align: left; padding: 3px 12px; cursor: pointer; }
+.schema-defs li > button:hover { background: color-mix(in srgb, var(--line) 50%, transparent); }
+.schema-defs li > button.on { background: var(--line); }
+.schema-defs li > .vf-row { padding: 2px 8px; }
+.schema-def .pad { padding: 12px 16px; }
+.schema-def-form { max-width: 760px; }
+.schema-rows { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 4px; }
+.schema-field { border-bottom: 1px solid var(--line); padding: 3px 0; }
+.schema-field .vf-row { flex-wrap: wrap; }
+.schema-field .vf-row .spacer { flex: 1; }
+.schema-more { padding: 4px 0 6px 12px; display: grid; gap: 3px; }
+.schema-text-box { display: inline-flex; min-width: 0; }
+.schema-text-box .vf-input { width: 11em; }
+.vf-input.bad { border-color: var(--error); }
+.type-picker { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.chips { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.chip { display: inline-flex; gap: 2px; align-items: center; border: 1px solid var(--line); border-radius: 10px; padding: 0 4px 0 8px; font-size: 12px; }
+.chip .link { padding: 0 3px; }
+.button.danger { color: var(--error); }
 @media (max-width: 800px) { .schema-body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; } .schema-preview { max-height: 40vh; } }
 .vf-keep { margin: 2px 0 6px; gap: 6px; color: var(--muted); }
 .tree-suggest { margin-left: 8px; font-weight: 400; text-transform: none; letter-spacing: 0; }

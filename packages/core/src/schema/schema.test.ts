@@ -70,6 +70,22 @@ types:
     expect(parseSchema(text).schema.enums[0]!.members.map((m) => m.name)).toEqual(["yes", "no", "maybe so", "3"]);
   });
 
+  it("an item with no ID is written without one, and read back with a new one", () => {
+    const s = parseSchema(`types:
+  Weapon: { id: t1, fields: { dmg: { id: f1, type: float } } }`).schema;
+    s.types.push({ id: "", name: "Boss", traits: [], fields: [] });
+    s.types[0]!.fields.push({ id: "", name: "speed", type: { kind: "int" } });
+    s.enums.push({ id: "", name: "Mood", members: [{ name: "calm" }] });
+    s.rules.push({ id: "", severity: "warning", expr: "=1", message: "m" });
+    const text = formatSchema(s);
+    expect(text).toContain("  Boss: {}");
+    expect(text).toContain("speed: { type: int }");
+    const back = parseSchema(text, { existing: parseSchema(`types:
+  Weapon: { id: t1, fields: { dmg: { id: f1, type: float } } }`).schema });
+    expect(back.issues).toEqual([]);
+    expect([back.schema.types[1]!.name, back.schema.types[1]!.id === "", back.schema.enums[0]!.id === "", back.schema.rules[0]!.id === ""]).toEqual(["Boss", false, false, false]);
+  });
+
   it("reports text problems with a path", () => {
     const list = problems(`
 types:

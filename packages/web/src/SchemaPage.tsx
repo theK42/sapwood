@@ -5,10 +5,12 @@
 // `schema apply` does, into your task. Editing needs the Developer role (§11.2); anyone can read.
 
 import { useEffect, useMemo, useState } from "react";
-import { Sapwood, type CellAddress } from "@thek42/sapwood-core";
+import { formatSchema, parseSchema, Sapwood, type CellAddress, type Schema } from "@thek42/sapwood-core";
 import type { Source } from "./head.ts";
 import { plural, useSource } from "./hooks.ts";
 import { previewSchema } from "./schema.ts";
+import { SchemaForms, type Selected } from "./SchemaForms.tsx";
+import { defOf, type Section } from "./schemaEdit.ts";
 
 interface Props {
   source: Source;
@@ -36,6 +38,23 @@ export function SchemaPage(p: Props) {
   const [scratchOk, setScratchOk] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [tab, setTab] = useState<"forms" | "yaml">("forms");
+  // The forms read the draft: one working copy for both tabs.
+  const parsed = useMemo(() => parseSchema(text, { existing: project.doc.schema }), [text, project, tick]);
+  const [selected, setSelected] = useState<Selected | null>(null);
+  const [selectName, setSelectName] = useState<{ section: Section; name: string } | null>(null);
+  useEffect(() => {
+    if (!selectName) return;
+    const d = (parsed.schema[selectName.section] as { id: string; name: string }[]).find((x) => x.name === selectName.name);
+    if (d) setSelected({ section: selectName.section, id: d.id });
+    setSelectName(null);
+  }, [parsed, selectName]);
+  const change = (next: Schema, select?: { section: Section; name: string }) => {
+    const t = formatSchema(next);
+    setDraft(t === current ? null : t);
+    setResult(null);
+    if (select) setSelectName(select);
+  };
   useEffect(() => setScratchOk(false), [checked]);
 
   const apply = async () => {
@@ -62,7 +81,14 @@ export function SchemaPage(p: Props) {
           ←
         </button>
         <strong>Schema</strong>
-        <span className="tag">YAML</span>
+        <span className="tabs" role="tablist">
+          <button role="tab" aria-selected={tab === "forms"} className={tab === "forms" ? "on" : ""} onClick={() => setTab("forms")}>
+            Forms
+          </button>
+          <button role="tab" aria-selected={tab === "yaml"} className={tab === "yaml" ? "on" : ""} onClick={() => setTab("yaml")}>
+            YAML
+          </button>
+        </span>
         <span className="muted small">{p.canEdit ? "Edit it here, then apply it to your task." : "Read only: editing the schema needs the Developer role."}</span>
         <span className="spacer" />
         {draft !== null && (
@@ -72,6 +98,23 @@ export function SchemaPage(p: Props) {
         )}
       </div>
       <div className="schema-body">
+        {tab === "forms" ? (
+          parsed.issues.length > 0 ? (
+            <div className="pad">
+              <p className="vf-bad">The YAML has problems, so the forms can't show it: fix them in the YAML tab, or discard the changes.</p>
+            </div>
+          ) : (
+            <SchemaForms
+              schema={parsed.schema}
+              applied={project.doc.schema}
+              packs={[...project.wb.packs.values()].map((x) => x.name)}
+              canEdit={p.canEdit}
+              change={change}
+              selected={selected && defOf(parsed.schema, selected.section, selected.id) ? selected : null}
+              select={setSelected}
+            />
+          )
+        ) : (
         <textarea
           className="schema-text"
           value={text}
@@ -90,6 +133,7 @@ export function SchemaPage(p: Props) {
             requestAnimationFrame(() => el.setSelectionRange(s + 2, s + 2));
           }}
         />
+        )}
         <aside className="schema-preview" aria-label="What applying it would do">
           <h2>What applying it would do</h2>
           {result && <p className={result.startsWith("Applied") ? "small" : "vf-bad small"} role="status">{result}</p>}

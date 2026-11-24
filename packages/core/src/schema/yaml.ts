@@ -289,6 +289,7 @@ function collectIds(v: unknown, out: Set<Id>): void {
 // ------------------------------------------------------------ write
 
 /** Print a schema as YAML. Deterministic; `parseSchema(formatSchema(s))` gives `s` back. */
+/** The schema as YAML text. An item with an empty ID is written without one: reading it back gives it a new one (§5.8). */
 export function formatSchema(s: Schema): string {
   const out: string[] = [];
   const block = (key: string, items: { name: string }[], body: (item: never) => string[]) => {
@@ -299,15 +300,15 @@ export function formatSchema(s: Schema): string {
   };
   block("enums", s.enums, (e: EnumDef) => {
     const simple = e.members.every((m) => m.description === undefined);
-    if (simple && e.description === undefined) return [`  ${e.name}: { id: ${q(e.id)}, members: [${e.members.map((m) => q(m.name)).join(", ")}] }`];
-    const lines = [`  ${e.name}:`, `    id: ${q(e.id)}`];
+    if (simple && e.description === undefined) return [`  ${e.name}: { ${e.id ? `id: ${q(e.id)}, ` : ""}members: [${e.members.map((m) => q(m.name)).join(", ")}] }`];
+    const lines = [`  ${e.name}:`, ...(e.id ? [`    id: ${q(e.id)}`] : [])];
     if (e.description !== undefined) lines.push(`    description: ${q(e.description)}`);
     lines.push("    members:");
     for (const m of e.members) lines.push(m.description === undefined ? `      - ${q(m.name)}` : `      - { name: ${q(m.name)}, description: ${q(m.description)} }`);
     return lines;
   });
   const withFields = (kind: string, extra: (x: never) => string[]) => (x: { name: string; id: Id; description?: string; fields: FieldDef[] }) => {
-    const lines = [`  ${x.name}:`, `    id: ${q(x.id)}`];
+    const lines = [`  ${x.name}:`, ...(x.id ? [`    id: ${q(x.id)}`] : [])];
     if (x.description !== undefined) lines.push(`    description: ${q(x.description)}`);
     lines.push(...extra(x as never));
     if (x.fields.length) {
@@ -316,12 +317,13 @@ export function formatSchema(s: Schema): string {
       for (const f of x.fields) lines.push(`      ${(f.name + ":").padEnd(width)} ${formatField(f)}`);
     }
     void kind;
-    return lines;
+    // Nothing under it (new, so no ID yet, and no fields): still a map.
+    return lines.length === 1 ? [`  ${x.name}: {}`] : lines;
   };
   block("traits", s.traits, withFields("trait", (t: TraitDef) => (t.traits.length ? [`    traits: [${t.traits.map(q).join(", ")}]`] : [])));
   block("structs", s.structs, withFields("struct", () => []));
   block("unions", s.unions, (u: UnionDef) => {
-    const parts = [`id: ${q(u.id)}`];
+    const parts = u.id ? [`id: ${q(u.id)}`] : [];
     if (u.discriminator !== "kind") parts.push(`discriminator: ${q(u.discriminator)}`);
     parts.push(`variants: [${u.variants.map(q).join(", ")}]`);
     if (u.description !== undefined) parts.push(`description: ${q(u.description)}`);
@@ -342,16 +344,15 @@ export function formatSchema(s: Schema): string {
     if (out.length) out.push("");
     out.push("rules:");
     for (const r of s.rules) {
-      out.push(`  - id: ${q(r.id)}`);
-      if (r.type !== undefined) out.push(`    type: ${q(r.type)}`);
-      out.push(`    severity: ${r.severity}`, `    expr: ${q(r.expr)}`, `    message: ${q(r.message)}`);
+      const lines = [...(r.id ? [`id: ${q(r.id)}`] : []), ...(r.type !== undefined ? [`type: ${q(r.type)}`] : []), `severity: ${r.severity}`, `expr: ${q(r.expr)}`, `message: ${q(r.message)}`];
+      out.push(`  - ${lines[0]}`, ...lines.slice(1).map((l) => `    ${l}`));
     }
   }
   return out.join("\n") + "\n";
 }
 
 function formatField(f: FieldDef): string {
-  const parts = [`id: ${q(f.id)}`, `type: ${q(formatType(f.type))}`];
+  const parts = [...(f.id ? [`id: ${q(f.id)}`] : []), `type: ${q(formatType(f.type))}`];
   for (const key of FIELD_KEYS) {
     if (key === "id" || key === "type" || key === "description") continue;
     const v = (f as unknown as Obj)[key];
