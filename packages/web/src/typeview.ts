@@ -10,6 +10,7 @@
 import { columnSpecs, defaultSpecs, numberToCol, sheetLayout, type Edit, type Op, type Project, type RowId, type SheetId } from "@thek42/sapwood-core";
 import { SheetGrid, type CellView } from "./grid.ts";
 import { packTree, type PackNode } from "./home.ts";
+import type { RefTarget } from "./suggest.ts";
 
 export interface TypeRow {
   sheet: SheetId;
@@ -93,6 +94,12 @@ export class TypeGrid {
     if (!r || col < 1) return null;
     const c = col === 1 ? 1 : this.colsBySheet.get(r.sheet)?.get(this.specs[col - 2] ?? "");
     return c === undefined ? null : { sheet: r.sheet, row: r.row, col: c };
+  }
+
+  /** What the home cell accepts if IDs are typed in it (SheetGrid.refAt). */
+  refAt(row: number, col: number): RefTarget | null {
+    const h = this.home(row, col);
+    return h ? this.grid(h.sheet).refAt(h.row, h.col) : null;
   }
 
   private grid(sheet: SheetId): SheetGrid {

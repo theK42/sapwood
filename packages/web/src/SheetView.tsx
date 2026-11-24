@@ -12,7 +12,7 @@
 import "@glideapps/glide-data-grid/dist/index.css";
 import {
   CompactSelection, DataEditor, GridCellKind,
-  type DataEditorRef, type DrawCellCallback, type DrawHeaderCallback, type EditListItem, type GridCell, type GridColumn, type GridSelection, type Item, type Theme,
+  type DataEditorRef, type DrawCellCallback, type ProvideEditorCallback, type ProvideEditorCallbackResult, type DrawHeaderCallback, type EditListItem, type GridCell, type GridColumn, type GridSelection, type Item, type Theme,
 } from "@glideapps/glide-data-grid";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Format, Issue, Op, Project } from "@thek42/sapwood-core";
@@ -23,6 +23,8 @@ import type { Source } from "./head.ts";
 import { plural, useSource } from "./hooks.ts";
 import { useHeaderDrag } from "./headerDrag.ts";
 import { idsAt } from "./refs.ts";
+import { RefCellEditor, RefEditorContext, useSuggest } from "./Suggest.tsx";
+import type { RefTarget } from "./suggest.ts";
 import type { PanelCell } from "./ValuePanel.tsx";
 
 export interface SheetProps {
@@ -293,6 +295,28 @@ export function SheetView(p: SheetProps) {
     return () => document.removeEventListener("keydown", onKey, true);
   });
 
+  // IDs suggested as a ref is typed: in the formula bar, and in the cell (through Glide's editor).
+  const barText = draft ?? (cur && g ? g.cell(cur[1], cur[0]).input : "");
+  const sug = useSuggest({
+    project: p.source.project,
+    target: p.canEdit && cur && g ? g.refAt(cur[1], cur[0]) : null,
+    text: barText,
+    input: bar,
+    set: (t) => setDraft(t),
+  });
+  const editing = useRef<{ project: Project; target: RefTarget } | null>(null);
+  const provideEditor = useCallback<ProvideEditorCallback<GridCell>>(
+    (cell) => {
+      const at = cell.location;
+      // Glide counts the row numbers as column 0 here.
+      const t = at && g ? g.refAt(at[1], at[0] - 1) : null;
+      if (!t || !g) return undefined;
+      editing.current = { project: g.project, target: t };
+      return RefCellEditor as unknown as ProvideEditorCallbackResult<GridCell>;
+    },
+    [g],
+  );
+
   const { block, line } = useHeaderDrag({
     editor: ref,
     box,
@@ -373,8 +397,9 @@ export function SheetView(p: SheetProps) {
           spellCheck={false}
           readOnly={!p.canEdit || !cur}
           value={draft ?? curView?.input ?? ""}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => (setDraft(e.target.value), sug.typed())}
           onKeyDown={(e) => {
+            if (sug.onKeyDown(e)) return;
             if (e.key === "Enter" && cur && draft !== null) {
               write([{ row: cur[1], col: cur[0], input: draft }]);
               setDraft(null);
@@ -384,12 +409,15 @@ export function SheetView(p: SheetProps) {
               ref.current?.focus();
             }
           }}
-          onBlur={() => setDraft(null)}
+          onBlur={() => (sug.close(), setDraft(null))}
         />
+        {sug.list}
         {curView?.issue && <span className={`issue ${curView.issue.level}`} title={curView.issue.message}>{curView.issue.message}</span>}
       </div>
       <div className="sheet-grid" ref={setBox}>
+        <RefEditorContext.Provider value={editing}>
         <DataEditor
+          provideEditor={provideEditor}
           ref={ref}
           width="100%"
           height="100%"
@@ -469,6 +497,7 @@ export function SheetView(p: SheetProps) {
           smoothScrollY
           rowHeight={26}
         />
+        </RefEditorContext.Provider>
         {/* A move's preview (headerDrag.ts): the block being dragged and where it lands. */}
         <div ref={block} className="drag-block" />
         <div ref={line} className="drag-line" />

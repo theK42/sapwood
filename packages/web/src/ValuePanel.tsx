@@ -7,15 +7,20 @@
 // not on each key. Nothing is drawn for parts the value doesn't have yet, only a button to
 // add them, so a recursive type unfolds only as far as its value goes.
 
-import { useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   formatType, parseJson, validate,
-  type ColId, type FieldDef, type FieldType, type Issue, type Op, type Project, type ResolvedSchema, type RowId, type SheetId,
+  type ColId, type PackId, type FieldDef, type FieldType, type Issue, type Op, type Project, type ResolvedSchema, type RowId, type SheetId,
 } from "@thek42/sapwood-core";
 import { SheetGrid } from "./grid.ts";
 import type { Source } from "./head.ts";
 import { useSource } from "./hooks.ts";
 import { blank, cellText, issuesByPath, pathIn, summary, switchVariant } from "./panel.ts";
+import { useSuggest } from "./Suggest.tsx";
+import type { RefTarget } from "./suggest.ts";
+
+/** The project and the pack the cell is in, for ref suggestions. */
+const RefScope = createContext<{ project: Project; from: PackId } | null>(null);
 
 /** The cell the panel edits, by stable IDs, so it stays on it as rows and columns move. */
 export interface PanelCell {
@@ -125,6 +130,7 @@ export function ValuePanel(p: Props) {
           </button>
         </span>
       </div>
+      <RefScope.Provider value={{ project, from: project.wb.sheet(p.at.sheet).pack }}>
       <div className="issues-list vf">
         {cell.formula && <p className="muted small">This cell is a formula, so it's shown here but not edited. Its value: {cell.text}</p>}
         {/* The form shows each issue at its place; the JSON, all of them here, in full. */}
@@ -135,6 +141,7 @@ export function ValuePanel(p: Props) {
           <Value schema={schema} def={field.def} type={field.type} value={view.value} path="" issues={byPath} readOnly={readOnly} set={write} depth={0} />
         )}
       </div>
+      </RefScope.Provider>
     </aside>
   );
 }
@@ -169,6 +176,7 @@ interface ValueProps {
 /** One value of a field type, as a form. */
 function Value(p: ValueProps) {
   const t = p.type;
+  const scope = useContext(RefScope);
   switch (t.kind) {
     case "struct": {
       const s = p.schema.structs.get(t.name);
@@ -235,7 +243,7 @@ function Value(p: ValueProps) {
     case "datetime":
       return <Text value={p.value} readOnly={p.readOnly} set={p.set} placeholder="2026-11-14 18:00 (UTC)" />;
     default:
-      return <Text value={p.value} readOnly={p.readOnly} set={p.set} />;
+      return <Text value={p.value} readOnly={p.readOnly} set={p.set} refTo={t.kind === "ref" ? { targets: t.targets, from: scope!.from, list: false, ...(p.def?.reach ? { reach: p.def.reach } : {}) } : null} />;
   }
 }
 
@@ -385,9 +393,22 @@ function List(p: ValueProps & { of: FieldType }) {
  * A text or number box, written when it's left (Enter, Tab or a click away), not on each key.
  * Blank takes the value out. A number that doesn't read is written as typed, so validation says so.
  */
-function Text(p: { value: unknown; readOnly: boolean; set(v: unknown): void; number?: boolean; loose?: boolean; placeholder?: string }) {
+function Text(p: { value: unknown; readOnly: boolean; set(v: unknown): void; number?: boolean; loose?: boolean; placeholder?: string; refTo?: RefTarget | null }) {
   const shown = p.value === undefined || p.value === null ? "" : typeof p.value === "string" ? p.value : JSON.stringify(p.value);
   const [draft, setDraft] = useState<string | null>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const scope = useContext(RefScope);
+  // A ref suggests the IDs it may point at; picking one writes it.
+  const s = useSuggest({
+    project: scope!.project,
+    target: p.readOnly ? null : (p.refTo ?? null),
+    text: draft ?? shown,
+    input,
+    set: (t) => {
+      setDraft(null);
+      if (t !== shown) p.set(t);
+    },
+  });
   const commit = () => {
     if (draft === null || draft === shown) return setDraft(null);
     const t = draft.trim();
@@ -398,19 +419,24 @@ function Text(p: { value: unknown; readOnly: boolean; set(v: unknown): void; num
     p.set(v);
   };
   return (
-    <input
-      className={p.number ? "vf-input num" : "vf-input"}
-      value={draft ?? shown}
-      readOnly={p.readOnly}
-      spellCheck={false}
-      placeholder={p.placeholder}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") commit();
-        else if (e.key === "Escape") setDraft(null);
-      }}
-    />
+    <>
+      <input
+        ref={input}
+        className={p.number ? "vf-input num" : "vf-input"}
+        value={draft ?? shown}
+        readOnly={p.readOnly}
+        spellCheck={false}
+        placeholder={p.placeholder ?? (p.refTo ? "an ID (↓ for the list)" : undefined)}
+        onChange={(e) => (setDraft(e.target.value), s.typed())}
+        onBlur={() => (s.close(), commit())}
+        onKeyDown={(e) => {
+          if (s.onKeyDown(e)) return;
+          if (e.key === "Enter") commit();
+          else if (e.key === "Escape") setDraft(null);
+        }}
+      />
+      {s.list}
+    </>
   );
 }
 

@@ -252,3 +252,11 @@ button.link.muted:hover { text-decoration: underline; }
 .vf-json { display: grid; gap: 6px; }
 .vf-json textarea { width: 100%; box-sizing: border-box; font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; resize: vertical; }
 .vf-actions { display: flex; gap: 6px; }
+
+/* ID suggestions under a box where a ref is typed */
+.suggest { position: fixed; z-index: 1000; list-style: none; margin: 0; padding: 4px; max-height: 260px; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.22); font-size: 13px; color: var(--text); }
+.suggest li { display: flex; align-items: baseline; gap: 10px; padding: 4px 8px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
+.suggest li.on { background: var(--line); }
+.suggest .suggest-id { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; }
+.suggest .muted { margin-left: auto; }
+.ref-editor { width: 100%; min-width: 0; box-sizing: border-box; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; padding: 0; }

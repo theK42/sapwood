@@ -4,7 +4,7 @@
 // to the row on its sheet, or finds the references to its ID.
 
 import "@glideapps/glide-data-grid/dist/index.css";
-import { CompactSelection, DataEditor, GridCellKind, type DataEditorRef, type DrawCellCallback, type EditListItem, type GridCell, type GridColumn, type GridSelection, type Item } from "@glideapps/glide-data-grid";
+import { CompactSelection, DataEditor, GridCellKind, type DataEditorRef, type DrawCellCallback, type ProvideEditorCallback, type ProvideEditorCallbackResult, type EditListItem, type GridCell, type GridColumn, type GridSelection, type Item } from "@glideapps/glide-data-grid";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Issue, Op, Project } from "@thek42/sapwood-core";
 import type { Source } from "./head.ts";
@@ -13,6 +13,8 @@ import { idsAt } from "./refs.ts";
 import { cellContent, drawIssue, ISSUE, useTheme } from "./SheetView.tsx";
 import { TypeGrid, type Home } from "./typeview.ts";
 import type { PanelCell } from "./ValuePanel.tsx";
+import { RefCellEditor, RefEditorContext, useSuggest } from "./Suggest.tsx";
+import type { RefTarget } from "./suggest.ts";
 
 interface Props {
   source: Source;
@@ -118,6 +120,27 @@ export function TypeView(p: Props) {
     return () => document.removeEventListener("keydown", onKey, true);
   });
 
+  // IDs suggested as a ref is typed: in the formula bar, and in the cell (through Glide's editor).
+  const sug = useSuggest({
+    project: p.source.project,
+    target: p.canEdit && cur && t ? t.refAt(cur[1], cur[0]) : null,
+    text: draft ?? (cur && t ? t.cell(cur[1], cur[0]).input : ""),
+    input: bar,
+    set: (x) => setDraft(x),
+  });
+  const editing = useRef<{ project: Project; target: RefTarget } | null>(null);
+  const provideEditor = useCallback<ProvideEditorCallback<GridCell>>(
+    (cell) => {
+      const at = cell.location;
+      // Glide counts the row numbers as column 0 here.
+      const r = at && t ? t.refAt(at[1], at[0] - 1) : null;
+      if (!r || !t) return undefined;
+      editing.current = { project: t.project, target: r };
+      return RefCellEditor as unknown as ProvideEditorCallbackResult<GridCell>;
+    },
+    [t],
+  );
+
   if (!t)
     return (
       <div className="body">
@@ -162,8 +185,9 @@ export function TypeView(p: Props) {
           readOnly={!p.canEdit || !curHome}
           placeholder={cur && cur[0] > 1 && !curHome && t.rows[cur[1]] ? `${t.rows[cur[1]]!.sheetName} has no column for ${t.columnName(cur[0])}` : undefined}
           value={draft ?? curView?.input ?? ""}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => (setDraft(e.target.value), sug.typed())}
           onKeyDown={(e) => {
+            if (sug.onKeyDown(e)) return;
             if (e.key === "Enter" && cur && draft !== null) {
               write([{ row: cur[1], col: cur[0], input: draft }]);
               setDraft(null);
@@ -173,15 +197,18 @@ export function TypeView(p: Props) {
               ref.current?.focus();
             }
           }}
-          onBlur={() => setDraft(null)}
+          onBlur={() => (sug.close(), setDraft(null))}
         />
+        {sug.list}
         {curView?.issue && <span className={`issue ${curView.issue.level}`} title={curView.issue.message}>{curView.issue.message}</span>}
       </div>
       <div className="sheet-grid">
         {t.rows.length === 0 ? (
           <p className="muted body">No {t.type} yet. Add one on a sheet: put {t.type} in column A.</p>
         ) : (
+          <RefEditorContext.Provider value={editing}>
           <DataEditor
+            provideEditor={provideEditor}
             ref={ref}
             width="100%"
             height="100%"
@@ -250,6 +277,7 @@ export function TypeView(p: Props) {
             smoothScrollY
             rowHeight={26}
           />
+          </RefEditorContext.Provider>
         )}
       </div>
       {menu && (

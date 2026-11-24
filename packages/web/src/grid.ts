@@ -10,6 +10,7 @@ import {
   moveFormula, type ColId, type Edit, type FieldDef, type FieldType, type Format, type Issue, type Op, type Project, type RowClass, type RowId, type SheetId,
 } from "@thek42/sapwood-core";
 import { inPanel, summary, type CellField } from "./panel.ts";
+import { refTarget, type RefTarget } from "./suggest.ts";
 
 /** Empty rows and columns shown past the sheet's end. */
 export const SPARE_ROWS = 100;
@@ -208,6 +209,28 @@ export class SheetGrid {
       return def ? { def, type: def.type, label: k.path.join(".") } : null;
     }
     return null;
+  }
+
+  /**
+   * What a cell accepts if IDs are typed in it: a ref or list-of-refs field held whole, one
+   * element of a list spread over columns (`projectiles[0]`), or a ref in a struct's split
+   * columns (`price.currency`). Null for anything else.
+   */
+  refAt(row: number, col: number): RefTarget | null {
+    if (this.kind !== "data") return null;
+    const from = this.project.wb.sheet(this.sheet).pack;
+    const whole = this.fieldAt(row, col);
+    if (whole) return refTarget(whole.def, whole.type, from);
+    const k = this.rowClass(row);
+    if (k.kind !== "entity" || col < 2) return null;
+    const m = /^([A-Za-z_]\w*)((?:\.[A-Za-z_]\w*)*)(?:\[(\d+)\])?$/.exec(this.columnName(k.type, col));
+    if (!m) return null;
+    let def: FieldDef | undefined = this.project.schema.types.get(k.type)?.fieldByName.get(m[1]!)?.def;
+    for (const sub of (m[2] ?? "").split(".").filter(Boolean))
+      def = def?.type.kind === "struct" ? this.project.schema.structs.get(def.type.name)?.fields.find((f) => f.name === sub) : undefined;
+    if (!def) return null;
+    const type = m[3] !== undefined && def.type.kind === "list" ? def.type.of : def.type;
+    return refTarget(def, type, from);
   }
 
   /** The singleton a `.field` row belongs to: the nearest header above it, as long as no entity row comes between. */
