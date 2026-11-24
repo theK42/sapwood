@@ -6,7 +6,8 @@
 // rows or columns up to it first, in the same change.
 
 import {
-  classify, columnSpecs, defaultSpecs, display, isErr, numberToCol, sheetLayout, validate,
+  ApiError, canSplit, canSpread, classify, columnSpecs, defaultSpecs, display, fieldColumns, isErr, numberToCol, OpError, Sapwood, sheetLayout, validate,
+  type FieldColumns,
   moveFormula, type ColId, type Edit, type FieldDef, type FieldType, type Format, type Issue, type Op, type Project, type RowClass, type RowId, type SheetId,
 } from "@thek42/sapwood-core";
 import { inPanel, summary, type CellField } from "./panel.ts";
@@ -194,6 +195,38 @@ export class SheetGrid {
    * The field a cell holds whole: on an entity row, a column holding a whole field; on a
    * singleton's field row, column B. Null for anything else (split columns among them).
    */
+  /**
+   * The field a column holds for rows of `type`, whole or in part, with how it sits in the
+   * sheet's columns and what it may become (DESIGN §6.3, §6.4); null for anything else.
+   */
+  fieldColumnsAt(type: string | null, col: number): { type: string; field: string; form: FieldColumns; split: boolean; spread: boolean; longest: number } | null {
+    if (this.kind !== "data" || type === null || col < 2) return null;
+    const t = this.project.schema.types.get(type);
+    if (!t || t.def.singleton) return null;
+    const name = /^[A-Za-z_]\w*/.exec(this.columnName(type, col))?.[0];
+    const def = name === undefined ? undefined : t.fieldByName.get(name)?.def;
+    if (!def) return null;
+    let longest = 0;
+    for (const e of this.project.project().entities)
+      if (e.type === type && e.at.sheet === this.sheet) {
+        const v = e.fields.get(def.name)?.value;
+        if (Array.isArray(v)) longest = Math.max(longest, v.length);
+      }
+    const form = fieldColumns(sheetLayout(this.project.schema, this.project.doc.sheets.get(this.sheet)!, type), def.id);
+    return { type, field: def.name, form, split: canSplit(this.project.schema, def), spread: canSpread(def), longest };
+  }
+
+  /** Change how a field sits in the columns, moving every row's value (Sapwood.setColumns). */
+  setColumns(type: string, field: string, to: FieldColumns): { ops: Op[] } {
+    const s = this.project.wb.sheet(this.sheet);
+    try {
+      return new Sapwood(this.project).setColumns(s.name, type, field, to, { pack: this.project.wb.packName(s.pack) });
+    } catch (e) {
+      if (e instanceof ApiError) throw new OpError(e.message); // the session says why
+      throw e;
+    }
+  }
+
   rowId(row: number): RowId {
     return this.rowIds[row]!;
   }

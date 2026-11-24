@@ -357,6 +357,7 @@ How a `list<T>` appears is a **layout choice, not a schema choice**. The same fi
 
 - **JSON cell:** `["BlasterBolt", "PlasmaBolt"]`. Each element is parsed and validated, and ref elements get autocomplete.
 - **Repeated columns** (often the best choice for short, simple lists): `projectiles[0]`, `projectiles[1]`, `projectiles[2]` over N columns. Trailing blanks are trimmed, and a gap (a blank before a filled column) is an error. `maxItems` defaults to N.
+- **Switching** (`setColumns` in the API; the right-click menu of the field's column on a sheet): a struct field is split into a column per sub-field or put back in one cell, and a list of simple values (not structs, unions, lists or JSON) is spread over N columns, given more or fewer, or put back in one cell. It's per sheet and type, and every row of the type on the sheet, commented out or not, keeps its value, moved to the new columns, in one change. New columns go right after the field's last one; a column it no longer uses is deleted when nothing else is in it (another type's layout, a note in another row), and left otherwise. When columns come or go, the other types' layouts on the sheet are pinned first, so none of their fields shift. It's refused, saying which rows, when a value is a formula or doesn't read, or a list is longer than the columns asked for.
 
 Child rows under a parent are explicitly **not** supported.
 

@@ -20,7 +20,7 @@ import { schemaChanges, schemaRemovals, schemaRenames } from "../ops/schemaDiff.
 import { formatSchema, parseSchema } from "../schema/yaml.ts";
 import type { FieldDef, FieldType } from "../schema/model.ts";
 import { resolveSchema, type ResolvedSchema, type ResolvedType } from "../schema/resolve.ts";
-import type { LayoutColumn } from "../project/layout.ts";
+import { canSplit, canSpread, fieldColumns, type FieldColumns, type Layout, type LayoutColumn } from "../project/layout.ts";
 import { loadProject, type ProjectDef } from "../project/load.ts";
 import { Project, type Entity, type Issue, type SingletonEntry } from "../project/project.ts";
 import { classify } from "../project/rows.ts";
@@ -261,6 +261,18 @@ export class Sapwood {
    */
   set(id: string, fields: Record<string, JsonValue>, opts: { force?: boolean } = {}): Change {
     return this.write(() => this.setOps(id, fields, opts.force ?? false));
+  }
+
+  /**
+   * How a field of a type sits in a sheet's columns (§6.3, §6.4): one whole cell, a struct
+   * split into a column per sub-field, or a list spread over N columns. Every row of the type
+   * on the sheet, commented out or not, keeps its value, moved to the new columns. Columns
+   * are added after the field's last one as needed; ones it no longer uses are deleted when
+   * nothing else is in them, and left as they are otherwise. Refused when a row's value is a
+   * formula or doesn't read (fix those first), or a list is longer than the columns asked for.
+   */
+  setColumns(sheet: string, type: string, field: string, to: FieldColumns, where: { pack?: string } = {}): Change {
+    return this.write(() => this.columnsOps(sheet, type, field, to, where.pack));
   }
 
   /** Add an entity: `fields` must include `$id`. See Placement for where it goes. */
@@ -790,6 +802,110 @@ export class Sapwood {
     const inverse = this.project.apply([op]);
     this.grown!.ops.push(op);
     this.grown!.inverses.push(inverse);
+  }
+
+  /** An op applied now and recorded in the change being written, like growColumns. */
+  private stage(op: Op): void {
+    const inverse = this.project.apply([op]);
+    this.grown!.ops.push(op);
+    this.grown!.inverses.push(inverse);
+  }
+
+  private dataSheet(name: string, pack: string | undefined): SheetId {
+    const p = pack === undefined ? undefined : this.packId(pack);
+    const found = [...this.project.wb.sheets.values()].filter((s) => s.name === name && (p === undefined || s.pack === p));
+    if (found.length === 0) throw new ApiError("not-found", `No sheet called ${name}${pack ? ` in pack ${pack}` : ""}`);
+    if (found.length > 1) throw new ApiError("ambiguous", `Several packs have a sheet called ${name}: say which pack`);
+    if (found[0]!.kind !== "data") throw new ApiError("bad-value", `${name} is a scratch sheet: it has no layouts`);
+    return found[0]!.id;
+  }
+
+  private columnsOps(sheetName: string, type: string, field: string, to: FieldColumns, pack: string | undefined): { ops: Op[] } {
+    const sheet = this.dataSheet(sheetName, pack);
+    const t = this.schema.types.get(type);
+    if (!t) throw new ApiError("unknown-type", `No type called ${type}`);
+    if (t.def.singleton) throw new ApiError("singleton", `${type} is a singleton: its fields are rows, not columns`);
+    const def = t.fieldByName.get(field)?.def;
+    if (!def) throw new ApiError("unknown-field", `${type} has no field ${field}`);
+    const label = `${type}.${field}`;
+    if (to.kind === "none") throw new ApiError("bad-value", "A field's columns can be whole, split or spread");
+    if (to.kind === "split" && !canSplit(this.schema, def)) throw new ApiError("bad-value", `${label} isn't a struct, so it can't be split into columns`);
+    if (to.kind === "spread") {
+      if (!canSpread(def)) throw new ApiError("bad-value", `${label} isn't a list of simple values, so it can't be spread over columns`);
+      if (!Number.isInteger(to.columns) || to.columns < 1 || to.columns > 100) throw new ApiError("bad-value", "A list is spread over 1 to 100 columns");
+    }
+    const layout = this.project.layout(sheet, type);
+    const now = fieldColumns(layout, def.id);
+    if (now.kind === to.kind && (to.kind !== "spread" || (now as { columns: number }).columns === to.columns)) return { ops: [] };
+
+    // Every row's value, read before anything moves.
+    const rows = this.project.project().entities.filter((e) => e.type === type && e.at.sheet === sheet);
+    const values: [Entity, JsonValue][] = [];
+    const bad: string[] = [];
+    for (const e of rows) {
+      const entry = e.fields.get(def.name);
+      const where = `${e.id ?? "(no ID)"} (${this.rowName(sheet, e.at.row)})`;
+      if (entry?.formula) bad.push(`${where} is a formula`);
+      else if (entry?.invalid) bad.push(`${where} doesn't read`);
+      else if (entry?.value !== undefined) {
+        const v = valueJson(this.schema, def.type, entry.value, { ref: (id) => id, defaults: false }) as JsonValue;
+        if (to.kind === "spread" && Array.isArray(v) && v.length > to.columns) bad.push(`${where} has ${v.length} items`);
+        if (v !== null) values.push([e, v]);
+      }
+    }
+    if (bad.length) throw new ApiError("bad-value", `${label} on ${sheetName} can't change columns: ${bad.slice(0, 5).join("; ")}${bad.length > 5 ? "; …" : ""}`);
+
+    // The field's new columns, in place of its old ones.
+    const s = to.kind === "split" ? this.schema.structs.get((def.type as { name: string }).name)! : null;
+    const made: Omit<LayoutColumn, "col">[] =
+      to.kind === "whole" ? [{ field: def.id, path: [] }]
+      : s ? s.fields.map((f) => ({ field: def.id, path: [f.id] }))
+      : Array.from({ length: (to as { columns: number }).columns }, (_, i) => ({ field: def.id, path: [], index: i }));
+    const old = layout.filter((c) => c.field === def.id).map((c) => c.col);
+    const sh = this.project.wb.sheet(sheet);
+    const more = Math.max(0, made.length - old.length);
+    const leftover = old.slice(made.length);
+    if (more || leftover.length) {
+      // Columns come and go: every other type's layout here is pinned first, so none shifts.
+      const types = new Set(this.project.project().entities.filter((e) => e.at.sheet === sheet).map((e) => e.type));
+      for (const name of types)
+        if (name !== type && !this.project.doc.sheets.get(sheet)!.layouts.has(name)) this.stage({ kind: "setLayout", sheet, type: name, layout: this.project.layout(sheet, name) });
+    }
+    let fresh: ColId[] = [];
+    if (more) {
+      // After the field's last column; with none, after the sheet's last column.
+      if (sh.cols.length < 2) this.growColumns(sheet, 2);
+      const pos = (c: ColId) => sh.cols.posOf(c) ?? 0;
+      const after = old.length ? old.reduce((a, b) => (pos(a) > pos(b) ? a : b)) : (this.project.doc.sheets.get(sheet)!.cols.order.at(-1) ?? null);
+      fresh = sh.cols.freshIds(more);
+      this.stage({ kind: "insert", sheet, axis: "col", after, ids: fresh });
+    }
+    const cols = [...old.slice(0, made.length), ...fresh];
+    const placed: LayoutColumn[] = made.map((m, i) => ({ ...m, col: cols[i]! }));
+    const at = layout.findIndex((c) => c.field === def.id);
+    const rest = layout.filter((c) => c.field !== def.id);
+    const next: Layout = at < 0 ? [...rest, ...placed] : [...rest.slice(0, at), ...placed, ...rest.slice(at)];
+    this.stage({ kind: "setLayout", sheet, type, layout: next });
+
+    // Clear the old cells, then write each value to the new ones.
+    const ops: Op[] = [];
+    for (const e of rows)
+      for (const c of old) {
+        const cell = this.project.engine.cellById(sheet, e.at.row, c);
+        if (cell.value !== null || cell.formula) ops.push(this.cellOp(sheet, e.at.row, c, null));
+      }
+    for (const [e, v] of values) ops.push(...this.fieldOps(e, def.name, v, true));
+    // Columns no longer used: deleted when no other layout here uses them and no other row has anything in them.
+    const mine = new Set(rows.map((e) => e.at.row));
+    const usedElsewhere = new Set<ColId>();
+    for (const [name, l] of this.project.doc.sheets.get(sheet)!.layouts) if (name !== type) for (const c of l) usedElsewhere.add(c.col);
+    const empty = (r: RowId, c: ColId) => {
+      const cell = this.project.engine.cellById(sheet, r, c);
+      return cell.value === null && !cell.formula;
+    };
+    const gone = leftover.filter((c) => !usedElsewhere.has(c) && sh.rows.liveIds().every((r) => mine.has(r) || empty(r, c)));
+    if (gone.length) ops.push({ kind: "delete", sheet, axis: "col", ids: gone });
+    return { ops };
   }
 
   /** A new data sheet, applied now and recorded in the change being written, like growColumns. */

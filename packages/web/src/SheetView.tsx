@@ -15,7 +15,7 @@ import {
   type DataEditorRef, type DrawCellCallback, type ProvideEditorCallback, type ProvideEditorCallbackResult, type DrawHeaderCallback, type EditListItem, type GridCell, type GridColumn, type GridSelection, type Item, type Theme,
 } from "@glideapps/glide-data-grid";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Format, Issue, Op, PackId, Project } from "@thek42/sapwood-core";
+import type { FieldColumns, Format, Issue, Op, PackId, Project } from "@thek42/sapwood-core";
 import { numberToCol } from "@thek42/sapwood-core";
 import { copyPayload, parsePaste } from "./clipboard.ts";
 import { SheetGrid, typeColor, type Axis, type CellEdit, type CellView, type Rect } from "./grid.ts";
@@ -516,6 +516,7 @@ export function SheetView(p: SheetProps) {
           clear={clear}
           navigate={(f) => (setMenu(null), f(p))}
           openPanel={() => (setMenu(null), menu.cell && openPanel(menu.cell.row, menu.cell.col))}
+          columnType={menu.cell ? g.rowType(menu.cell.row) : headerType}
         />
       )}
       {tip && (
@@ -551,12 +552,29 @@ export function cellContent(v: CellView, canEdit: boolean, theme: { formula: str
   };
 }
 
+/** "Spread a list over N columns", with N to choose: at least its longest list. */
+function Spread(p: { field: string; start: number; run(n: number): void }) {
+  const [n, setN] = useState(p.start);
+  const ok = Number.isInteger(n) && n >= p.start && n <= 100;
+  return (
+    <span className="menu-spread">
+      <button role="menuitem" disabled={!ok} onClick={() => p.run(n)}>
+        Spread {p.field} over
+      </button>
+      <input type="number" min={p.start} max={100} value={n} aria-label="Columns" onChange={(e) => setN(Number(e.target.value))} onKeyDown={(e) => e.key === "Enter" && ok && p.run(n)} />
+      <span className="muted small">columns</span>
+    </span>
+  );
+}
+
 /** Right-click: copy and cut, clear, and inserting and deleting rows and columns. */
 function SheetMenu(p: {
   grid: SheetGrid;
   at: { x: number; y: number; rect: Rect; cell: { row: number; col: number } | null; whole: Axis | null };
   navigate(f: (s: SheetProps) => void): void;
   openPanel(): void;
+  /** The type whose columns the menu offers to change: the row's, or the header's. */
+  columnType: string | null;
   canEdit: boolean;
   close(): void;
   change(fn: (g: SheetGrid) => { ops: Op[] }): void;
@@ -619,8 +637,31 @@ function SheetMenu(p: {
     ...(type && p.canEdit ? [item(`New ${type}…`, true, () => p.navigate((s) => s.newEntity?.(type, g.project.wb.sheet(g.sheet).pack)))] : []),
     ...(type ? [item(`Show every ${type}`, true, () => p.navigate((s) => s.openType(type)))] : []),
   ];
+  // How the column's field sits in the columns (DESIGN §6.3, §6.4): a struct split or not, a list spread or not.
+  const fc = p.canEdit && p.at.whole !== "row" ? g.fieldColumnsAt(p.columnType, c?.col ?? r.col) : null;
+  const to = (x: FieldColumns) => () => p.change((y) => y.setColumns(fc!.type, fc!.field, x));
+  const columnsItems = !fc ? [] : [
+    ...(fc.split && fc.form.kind === "whole" ? [item(`Split ${fc.field} into a column per field`, true, to({ kind: "split" }))] : []),
+    ...(fc.spread && fc.form.kind === "whole" ? [<Spread key="spread" field={fc.field} start={Math.max(2, fc.longest)} run={(n) => to({ kind: "spread", columns: n })()} />] : []),
+    ...(fc.form.kind === "spread" ? [
+      item(`Add a column for ${fc.field}`, true, to({ kind: "spread", columns: fc.form.columns + 1 })),
+      item(`Remove the last ${fc.field} column`, fc.form.columns > Math.max(1, fc.longest), to({ kind: "spread", columns: fc.form.columns - 1 })),
+    ] : []),
+    ...(fc.form.kind === "split" || fc.form.kind === "spread" ? [item(`Put ${fc.field} in one cell`, true, to({ kind: "whole" }))] : []),
+  ];
   return (
     <div className="menu-list sheet-menu" role="menu" ref={ref} style={pos}>
+      {columnsItems.length > 0 && (
+        <>
+          <span className="muted small hint">{fc!.type} columns on this sheet</span>
+          {columnsItems.map((x, i) => (
+            <span key={i} style={{ display: "contents" }}>
+              {x}
+            </span>
+          ))}
+          <hr />
+        </>
+      )}
       {about.length > 0 && (
         <>
           {about.map((x, i) => (

@@ -101,6 +101,34 @@ export function columnSpecs(schema: ResolvedSchema, type: ResolvedType, layout: 
   return out;
 }
 
+/**
+ * How a field sits in a sheet's columns (§6.3, §6.4, §5.6): one whole cell, a struct split
+ * into a column per sub-field, or a list spread over `columns` columns. None: no column.
+ */
+export type FieldColumns = { kind: "whole" } | { kind: "split" } | { kind: "spread"; columns: number } | { kind: "none" };
+
+export function fieldColumns(layout: Layout, field: string): FieldColumns {
+  const mine = layout.filter((c) => c.field === field);
+  if (!mine.length) return { kind: "none" };
+  if (mine.some((c) => c.index !== undefined)) return { kind: "spread", columns: mine.length };
+  if (mine.some((c) => c.path.length)) return { kind: "split" };
+  return { kind: "whole" };
+}
+
+/**
+ * The ways a field may sit in columns besides one whole cell: a struct split (each of its
+ * fields in a column of its own; one holding a struct, union, list or JSON is a whole cell
+ * there), and a list of simple values (not structs, unions, lists or JSON) spread over columns.
+ */
+export function canSplit(schema: ResolvedSchema, def: FieldDef): boolean {
+  return def.type.kind === "struct" && schema.structs.has(def.type.name);
+}
+
+export function canSpread(def: FieldDef): boolean {
+  const t = def.type;
+  return t.kind === "list" && !["struct", "union", "list", "json"].includes(t.of.kind);
+}
+
 /** The default layout: every field in schema order, one whole column each (§6.3). */
 export const defaultSpecs = (type: ResolvedType): string[] => type.fields.map((f) => f.def.name);
 

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { canonDoc, cloneDoc, docFromJson, docToJson } from "../ops/doc.ts";
-import { ApiError, Sapwood, type ApiErrorCode, type Patch } from "./sapwood.ts";
+import { ApiError, Sapwood, type ApiErrorCode, type JsonValue, type Patch } from "./sapwood.ts";
 
 const fixture = (f: string) => readFileSync(new URL(`../../fixtures/krbsg/${f}`, import.meta.url), "utf8");
 const krbsg = () => Sapwood.load(fixture("schema.yaml"), fixture("project.yaml"));
@@ -438,5 +438,78 @@ describe("the API (properties)", () => {
       }),
       { numRuns: RUNS },
     );
+  });
+});
+
+describe("a field's columns (DESIGN §6.3, §6.4)", () => {
+  // Weapons and Ammo interleaved, with the default layout: Weapon's price in E, shots in F.
+  const mixed = () =>
+    Sapwood.load(SMALL, {
+      sheets: [
+        {
+          name: "Data",
+          rows: [
+            ["Ammo", "a1", 900],
+            ["Weapon", "w1", 10, '{"amount":5,"currency":"gold"}', '["a1"]', "fire"],
+            ["#Weapon", "w0", 1, '{"amount":2}', '["a1","a2"]'],
+            ["Ammo", "a2", 600],
+          ],
+        },
+      ],
+    });
+  const cells = (s: Sapwood, row: number) => [3, 4, 5, 6, 7, 8].map((c) => s.project.engine.get(s.project.sheetId("Data"), `${String.fromCharCode(64 + c)}${row}`) ?? "");
+
+  it("a struct split into columns, and back into one cell, every row keeping its value", () => {
+    const s = mixed();
+    const before = canonDoc(cloneDoc(s.doc));
+    const w1 = s.get("w1");
+    s.setColumns("Data", "Weapon", "price", { kind: "split" });
+    expect(s.get("w1")).toEqual(w1);
+    expect(s.query("Weapon", { inactive: true }).find((e) => e.$id === "w0")!.price).toEqual({ amount: 2 });
+    expect(cells(s, 2)).toEqual([10, 5, "gold", '["a1"]', "fire", ""]); // a column added after price
+    expect(s.get("a1").speed).toBe(900); // Ammo's columns don't move
+    expect(s.validate().errors).toBe(0);
+    s.setColumns("Data", "Weapon", "price", { kind: "whole" });
+    expect(s.get("w1")).toEqual(w1);
+    expect(cells(s, 2)).toEqual([10, '{"amount":5,"currency":"gold"}', '["a1"]', "fire", "", ""]); // the empty column is gone
+    s.undo();
+    s.undo();
+    expect(canonDoc(s.doc)).toEqual(before);
+  });
+
+  it("a list spread over columns, more or fewer, and back", () => {
+    const s = mixed();
+    const w0 = () => s.query("Weapon", { inactive: true }).find((e) => e.$id === "w0")!.shots;
+    s.setColumns("Data", "Weapon", "shots", { kind: "spread", columns: 3 });
+    expect(cells(s, 2)).toEqual([10, '{"amount":5,"currency":"gold"}', "a1", "", "", "fire"]);
+    expect(w0()).toEqual(["a1", "a2"]);
+    expect(fails("bad-value", () => s.setColumns("Data", "Weapon", "shots", { kind: "spread", columns: 1 }))).toMatch(/w0 \(Data row 3\) has 2 items/);
+    s.setColumns("Data", "Weapon", "shots", { kind: "spread", columns: 2 });
+    expect(cells(s, 2)).toEqual([10, '{"amount":5,"currency":"gold"}', "a1", "", "fire", ""]);
+    s.setColumns("Data", "Weapon", "shots", { kind: "whole" });
+    expect(s.get("w1").shots).toEqual(["a1"]);
+    expect(w0()).toEqual(["a1", "a2"]);
+    expect(s.validate().errors).toBe(0);
+  });
+
+  it("a column another type uses, or with something in it, stays", () => {
+    const s = Sapwood.load(SMALL, {
+      sheets: [{ name: "Data", layouts: { Weapon: ["damage", "price.amount", "price.currency"], Ammo: ["speed", "", "", "speed2"].slice(0, 1) }, rows: [["Weapon", "w1", 10, 5, "gold"], ["Ammo", "a1", 900, "", "a note"]] }],
+    });
+    s.setColumns("Data", "Weapon", "price", { kind: "whole" });
+    expect(s.get("w1").price).toEqual({ amount: 5, currency: "gold" });
+    // E holds Ammo's scratch note, so it stays, empty for Weapon.
+    expect(s.project.engine.get(s.project.sheetId("Data"), "E2")).toBe("a note");
+    expect(s.project.engine.get(s.project.sheetId("Data"), "E1")).toBe(null);
+  });
+
+  it("refused: a formula, a value that doesn't read, a field that can't", () => {
+    const s = mixed();
+    s.set("w1", { price: { $formula: '="x"' } as unknown as JsonValue });
+    expect(fails("bad-value", () => s.setColumns("Data", "Weapon", "price", { kind: "split" }))).toMatch(/w1 \(Data row 2\) is a formula/);
+    fails("bad-value", () => s.setColumns("Data", "Weapon", "damage", { kind: "split" }));
+    fails("bad-value", () => s.setColumns("Data", "Weapon", "shots", { kind: "spread", columns: 0 }));
+    fails("unknown-field", () => s.setColumns("Data", "Weapon", "nope", { kind: "whole" }));
+    fails("singleton", () => s.setColumns("Data", "Config", "cost", { kind: "split" }));
   });
 });

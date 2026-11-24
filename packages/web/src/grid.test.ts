@@ -230,3 +230,22 @@ describe("a sheet as the grid shows it", () => {
     expect([0, 1, 2, 3].map((c) => new SheetGrid(p, s).cell(8, c).input)).toEqual(["Wave 1", "Wave 2", "Wave 3", "Wave 4"]);
   });
 });
+
+describe("a field's columns, from the grid", () => {
+  it("what a column's field is, how it sits, and what it may become", () => {
+    const schema = `structs:
+  Cost: { fields: { currency: string, amount: int } }
+types:
+  Item: { fields: { price: "struct<Cost>", tags: "list<string>", n: int } }
+`;
+    const p = loadProject(schema, { sheets: [{ name: "Items", rows: [["Item", "sword", '{"amount":3}', '["a","b"]', 1]] }] }).project;
+    const g = new SheetGrid(p, p.sheetId("Items"));
+    expect(g.fieldColumnsAt("Item", 2)).toMatchObject({ field: "price", form: { kind: "whole" }, split: true, spread: false });
+    expect(g.fieldColumnsAt("Item", 3)).toMatchObject({ field: "tags", split: false, spread: true, longest: 2 });
+    expect(g.fieldColumnsAt("Item", 1)).toBeNull();
+    g.setColumns("Item", "tags", { kind: "spread", columns: 2 }); // applied as it goes, as edits are
+    const g2 = new SheetGrid(p, p.sheetId("Items"));
+    expect(g2.fieldColumnsAt("Item", 4)).toMatchObject({ field: "tags", form: { kind: "spread", columns: 2 } });
+    expect(g2.cell(0, 3).text).toBe("a");
+  });
+});
