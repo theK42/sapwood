@@ -123,16 +123,24 @@ code { font: 12px ui-monospace, "Cascadia Mono", Consolas, monospace; }
 
 /* the sheet */
 .sheet { display: grid; grid-template-rows: auto auto 1fr; min-height: 0; position: relative; }
-.sheet-bar, .formula-bar { display: flex; align-items: center; gap: 10px; padding: 6px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.sheet-bar, .formula-bar { display: flex; align-items: center; gap: 10px; padding: 6px 16px; border-bottom: 1px solid var(--line); }
+/* One line each, always: a badge or an issue appearing mustn't push the grid down under the pointer.
+   When there's no room, the sheet's name, the header picker and the issue's message give way. */
+.sheet-bar > *, .formula-bar > * { flex-shrink: 0; }
+.sheet-bar { overflow-x: auto; scrollbar-width: none; } /* too narrow (the issues panel open): it scrolls sideways */
+.sheet-bar strong { flex-shrink: 1; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-bar .spacer { flex-shrink: 1; min-width: 0; }
+.sheet-bar .pin { flex-shrink: 1; min-width: 0; }
+.sheet-bar .pin select { min-width: 0; width: 100%; }
 .sheet-bar { background: var(--panel); }
-.formats { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.formats { display: inline-flex; align-items: center; gap: 3px; }
 .formats .b { font-weight: 700; }
 .formats .i { font-style: italic; }
 .swatch { width: 20px; height: 20px; border: 1px solid var(--line); border-radius: 4px; padding: 0; cursor: pointer; font: 700 13px/1 system-ui, sans-serif; background: var(--panel); }
 .pin { display: inline-flex; align-items: center; gap: 6px; }
 .formula-bar .addr { min-width: 4.5em; font: 12px ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted); }
-.formula-bar input { flex: 1; min-width: 12em; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
-.formula-bar .issue { font-size: 12px; padding: 2px 8px; border-radius: 6px; }
+.formula-bar input { flex: 1 1 auto; min-width: 8em; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+.formula-bar .issue { font-size: 12px; padding: 2px 8px; border-radius: 6px; flex-shrink: 1; min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .formula-bar .issue.error { color: var(--error); background: var(--error-bg); }
 .formula-bar .issue.warning { color: var(--warn); background: var(--warn-bg); }
 .sheet-grid { position: relative; min-height: 0; height: 100%; }

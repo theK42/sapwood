@@ -440,21 +440,35 @@ export class Project {
     for (const s of this.wb.sheets.values()) {
       if (s.kind !== "data" || s.cols.length < 1) continue;
       const doc = this.doc.sheets.get(s.id)!;
-      const types = new Set<string>();
+      // Each type to pin, by the name its layout is kept under: the type's name now, or, for
+      // rows that only become it in this edit (their type removed, and another renamed to its
+      // name), its new name, as the rows' layout is found once the edit is done.
+      const types = new Map<string, string>(); // layout key → the type's name now
       const colA = s.cols.idAt(1);
       for (const row of s.rows.liveIds()) {
-        const rc = classify(now, String(this.engine.cellById(s.id, row, colA).value ?? ""));
-        if (rc.kind === "entity") types.add(rc.type);
+        const text = String(this.engine.cellById(s.id, row, colA).value ?? "");
+        const rc = classify(now, text);
+        if (rc.kind === "entity") types.set(rc.type, rc.type);
+        const rn = classify(next, text);
+        if (rn.kind !== "entity") continue;
+        const id = next.types.get(rn.type)!.def.id;
+        if (rc.kind === "entity" && byId.has(now.types.get(rc.type)!.def.id)) continue; // their type stays theirs
+        const name = [...now.types.values()].find((x) => x.def.id === id)?.def.name;
+        if (name !== undefined && !doc.layouts.has(rn.type) && !doc.layouts.has(name)) types.set(rn.type, name);
       }
       const extra: ColId[] = [];
       const pins: Op[] = [];
-      for (const type of types) {
+      for (const [key, type] of types) {
         const old = now.types.get(type)!;
         const t = byId.get(old.def.id);
         if (!t) continue;
-        const custom = doc.layouts.has(type);
+        const custom = doc.layouts.has(key);
         const ids = new Set(t.fields.map((f) => f.def.id));
-        const layout = this.layout(s.id, type).filter((c) => ids.has(c.field));
+        // Rows that become the type here take it as removals have left it (they come before
+        // renames): its default layout, of the fields it keeps.
+        const layout = key === type
+          ? this.layout(s.id, type).filter((c) => ids.has(c.field))
+          : old.fields.filter((f) => ids.has(f.def.id)).flatMap((f, i): LayoutColumn[] => (3 + i <= s.cols.length ? [{ col: s.cols.idAt(3 + i), field: f.def.id, path: [] }] : []));
         // New fields go after the last column. A custom layout keeps hiding the fields it hid.
         const known = custom ? new Set(old.fields.map((f) => f.def.id)) : new Set(layout.map((c) => c.field));
         const fresh = t.fields.filter((f) => !known.has(f.def.id));
@@ -473,7 +487,7 @@ export class Project {
           while (s.cols.length + extra.length < p) extra.push(...s.cols.freshIds(1));
           layout.push({ col: p <= s.cols.length ? s.cols.idAt(p) : extra[p - s.cols.length - 1]!, field: f.def.id, path: [] });
         });
-        pins.push({ kind: "setLayout", sheet: s.id, type, layout });
+        pins.push({ kind: "setLayout", sheet: s.id, type: key, layout });
       }
       if (extra.length) out.push({ kind: "insert", sheet: s.id, axis: "col", after: doc.cols.order.at(-1) ?? null, ids: extra });
       out.push(...pins);

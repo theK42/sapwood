@@ -3,9 +3,11 @@
 // new one, switch to another of yours, or abandon it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { validate } from "@thek42/sapwood-core";
+import { validate, type ColId, type Project, type RowId } from "@thek42/sapwood-core";
 import { ApiError, type Api, type ConflictJson, type Me, type Resolutions, type TaskInfo, type TaskStatus } from "./api.ts";
+import { SheetGrid } from "./grid.ts";
 import { plural, useSource } from "./hooks.ts";
+import { placeOf } from "./refs.ts";
 import type { TaskSession } from "./session.ts";
 
 interface Props {
@@ -172,7 +174,7 @@ function LandForm(p: Props & { session: TaskSession; conflicts: ConflictJson[]; 
           <ol>
             {conflicts.map((c) => (
               <li key={c.id}>
-                <span>{describe(c)}</span>
+                <span>{describe(c, p.session.project)}</span>
                 {(["mine", "theirs"] as const).map((side) => (
                   <label key={side} className="choice">
                     <input type="radio" name={c.id} checked={choice[c.id] === side} onChange={() => setChoice({ ...choice, [c.id]: side })} />
@@ -197,13 +199,16 @@ function LandForm(p: Props & { session: TaskSession; conflicts: ConflictJson[]; 
   );
 }
 
-/** A conflict in words: a cell's two values, or what kind of clash it is. */
-export function describe(c: ConflictJson): string {
+/**
+ * A conflict in words: a cell's two values, or what kind of clash it is. A cell of an entity
+ * is named for it, as a designer thinks of it: Blaster's cooldown (Weapons!E2).
+ */
+export function describe(c: ConflictJson, project?: Project): string {
   const k = c.conflict;
   const shown = (x: unknown) => (x === null ? "blank" : typeof x === "object" && x && "v" in x ? JSON.stringify((x as { v: unknown }).v) : typeof x === "object" && x && "bad" in x ? String((x as { bad: unknown }).bad) : "a formula");
   switch (k.kind) {
     case "cell":
-      return `${c.where ? `${c.where.sheet}!${c.where.cell}` : "A cell"}: yours ${shown(k.mine)}, the branch's ${shown(k.theirs)}`;
+      return `${cellName(c, project)}: yours ${shown(k.mine)}, the branch's ${shown(k.theirs)}`;
     case "deleted":
       return `A ${k.axis} you changed was deleted ${k.deletedBy === "mine" ? "by you" : "on the branch"}`;
     case "move":
@@ -219,6 +224,20 @@ export function describe(c: ConflictJson): string {
     case "op":
       return k.message;
   }
+}
+
+function cellName(c: ConflictJson, project?: Project): string {
+  const address = c.where ? `${c.where.sheet}!${c.where.cell}` : null;
+  const k = c.conflict;
+  const at = project && k.kind === "cell" ? placeOf(project, { sheet: k.sheet, row: k.row as RowId, col: k.col as ColId }) : null;
+  if (project && at && at.col !== null) {
+    const g = new SheetGrid(project, at.sheet);
+    const type = g.rowClass(at.row).kind === "entity" ? g.rowType(at.row) : null;
+    const id = type ? g.cell(at.row, 1).input : "";
+    const field = type && at.col >= 2 ? g.columnName(type, at.col) : "";
+    if (id && field) return address ? `${id}'s ${field} (${address})` : `${id}'s ${field}`;
+  }
+  return address ?? "A cell";
 }
 
 /** Your tasks on the branch: switch, start a new one, abandon this one. */

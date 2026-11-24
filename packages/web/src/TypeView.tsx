@@ -153,7 +153,7 @@ export function TypeView(p: Props) {
           }}
           onBlur={() => setDraft(null)}
         />
-        {curView?.issue && <span className={`issue ${curView.issue.level}`}>{curView.issue.message}</span>}
+        {curView?.issue && <span className={`issue ${curView.issue.level}`} title={curView.issue.message}>{curView.issue.message}</span>}
       </div>
       <div className="sheet-grid">
         {t.rows.length === 0 ? (

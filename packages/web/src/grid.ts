@@ -7,7 +7,7 @@
 
 import {
   classify, columnSpecs, defaultSpecs, display, isErr, numberToCol, sheetLayout, validate,
-  moveFormula, type ColId, type Edit, type Format, type Issue, type Op, type Project, type RowClass, type RowId, type SheetId,
+  moveFormula, type ColId, type Edit, type FieldType, type Format, type Issue, type Op, type Project, type RowClass, type RowId, type SheetId,
 } from "@thek42/sapwood-core";
 
 /** Empty rows and columns shown past the sheet's end. */
@@ -207,6 +207,20 @@ export class SheetGrid {
     return defaultSpecs(t)[col - 2] ?? "";
   }
 
+  /**
+   * What typing `input` in a cell writes. In a cell holding a whole list of plain values or
+   * IDs, a plain list is written as the JSON the cell holds, as the CLI reads it:
+   * `HeavyBolt` is `["HeavyBolt"]`, `a, b` is `["a","b"]`, `1, 2` is `[1,2]`. Anything else
+   * is written as typed.
+   */
+  typed(row: number, col: number, input: string): string {
+    const k = this.kind === "data" && col >= 2 ? this.rowClass(row) : null;
+    if (k?.kind !== "entity") return input;
+    const spec = this.columnName(k.type, col);
+    const field = this.project.schema.types.get(k.type)?.fieldByName.get(spec)?.def;
+    return field ? listText(field.type, input) : input;
+  }
+
   private specsFor(type: string): Map<ColId, string> {
     let m = this.specs.get(type);
     if (!m) {
@@ -238,7 +252,7 @@ export class SheetGrid {
     }, (edits) => {
       for (const c of cells) {
         const a1 = this.address(c.row, c.col);
-        edits.push(p.set(this.sheet, a1, c.input));
+        edits.push(p.set(this.sheet, a1, this.typed(c.row, c.col, c.input)));
         if (c.format !== undefined) edits.push(p.setFormat(this.sheet, a1, c.format));
       }
     });
@@ -465,3 +479,21 @@ function steady(ns: readonly number[]): number | null {
 
 /** 0.1 + 0.2 shows as 0.3. */
 const tidy = (n: number): string => String(Number(n.toPrecision(15)));
+
+const PLAIN = new Set<FieldType["kind"]>(["string", "ref", "enum", "int", "float", "duration", "bool", "datetime"]);
+
+/** A plain list typed for a list of plain values or IDs, as its JSON (`a, b` is `["a","b"]`); anything else as it is. */
+export function listText(type: FieldType, input: string): string {
+  if (type.kind !== "list" || !PLAIN.has(type.of.kind)) return input;
+  const t = input.trim();
+  if (t === "" || /^[[=']/.test(t)) return input;
+  const number = type.of.kind === "int" || type.of.kind === "float" || type.of.kind === "duration";
+  const items = t.split(",").map((x) => x.trim()).filter((x) => x !== "");
+  return JSON.stringify(
+    items.map((x) => {
+      if (number && x !== "" && Number.isFinite(Number(x))) return Number(x);
+      if (type.of.kind === "bool" && /^(true|false)$/i.test(x)) return x.toLowerCase() === "true";
+      return x;
+    }),
+  );
+}

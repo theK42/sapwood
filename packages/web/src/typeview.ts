@@ -137,7 +137,7 @@ export class TypeGrid {
     try {
       for (const c of cells) {
         const h = this.home(c.row, c.col);
-        if (h) edits.push(this.project.set(h.sheet, `${numberToCol(h.col + 1)}${h.row + 1}`, c.input));
+        if (h) edits.push(this.project.set(h.sheet, `${numberToCol(h.col + 1)}${h.row + 1}`, this.grid(h.sheet).typed(h.row, h.col, c.input)));
       }
     } catch (e) {
       for (const x of edits.reverse()) this.project.apply(x.inverse);

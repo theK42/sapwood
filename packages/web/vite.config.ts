@@ -2,7 +2,14 @@
 // (SAPWOOD_SERVER, default http://127.0.0.1:8417), as if the app were served from there:
 // the session cookie, and the WebSocket's Origin check, then work as in production.
 import react from "@vitejs/plugin-react";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { defineConfig } from "vite";
+
+// Glide loads its cell editor on the first key typed in a cell, from a chunk of its own. Keys
+// typed before it arrives are lost, so the app loads it at start (main.tsx), by this name.
+const glide = dirname(createRequire(import.meta.url).resolve("@glideapps/glide-data-grid"));
+const overlayEditor = join(glide, "../esm/internal/data-grid-overlay-editor/data-grid-overlay-editor.js");
 
 const target = process.env.SAPWOOD_SERVER ?? "http://127.0.0.1:8417";
 const proxy = {
@@ -15,6 +22,7 @@ const proxy = {
 
 export default defineConfig({
   plugins: [react()],
+  resolve: { alias: { "glide-overlay-editor": overlayEditor } },
   server: { port: 5173, strictPort: true, proxy: { "/api": proxy, "/auth": proxy, "/healthz": proxy } },
   build: { sourcemap: true },
 });

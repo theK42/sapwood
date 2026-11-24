@@ -163,6 +163,20 @@ describe("a sheet as the grid shows it", () => {
     expect(at().moveTo("row", [1], at().rows + 1).ops).toEqual([]);
   });
 
+  it("reads a plain list typed in a list cell as the JSON it holds", () => {
+    const p = krbsg();
+    const s = p.sheetId("Weapons");
+    new SheetGrid(p, s).edit([{ row: 1, col: 2, input: "BlasterBolt" }]);
+    expect(new SheetGrid(p, s).cell(1, 2).input).toBe('["BlasterBolt"]');
+    expect(new SheetGrid(p, s).cell(1, 2).issue).toBe(null);
+    new SheetGrid(p, s).edit([{ row: 1, col: 2, input: " BlasterBolt , PlasmaBolt " }]);
+    expect(new SheetGrid(p, s).cell(1, 2).input).toBe('["BlasterBolt","PlasmaBolt"]');
+    // JSON, formulas and blanks as typed; and other fields, and rows that aren't entities.
+    for (const input of ['["a"]', "=LIST()", ""]) expect(new SheetGrid(p, s).typed(1, 2, input)).toBe(input);
+    expect(new SheetGrid(p, s).typed(1, 3, "a, b")).toBe("a, b");
+    expect(new SheetGrid(p, s).typed(0, 2, "a, b")).toBe("a, b");
+  });
+
   it("fill repeats the source, moving formulas, and brings formats", () => {
     const p = krbsg();
     const s = p.sheetId("Weapons");

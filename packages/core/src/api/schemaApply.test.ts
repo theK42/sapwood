@@ -135,6 +135,21 @@ describe("schema apply", () => {
     expect(r.notes).toEqual(["The order of Weapon's fields changed; reordering isn't applied yet, so the old order stays"]);
   });
 
+  it("rows that become another type in the edit keep their columns, as one edit at a time does", () => {
+    // Ammo removed and Weapon renamed to Ammo: the Ammo sheet's rows are the renamed Weapon's
+    // now, by position from C. A field put in after damage mustn't shift them onto the next column.
+    const s = project();
+    const other = Sapwood.fromDoc(cloneDoc(s.doc));
+    other.project.removeDef("Ammo");
+    other.project.renameType("Weapon", "Ammo");
+    other.project.addField("Ammo", { name: "range", type: "int" }, "damage");
+    s.applySchema(other.schemaYaml(), { force: true });
+    expect(s.validate()).toEqual(other.validate());
+    expect(s.get("a1")).toEqual(other.get("a1"));
+    expect(s.get("a1")).toMatchObject({ damage: 900, element: { $invalid: 1 } }); // D stays element's
+    expect(s.get("a1").range).toBe(undefined);
+  });
+
   it("text that doesn't parse or resolve is refused", () => {
     const s = project();
     expect(fails("bad-schema", () => s.applySchema("types: [1"))).toContain("The schema has problems");
@@ -158,18 +173,28 @@ describe("schema apply (properties)", () => {
         // Edits with their arguments, and their order in what applySchema does: removals,
         // renames, then the rest. The text shows only where edits end up, so in another order
         // (rename a type, then remove it) the copy's cells can differ for reasons no text shows.
+        // A type is renamed at most once. The text shows only where a type ends up: Weapon renamed
+        // to Ammo (a name just freed) and then to Ammo2 reads as Weapon to Ammo2, though one at a
+        // time the second rename also took the old Ammo's rows along, which no text shows.
+        const renamed = new Set<string>();
+        const done: string[] = []; // the edits that applied, said in a failure
+        const did = <T,>(what: string, f: () => T): T => {
+          const r = f();
+          done.push(what);
+          return r;
+        };
         const edits: [number, () => unknown][] = [];
         for (let i = g(fc.integer, { min: 1, max: 6 }); i > 0; i--) {
           const [a, b, c, d] = [pick(NAMES), pick(FIELDS), pick(FIELDS), pick(NAMES)];
           edits.push(pick<[number, () => unknown]>([
-            [2, () => p.addField(a, { name: b + i, type: pick(["int", "float", "string", "list<ref<Ammo>>"]) }, pick([undefined, c]))],
-            [0, () => p.removeField(a, b)],
-            [1, () => p.renameField(a, b, c)],
-            [1, () => p.renameType(a, d + pick(["", "2"]))],
-            [2, () => p.setField(a, b, pick([{ min: 1 }, { type: "string" }, { required: true }, { min: null }]))],
-            [1, () => p.renameEnumMember("Element", pick(["fire", "ice"]), pick(["flame", "frost"]))], // to names it never had: see schemaRenames
-            [2, () => p.addDef("structs", { name: a + "S", fields: [{ name: "x", type: "int" }] })],
-            [0, () => p.removeDef(a)],
+            [2, () => { const type = pick(["int", "float", "string", "list<ref<Ammo>>"]), after = pick([undefined, c]); return did(`addField ${a}.${b + i}: ${type} after ${after}`, () => p.addField(a, { name: b + i, type }, after)); }],
+            [0, () => did(`removeField ${a}.${b}`, () => p.removeField(a, b))],
+            [1, () => did(`renameField ${a}.${b} ${c}`, () => p.renameField(a, b, c))],
+            [1, () => { const to = d + pick(["", "2"]); if (renamed.has(a)) return; return did(`renameType ${a} ${to}`, () => (renamed.add(to), p.renameType(a, to))); }], // once each: see renamed
+            [2, () => { const x = pick([{ min: 1 }, { type: "string" }, { required: true }, { min: null }]); return did(`setField ${a}.${b} ${JSON.stringify(x)}`, () => p.setField(a, b, x)); }],
+            [1, () => { const [f, t] = [pick(["fire", "ice"]), pick(["flame", "frost"])]; return did(`renameEnumMember ${f} ${t}`, () => p.renameEnumMember("Element", f, t)); }], // to names it never had: see schemaRenames
+            [2, () => did(`addDef ${a}S`, () => p.addDef("structs", { name: a + "S", fields: [{ name: "x", type: "int" }] }))],
+            [0, () => did(`removeDef ${a}`, () => p.removeDef(a))],
           ]));
         }
         for (const [, edit] of edits.sort((x, y) => x[0] - y[0]))
@@ -187,11 +212,12 @@ describe("schema apply (properties)", () => {
           expect(canonDoc(s.doc)).toEqual(start);
           return;
         }
-        expect(s.schemaYaml()).toBe(target);
-        expect(s.validate()).toEqual(other.validate());
+        const edited = done.join("; ");
+        expect(s.schemaYaml(), edited).toBe(target);
+        expect(s.validate(), edited).toEqual(other.validate());
         for (const id of ["w1", "w2", "a1", "a2"]) {
           const read = (x: Sapwood) => { try { return x.get(id); } catch (e) { return (e as ApiError).code; } };
-          expect(read(s)).toEqual(read(other));
+          expect(read(s), edited).toEqual(read(other));
         }
         expect(s.applySchema(target).ops).toEqual([]);
         s.undo();
