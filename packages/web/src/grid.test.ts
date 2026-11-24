@@ -144,6 +144,23 @@ describe("a sheet as the grid shows it", () => {
     expect(at().columnName("Weapon", 3)).toBe(names[5]);
     // Nothing moving leaves no pins behind.
     expect(at().moveTo("col", [end - 1], end).ops).toEqual([]);
+    // Out past the end, among the blank rows: the rows up to there are made, and it lands where the line was.
+    const rows = at().liveRows;
+    const last = at().cell(rows - 1, 1).input;
+    const far = at().moveTo("row", [1], rows + 3);
+    expect(far.ops.map((o) => o.kind)).toEqual(["insert", "move"]);
+    expect(far.at).toBe(rows + 2);
+    expect(at().liveRows).toBe(rows + 3);
+    expect(at().cell(rows + 2, 1).input).toBe(start[1]);
+    expect(at().cell(rows - 2, 1).input).toBe(last);
+    expect(at().cell(rows + 1, 1).input).toBe("");
+    // And a column, out past the last one: it keeps its field.
+    const cols = at().liveCols;
+    const name = at().columnName("Weapon", 3);
+    expect(at().moveTo("col", [3], cols + 2).at).toBe(cols + 1);
+    expect(at().columnName("Weapon", cols + 1)).toBe(name);
+    // Not past what the grid shows.
+    expect(at().moveTo("row", [1], at().rows + 1).ops).toEqual([]);
   });
 
   it("fill repeats the source, moving formulas, and brings formats", () => {

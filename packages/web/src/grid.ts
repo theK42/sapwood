@@ -290,15 +290,19 @@ export class SheetGrid {
     return [...new Set(indices)].filter((i) => i >= from && i < len).sort((a, b) => a - b);
   }
 
-  /** Where a dragged set may land: a boundary between `min` and `max` (before that index). */
+  /**
+   * Where a dragged set may land: a boundary between `min` and `max` (before that index).
+   * Past the sheet's last row or column is fine, out among the blank ones the grid shows.
+   */
   landing(axis: Axis): { min: number; max: number } {
-    return { min: axis === "col" ? this.fixedCols() : 0, max: axis === "row" ? this.rowIds.length : this.colIds.length };
+    return { min: axis === "col" ? this.fixedCols() : 0, max: axis === "row" ? this.rows : this.cols };
   }
 
   /**
    * Move these rows or columns (0-based; any, not only side by side) so they land together
-   * just before `before`, as the sheet is now (a drag's landing line). Where the first of them
-   * ends up, or null when nothing moves.
+   * just before `before`, as the sheet is now (a drag's landing line). Landing past the
+   * sheet's end, the blank rows or columns up to there are made first, in the same change.
+   * Where the first of them ends up, or null when nothing moves.
    */
   moveTo(axis: Axis, indices: Iterable<number>, before: number): { ops: Op[]; at: number | null } {
     const set = this.movable(axis, indices);
@@ -308,9 +312,11 @@ export class SheetGrid {
     // The fields are pinned to their columns first; if nothing then moves, that's undone.
     const res = this.all(() => {
       const pins = this.pins(axis, true);
+      const len = axis === "row" ? this.rowIds.length : this.colIds.length;
+      const room = before > len ? [this.project.insert(this.sheet, axis, len + 1, before - len)] : [];
       const e = this.project.moveSet(this.sheet, axis, set.map((i) => i + 1), before + 1);
-      if (e.ops.length) return [...pins, e];
-      for (const x of pins.reverse()) this.project.apply(x.inverse);
+      if (e.ops.length) return [...pins, ...room, e];
+      for (const x of [...pins, ...room].reverse()) this.project.apply(x.inverse);
       return [];
     });
     return { ...res, at: res.ops.length ? at : null };
