@@ -241,6 +241,7 @@ Not yet, as the run showed: structs and unions (a collision shape's boxes) are t
 - Panel editors for `json` (with JSON Schema), `struct` and `union` fields, including lists of structs. Flattened sub-columns for simple structs. "Open in form" from the sheet.
 - Schema editor UI and validation rule editor (Developer role).
 - Pack and sheet management: create, rename and move packs (Developer) and sheets (Editor), in the web app's pack tree and the CLI. Making packs and sheets is already in the CLI, the API and MCP (2026-11-22); renaming and moving them isn't, though the ops exist.
+- Moving entities between packs, one or many, with what the move would break shown first and the entities involved offered to move along; and suggestions to move entities down the pack tree when only one branch of it uses them (added 2026-11-24).
 - Per-cell history (blame), per-entity history, restore-to-point.
 
 **Plan (2026-11-23),** in this order, each step usable before the next:
@@ -250,8 +251,15 @@ Not yet, as the run showed: structs and unions (a collision shape's boxes) are t
 3. **Form view:** "Open in form" for a row: every field of the entity in one form, with formula-backed fields read-only, "open in sheet" and "replace formula with value". A new entity from a form, placed by the rules in DESIGN §9.3.
 4. **Layouts:** choosing, per sheet and type, whether a simple struct is one cell or flattened sub-columns, and whether a list is one cell or repeated columns.
 5. **Packs and sheets:** create, rename and move packs (Developer) and sheets (Editor), in the pack tree and the CLI.
-6. **Schema editor and rule editor** (Developer role).
-7. **History:** per-cell history (blame), per-entity history, restore-to-point.
+6. **Moving entities to another pack** (added 2026-11-24): one entity or a group of them (rows picked on a sheet, in a type view, or on the entity page), moved to another pack, onto a sheet there chosen by the placement rules (DESIGN §9.3), as one change. Before it's made, a preview says what the move would break, with a choice for each:
+   - **What they refer to that won't reach** from the new pack (§7.2): refs and formulas in the moved entities pointing at entities outside the new pack and its ancestors. Offered: move those too, checked by default, following their own refs in turn.
+   - **What refers to them that won't reach them any more:** entities (and formulas) elsewhere whose refs to the moved entities would break, such as a sibling pack's entities when one moves down from root. A warning lists them, and offers to move those along too where that would mend it.
+   - Anything left broken is shown as the issues it will be, so the move can still be made knowingly (validation reports them in the task, as now).
+
+   The same in the API, CLI and MCP (`moveEntities(ids, pack, { sheet })`, with a dry run that returns the preview). To settle first: rows moving between sheets are a delete and an insert today, so formulas pointing at their cells by stable ID would become `#REF!`; either a cross-sheet row move op that keeps the row IDs, or rewriting those formulas, or listing them in the preview. `ENTITY("id")` references keep working either way.
+7. **Suggestions to move entities down the tree** (added 2026-11-24): a "Suggest moves" button (on the pack tree, for the whole project or one pack) that finds entities used only from below: every entity and formula referring to them is in one child pack's branch. It suggests the lowest pack that all of those users still reach, as a list to review, tick and apply through step 6's move (with the same preview). Entities nothing refers to aren't suggested. An entity can be marked **"don't suggest moving"**, so it's left out of suggestions from then on (shared, not per person). Where that mark lives is to settle: a flag on the entity's row (by stable row ID, so it survives renames and sorting; a new op, and shown on the row), a list of IDs in the project's settings, or a schema option for whole types. The row flag looks best, perhaps with the type option later.
+8. **Schema editor and rule editor** (Developer role).
+9. **History:** per-cell history (blame), per-entity history, restore-to-point.
 
 **Status (2026-11-24): steps 1 to 5 done.**
 

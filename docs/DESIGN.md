@@ -474,6 +474,11 @@ Formulas follow the §7.2 default rule (own pack plus ancestors) for every sheet
 
 Moving a sheet to another pack, or moving rows to a sheet in another pack, is allowed. Validation reports any references or formulas the move breaks, in the task, before landing.
 
+**Planned** (ROADMAP Phase 4, steps 6 and 7):
+
+- **Moving entities** to another pack, one or a group, with a preview first: what they refer to that won't reach from the new pack (offered to move along), and what refers to them that won't reach them any more (a warning, offering to move those too where that mends it).
+- **Suggested moves down the tree:** on request, entities used only from one branch of the tree are suggested to move to the lowest pack all their users reach. An entity can be marked "don't suggest moving".
+
 ## 8. Change model: ops, tasks, branches, history
 
 ### 8.1 Ops
