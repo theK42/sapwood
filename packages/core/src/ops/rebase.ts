@@ -606,6 +606,8 @@ function theirsSet(base: Doc, final: Doc, op: Op): boolean {
       return stableJson(base.sheets.get(op.sheet)?.layouts.get(op.type) ?? null) !== stableJson(final.sheets.get(op.sheet)?.layouts.get(op.type) ?? null);
     case "renamePack":
       return base.packs.has(op.pack) && base.packs.get(op.pack)!.name !== final.packs.get(op.pack)?.name;
+    case "setPackParent":
+      return base.packs.has(op.pack) && base.packs.get(op.pack)!.parent !== final.packs.get(op.pack)?.parent;
     default:
       return false;
   }

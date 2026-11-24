@@ -16,7 +16,7 @@ import type { Op } from "./ops.ts";
 /** Op kinds that change the schema. */
 export const SCHEMA_OP_KINDS: ReadonlySet<Op["kind"]> = new Set(["addSchema", "removeSchema", "setSchema", "renameType", "renameField", "renameEnumMember"]);
 /** Op kinds that make, remove or rename packs: a Developer's (DESIGN §11.2). */
-export const PACK_OP_KINDS: ReadonlySet<Op["kind"]> = new Set(["createPack", "removePack", "renamePack"]);
+export const PACK_OP_KINDS: ReadonlySet<Op["kind"]> = new Set(["createPack", "removePack", "renamePack", "setPackParent"]);
 
 const MAX_DEPTH = 200;
 const BIN_OPS: ReadonlySet<string> = new Set<BinOp>(["+", "-", "*", "/", "^", "&", "=", "<>", "<", ">", "<=", ">="]);
@@ -198,6 +198,8 @@ function op(x: unknown, at: At): Op {
       return { kind, pack: str(o, "pack", at) };
     case "renamePack":
       return { kind, pack: str(o, "pack", at), name: str(o, "name", at) };
+    case "setPackParent":
+      return { kind, pack: str(o, "pack", at), parent: str(o, "parent", at) };
     case "renameId":
       return { kind, from: str(o, "from", at), to: str(o, "to", at) };
     default:

@@ -62,8 +62,12 @@ Data (on a server: reads show your current task, writes go into it)
   apply <patch.jsonl>             Patches, one JSON object per line, all or nothing
 Packs and sheets
   pack create <name> [--parent <p>]   A pack, under root unless --parent (a Developer's)
+  pack rename <name> <new name>       (a Developer's)
+  pack move <name> <parent>           Into another pack, with its sheets (a Developer's)
   sheet create <name> [--pack <p>] [--scratch]
                                   An empty data sheet, or a scratch one, in root unless --pack
+  sheet rename <name> <new name> [--pack <p>]
+  sheet move <name> <pack> [--pack <p>]   Into another pack; --pack says which it's in now
 Schema
   schema get                      The schema as YAML
   schema apply <file> [--force]   Apply an edited schema file
@@ -286,7 +290,17 @@ async function command(argv: string[], io: Io): Promise<number> {
     case "pack":
     case "sheet": {
       const [sub, ...rest] = args;
-      if (sub !== "create") throw new UsageError(`Try sapwood ${cmd} create <name>`);
+      if (sub === "rename" || sub === "move") {
+        const p = parse(rest, cmd === "pack" ? { task: { type: "string" } } : { task: { type: "string" }, pack: { type: "string" } });
+        const [name, to] = positionals(p, sub === "rename" ? ["name", "new name"] : ["name", cmd === "pack" ? "parent" : "pack"]);
+        const pack = p.values.pack as string | undefined;
+        const patch: Patch =
+          cmd === "pack" ? (sub === "rename" ? { op: "renamePack", name: name!, to: to! } : { op: "movePack", name: name!, parent: to! })
+          : { op: sub === "rename" ? "renameSheet" : "moveSheet", name: name!, to: to!, ...(pack === undefined ? {} : { pack }) };
+        const what = cmd === "pack" ? `pack ${name}` : `sheet ${name}`;
+        return wrote(await backend(p, io).b.patch([patch]), sub === "rename" ? `Renamed ${what} to ${to}.` : `Moved ${what} into ${to}.`);
+      }
+      if (sub !== "create") throw new UsageError(`Try sapwood ${cmd} create, rename or move`);
       const p = parse(rest, cmd === "pack" ? { task: { type: "string" }, parent: { type: "string" } } : { task: { type: "string" }, pack: { type: "string" }, scratch: { type: "boolean" } });
       const [name] = positionals(p, ["name"]);
       const b = backend(p, io).b;

@@ -350,5 +350,11 @@ describe("the HTTP API", () => {
     const w = await bob("POST /api/branches/main/patches", [{ op: "createSheet", name: "More" }, { op: "create", type: "Ammo", sheet: "More", fields: { $id: "a3", speed: 5 } }]);
     expect(w.status).toBe(200);
     expect((await bob(`GET /api/tasks/${w.json.task.id}/entities/a3`)).json).toMatchObject({ $sheet: "More", speed: 5 });
+    // Renaming and moving: sheets an Editor's, packs a Developer's, as patches and as ops.
+    expect((await bob("POST /api/branches/main/patches", [{ op: "renameSheet", name: "More", to: "Extra" }])).status).toBe(200);
+    expect((await bob("POST /api/branches/main/patches", [{ op: "renamePack", name: "dlc", to: "season1" }])).status).toBe(403);
+    expect((await bob("POST /api/branches/main/patches", [{ op: "movePack", name: "dlc", parent: "root" }])).status).toBe(403);
+    expect((await bob(`POST /api/tasks/${w.json.task.id}/ops`, { ops: [{ kind: "setPackParent", pack: "dlc", parent: "root" }] })).status).toBe(403);
+    expect((await ada("POST /api/branches/main/patches", [{ op: "renamePack", name: "dlc", to: "season1" }])).status).toBe(200);
   });
 });

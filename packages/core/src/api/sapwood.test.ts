@@ -288,6 +288,75 @@ describe("packs and sheets", () => {
   });
 });
 
+describe("renaming and moving packs and sheets (DESIGN §7.1)", () => {
+  const packs = () =>
+    Sapwood.load(SMALL, {
+      packs: [{ name: "dlc" }, { name: "dlc2", parent: "dlc" }, { name: "other" }],
+      sheets: [
+        { name: "Ammo", rows: [["Ammo", "a1", 900]] },
+        { name: "Weapons", pack: "dlc", rows: [["Weapon", "w1", 10, "", '["a1"]'], ["Weapon", "w2", '=ENTITY("a1").speed']] },
+        { name: "Ammo", pack: "other", rows: [["Ammo", "o1", 5]] },
+      ],
+    });
+
+  it("a pack renamed, and moved with its sheets; never inside itself", () => {
+    const s = packs();
+    const before = canonDoc(cloneDoc(s.doc));
+    s.renamePack("dlc", "season1");
+    expect(s.get("w1").$pack).toBe("season1");
+    fails("exists", () => s.renamePack("season1", "other"));
+    fails("bad-value", () => s.renamePack("season1", "a/b"));
+    s.movePack("other", "season1");
+    expect(s.get("o1").$pack).toBe("other");
+    expect(s.validate().errors).toBe(0);
+    fails("bad-value", () => s.movePack("season1", "dlc2")); // its own sub-pack
+    fails("bad-value", () => s.movePack("season1", "season1"));
+    fails("bad-value", () => s.movePack("root", "other"));
+    s.undo();
+    s.undo();
+    expect(canonDoc(s.doc)).toEqual(before);
+  });
+
+  it("moving a pack changes what its entities reach", () => {
+    const s = packs();
+    s.set("w1", { shots: ["o1"] }); // in other, a sibling of dlc: out of reach
+    expect(s.validate().issues.some((i) => i.message.includes("o1"))).toBe(true);
+    s.movePack("dlc", "other"); // now under other, which it reaches
+    expect(s.validate().errors).toBe(0);
+    expect(s.get("w2").damage).toMatchObject({ $value: 900 });
+  });
+
+  it("a sheet renamed, and moved to another pack", () => {
+    const s = packs();
+    fails("ambiguous", () => s.renameSheet("Ammo", "Bullets"));
+    fails("exists", () => s.moveSheet("Ammo", "root", { pack: "other" })); // root has an Ammo
+    s.renameSheet("Ammo", "Bullets", { pack: "root" });
+    expect(s.get("a1").$sheet).toBe("Bullets");
+    s.createSheet("Notes");
+    fails("exists", () => s.renameSheet("Bullets", "Notes"));
+    s.moveSheet("Bullets", "dlc2");
+    expect(s.get("a1")).toMatchObject({ $pack: "dlc2", $sheet: "Bullets" });
+    // w1 and w2 (in dlc) refer to a1, now in dlc2 below it: out of reach, for the ref and the formula.
+    expect(s.validate().issues.some((i) => i.message.includes("a1"))).toBe(true);
+    expect(s.get("w2").damage).not.toMatchObject({ $value: 900 });
+    s.undo();
+    expect(s.validate().errors).toBe(0);
+    expect(s.get("w2").damage).toMatchObject({ $value: 900 });
+  });
+
+  it("as patches", () => {
+    const s = packs();
+    s.apply([
+      { op: "renamePack", name: "other", to: "extra" },
+      { op: "movePack", name: "extra", parent: "dlc" },
+      { op: "renameSheet", name: "Ammo", to: "More", pack: "extra" },
+      { op: "moveSheet", name: "More", to: "dlc2" },
+    ]);
+    expect(s.get("o1")).toMatchObject({ $pack: "dlc2", $sheet: "More" });
+    expect(s.project.wb.packName(s.project.wb.packs.get([...s.project.wb.packs.values()].find((p) => p.name === "extra")!.id)!.parent!)).toBe("dlc");
+  });
+});
+
 describe("singletons", () => {
   it("read from blocks and qualified rows, with split structs as one object", () => {
     const s = sing();

@@ -423,6 +423,14 @@ export class Engine {
   }
 
   /** Move a sheet to another pack. Reach may change anywhere, so everything recalculates. */
+  /** A pack moved: what every formula may reach changes (§7.2), so each is bound again. */
+  setPackParent(pack: PackId, parent: PackId): void {
+    this.wb.packs.get(pack)!.parent = parent;
+    this.entitiesDirty = true;
+    for (const c of this.cells.values()) if (c.formula) this.pending.push(c.key);
+    if (this.batchDepth === 0) this.flush();
+  }
+
   setSheetPack(sheet: SheetId, pack: PackId): void {
     this.wb.sheet(sheet).pack = pack;
     this.entitiesDirty = true;

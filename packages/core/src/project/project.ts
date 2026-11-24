@@ -243,6 +243,8 @@ export class Project {
       case "renamePack":
         this.wb.packs.get(op.pack)!.name = op.name;
         return;
+      case "setPackParent":
+        return e.setPackParent(op.pack, op.parent);
       case "addSchema":
       case "removeSchema":
       case "setSchema":

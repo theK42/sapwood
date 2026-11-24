@@ -84,7 +84,11 @@ export type Patch =
   | { op: "commentOut" | "uncomment" | "delete"; id: string }
   | { op: "setSingleton"; type: string; fields: Record<string, JsonValue>; force?: boolean }
   | { op: "createPack"; name: string; parent?: string }
-  | { op: "createSheet"; name: string; pack?: string; kind?: SheetKind };
+  | { op: "createSheet"; name: string; pack?: string; kind?: SheetKind }
+  | { op: "renamePack"; name: string; to: string }
+  | { op: "movePack"; name: string; parent: string }
+  | { op: "renameSheet"; name: string; to: string; pack?: string }
+  | { op: "moveSheet"; name: string; to: string; pack?: string };
 
 /**
  * Where a new entity goes (DESIGN §9.3). The pack is the root unless given. With no sheet:
@@ -343,6 +347,82 @@ export class Sapwood {
     });
   }
 
+  /** Rename a pack. Formulas name packs by stable ID, so they keep working, shown with the new name. */
+  renamePack(name: string, to: string): Change {
+    return this.write(() => {
+      const id = this.packId(name);
+      const n = this.packName(to);
+      if (n === name) return { ops: [] };
+      if ([...this.project.wb.packs.values()].some((p) => p.name === n && p.id !== id)) throw new ApiError("exists", `There's a pack called ${n} already`);
+      return { ops: [{ kind: "renamePack", pack: id, name: n }] };
+    });
+  }
+
+  /**
+   * Move a pack, with its sheets and sub-packs, under another pack (§7.1). What its entities
+   * and formulas may refer to changes with it (§7.2): refs or formulas that no longer reach
+   * show as issues.
+   */
+  movePack(name: string, parent: string): Change {
+    return this.write(() => {
+      const id = this.packId(name);
+      if (id === this.project.wb.root) throw new ApiError("bad-value", "The root pack stays where it is");
+      const to = this.packId(parent);
+      if (this.project.wb.packs.get(id)!.parent === to) return { ops: [] };
+      if (this.project.wb.canReach(to, id)) throw new ApiError("bad-value", `${parent} is ${to === id ? "" : "inside "}${name}: a pack can't go inside itself`);
+      return { ops: [{ kind: "setPackParent", pack: id, parent: to }] };
+    });
+  }
+
+  /** Rename a sheet. Formulas refer to it by stable ID, so they keep working, shown with the new name. */
+  renameSheet(name: string, to: string, where: { pack?: string } = {}): Change {
+    return this.write(() => {
+      const sheet = this.anySheet(name, where.pack);
+      const s = this.project.wb.sheet(sheet);
+      const n = this.sheetName(to);
+      if (n === s.name) return { ops: [] };
+      const other = this.project.wb.findSheet(s.pack, n);
+      if (other && other.id !== sheet) throw new ApiError("exists", `Pack ${this.project.wb.packName(s.pack)} has a sheet called ${n} already`);
+      return { ops: [{ kind: "renameSheet", sheet, name: n }] };
+    });
+  }
+
+  /**
+   * Move a sheet to another pack. Its entities are then that pack's (§7.2): refs to them, and
+   * formulas reading the sheet, that no longer reach show as issues.
+   */
+  moveSheet(name: string, to: string, where: { pack?: string } = {}): Change {
+    return this.write(() => {
+      const sheet = this.anySheet(name, where.pack);
+      const s = this.project.wb.sheet(sheet);
+      const pack = this.packId(to);
+      if (s.pack === pack) return { ops: [] };
+      if (this.project.wb.findSheet(pack, s.name)) throw new ApiError("exists", `Pack ${to} has a sheet called ${s.name} already: rename one first`);
+      return { ops: [{ kind: "setSheetPack", sheet, pack }] };
+    });
+  }
+
+  private packName(to: string): string {
+    const n = typeof to === "string" ? to.trim() : "";
+    if (n === "" || n.includes("/")) throw new ApiError("bad-value", "A pack's name is non-empty text without a /");
+    return n;
+  }
+
+  private sheetName(to: string): string {
+    const n = typeof to === "string" ? to.trim() : "";
+    if (n === "" || n.includes("!") || n.includes("/")) throw new ApiError("bad-value", "A sheet's name is non-empty text without ! or /");
+    return n;
+  }
+
+  /** A sheet by name, data or scratch: in the pack given, or the only one of that name. */
+  private anySheet(name: string, pack: string | undefined): SheetId {
+    const p = pack === undefined ? undefined : this.packId(pack);
+    const found = [...this.project.wb.sheets.values()].filter((s) => s.name === name && (p === undefined || s.pack === p));
+    if (found.length === 0) throw new ApiError("not-found", `No sheet called ${name}${pack ? ` in pack ${pack}` : ""}`);
+    if (found.length > 1) throw new ApiError("ambiguous", `Several packs have a sheet called ${name}: say which pack`);
+    return found[0]!.id;
+  }
+
   /** Make an empty sheet in a pack (root unless named): a data sheet, or a scratch one. Names are unique in a pack. */
   createSheet(name: string, opts: { pack?: string; kind?: SheetKind } = {}): Change {
     return this.write(() => {
@@ -417,6 +497,14 @@ export class Sapwood {
         return this.setSingleton(p.type, p.fields, { force: p.force ?? false });
       case "createPack":
         return this.createPack(p.name, p.parent);
+      case "renamePack":
+        return this.renamePack(p.name, p.to);
+      case "movePack":
+        return this.movePack(p.name, p.parent);
+      case "renameSheet":
+        return this.renameSheet(p.name, p.to, p.pack === undefined ? {} : { pack: p.pack });
+      case "moveSheet":
+        return this.moveSheet(p.name, p.to, p.pack === undefined ? {} : { pack: p.pack });
       case "createSheet": {
         const opts: { pack?: string; kind?: SheetKind } = {};
         if (p.pack !== undefined) opts.pack = p.pack;

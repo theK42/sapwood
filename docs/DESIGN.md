@@ -445,6 +445,7 @@ Rules:
 - **One export file per pack** (§10).
 - The pack tree is the **home view** of the web app (§9.1).
 - Creating, moving and renaming packs needs the Developer role. Assigning a sheet to an existing pack needs Editor.
+- In the web app, each pack and sheet in the tree has a ⋯ menu for this (a new sheet or pack in it, rename, move to another pack); the CLI has `pack create|rename|move` and `sheet create|rename|move`, and the API the matching calls and patches. A pack never moves inside itself or its own sub-packs, and the root stays where it is.
 
 ### 7.2 Reference rules
 
@@ -484,7 +485,7 @@ Every change is an op against stable IDs. Every op has an exact inverse.
 | Cells | `setCell(sheet, row, col, content)` where content is a literal or formula · `setFormat(range, format)` |
 | Structure | `insertRows(sheet, afterRow, rowIds[])` · `deleteRows` · `moveRows` · `insertCols` · `deleteCols` · `moveCols` |
 | Sheets | `createSheet` · `deleteSheet` · `renameSheet` · `setSheetPack` · `reorderSheets` · `setLayout(sheet, type, layout)` |
-| Packs | `createPack` · `renamePack` · `movePack` · `deletePack` (must be empty) |
+| Packs | `createPack` · `renamePack` · `setPackParent` (move) · `removePack` (must be empty) |
 | Schema | `addSchema(parent, def, after)` · `removeSchema(id)` · `setSchema(id, key, value)`, over definitions and fields by stable ID (§5.9) · wizard and export config ops |
 
 ### 8.2 Refactor ops (compound with intent)

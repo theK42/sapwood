@@ -38,6 +38,8 @@ export type Op =
   /** Undo a createPack: the pack must have no sheets or sub-packs. */
   | { kind: "removePack"; pack: PackId }
   | { kind: "renamePack"; pack: PackId; name: string }
+  /** Move a pack under another (not the root, and not under itself or its own sub-packs). */
+  | { kind: "setPackParent"; pack: PackId; parent: PackId }
   // schema (§5.9): see schema.ts
   /** Add a definition to a section, or a field to its type, trait or struct, after a sibling (null: first). */
   | { kind: "addSchema"; parent: SchemaParent; def: SchemaDef; after: Id | null }
@@ -277,6 +279,17 @@ export function applyPlain(doc: Doc, op: Op): Op[] {
       const prev = p.name;
       p.name = op.name;
       return [{ ...op, name: prev }];
+    }
+    case "setPackParent": {
+      const p = doc.packs.get(op.pack);
+      if (!p) throw new OpError(`setPackParent: no pack ${op.pack}`);
+      if (p.parent === null) throw new OpError("The root pack has no parent");
+      if (!doc.packs.has(op.parent)) throw new OpError(`setPackParent: no pack ${op.parent}`);
+      for (let q: PackId | null = op.parent; q !== null; q = doc.packs.get(q)?.parent ?? null)
+        if (q === op.pack) throw new OpError(`A pack can't go inside itself: ${doc.packs.get(op.parent)!.name} is ${op.parent === op.pack ? "" : "inside "}${p.name}`);
+      const prev = p.parent;
+      p.parent = op.parent;
+      return [{ ...op, parent: prev }];
     }
     case "addSchema":
       doc.schema = addNode(doc.schema, op.parent, op.def, op.after);

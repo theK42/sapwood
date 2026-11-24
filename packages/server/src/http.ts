@@ -433,8 +433,8 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     const b = await body(c);
     const list = Array.isArray(b) ? b : b.patches;
     if (!Array.isArray(list)) throw new RepoError("bad-request", "Send a list of patches, or { patches: [...] }");
-    // Making a pack is a Developer's (DESIGN §11.2); sheets are an Editor's.
-    if (list.some((x) => (x as { op?: unknown } | null)?.op === "createPack")) may(c, "developer", "write", repo.task(id).branch);
+    // Making, renaming and moving packs is a Developer's (DESIGN §11.2); sheets are an Editor's.
+    if (list.some((x) => ["createPack", "renamePack", "movePack"].includes(String((x as { op?: unknown } | null)?.op)))) may(c, "developer", "write", repo.task(id).branch);
     const change = repo.write(id, me(c).login, (s) => s.apply(list as Patch[]));
     return c.json({ task: repo.task(id), ops: change.ops.length, formulas: change.formulas });
   };

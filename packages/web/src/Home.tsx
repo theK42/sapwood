@@ -2,12 +2,13 @@
 // recent commits and other people's open tasks.
 
 import { useMemo, useState } from "react";
-import { validate } from "@thek42/sapwood-core";
+import { ApiError, Sapwood, validate, type Change, type Op, type Project } from "@thek42/sapwood-core";
 import type { CommitInfo, TaskInfo } from "./api.ts";
 import type { Source } from "./head.ts";
 import { packTree, type Counts, type PackNode } from "./home.ts";
 import { ago, plural, useSource } from "./hooks.ts";
 import type { Route } from "./routes.ts";
+import { Badges, PackTree } from "./PackTree.tsx";
 
 interface Props {
   /** Your task, or the head when you have none. */
@@ -26,9 +27,27 @@ interface Props {
   /** Go to another page in the branch; and its address. */
   go(r: Route): void;
   routeHref(r: Route): string;
+  /** Edit sheets in the pack tree (an Editor), and packs (a Developer). */
+  canSheets: boolean;
+  canPacks: boolean;
+  edit(fn: (p: Project) => { ops: Op[] }): void;
 }
 
-export function Home({ source, atHead, commits, others, open, href, showIssues, openType, typeHref, go, routeHref }: Props) {
+export function Home({ source, atHead, commits, others, open, href, showIssues, openType, typeHref, go, routeHref, canSheets, canPacks, edit }: Props) {
+  // A change to the tree that the API refuses says why, above the tree.
+  const [refused, setRefused] = useState<string | null>(null);
+  const act = (fn: (s: Sapwood) => Change) =>
+    edit((p) => {
+      try {
+        const ops = fn(new Sapwood(p)).ops;
+        setRefused(null);
+        return { ops };
+      } catch (e) {
+        if (!(e instanceof ApiError)) throw e;
+        setRefused(e.message);
+        return { ops: [] };
+      }
+    });
   const nav = (r: Route, label: React.ReactNode) => (
     <a
       href={routeHref(r)}
@@ -63,7 +82,15 @@ export function Home({ source, atHead, commits, others, open, href, showIssues, 
             </button>
           </p>
         )}
-        <Pack node={tree.root} depth={0} open={open} href={href} />
+        {refused && (
+          <p className="vf-bad small" role="alert">
+            {refused}{" "}
+            <button className="link" onClick={() => setRefused(null)}>
+              OK
+            </button>
+          </p>
+        )}
+        <PackTree root={tree.root} open={open} href={href} actions={{ sheets: canSheets, packs: canPacks, act }} />
       </section>
       <aside className="side">
         <section className="panel" aria-label="Entities">
@@ -128,53 +155,5 @@ export function Home({ source, atHead, commits, others, open, href, showIssues, 
         </section>
       </aside>
     </div>
-  );
-}
-
-function Pack({ node, depth, open: openSheet, href }: { node: PackNode; depth: number; open(sheet: string): void; href(sheet: string): string }) {
-  const [open, setOpen] = useState(true);
-  const empty = node.sheets.length === 0 && node.packs.length === 0;
-  return (
-    <div className="pack" style={{ marginLeft: depth === 0 ? 0 : 14 }}>
-      <button className="pack-name" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <span className="caret">{open ? "▾" : "▸"}</span> {node.name} <Badges c={node} />
-      </button>
-      {open && (
-        <ul className="sheet-list">
-          {node.sheets.map((s) => (
-            <li key={s.id}>
-              <a
-                href={href(s.id)}
-                onClick={(e) => {
-                  if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
-                  e.preventDefault();
-                  openSheet(s.id);
-                }}
-              >
-                {s.name}
-              </a>
-              {s.kind === "scratch" && <span className="tag">scratch</span>}
-              <span className="muted small">{plural(s.rows, "row")}</span>
-              <Badges c={s} />
-            </li>
-          ))}
-          {empty && <li className="muted small">Empty</li>}
-          {node.packs.map((q) => (
-            <li key={q.id} className="sub">
-              <Pack node={q} depth={depth + 1} open={openSheet} href={href} />
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-function Badges({ c }: { c: Counts }) {
-  return (
-    <>
-      {c.errors > 0 && <span className="badge error">{plural(c.errors, "error")}</span>}
-      {c.warnings > 0 && <span className="badge warn">{plural(c.warnings, "warning")}</span>}
-    </>
   );
 }

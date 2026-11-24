@@ -94,6 +94,25 @@ describe("the sapwood command", () => {
     expect((await sw("pack", "list")).code).toBe(2);
   });
 
+  it("renames and moves packs and sheets", async () => {
+    const { sw, json } = await setup();
+    await sw("pack", "create", "dlc");
+    await sw("pack", "create", "extra");
+    expect((await sw("pack", "rename", "dlc", "season1")).out).toBe("Renamed pack dlc to season1.");
+    expect((await sw("pack", "move", "extra", "season1")).out).toBe("Moved pack extra into season1.");
+    const bad = await sw("pack", "move", "season1", "extra");
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain("can't go inside itself");
+    expect((await sw("sheet", "rename", "Ammo", "Bullets")).out).toBe("Renamed sheet Ammo to Bullets.");
+    expect((await sw("sheet", "move", "Bullets", "season1")).out).toBe("Moved sheet Bullets into season1.");
+    expect(await json("get", "a1")).toMatchObject({ $pack: "season1", $sheet: "Bullets" });
+    expect((await sw("sheet", "rename", "Bullets", "Shots", "--pack", "season1")).code).toBe(0);
+    // w1's shots refer to a1, now in a pack root can't reach.
+    const v = await sw("validate");
+    expect(v.code).toBe(1);
+    expect(v.out + v.err).toMatch(/a1/);
+  });
+
   it("set types values for their fields, and saves", async () => {
     const { sw, json } = (await setup());
     expect((await sw("set", "w1", "damage=12.5", "element=ice", "shots=a1,a2", "price.amount=7", "released=2026-12-01 10:00")).out).toBe("Set damage, element, shots, price, released on w1.");

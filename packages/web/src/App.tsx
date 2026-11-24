@@ -410,7 +410,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
         />
       ) : (
         <main className="body">
-          <Home source={source} atHead={source === head} commits={commits} others={others} open={(id) => go(branch, { kind: "sheet", id })} href={(id) => routePath(branch, { kind: "sheet", id })} showIssues={() => setSide({ kind: "issues" })} openType={(t) => go(branch, { kind: "type", name: t })} typeHref={(t) => routePath(branch, { kind: "type", name: t })} go={(r) => go(branch, r)} routeHref={(r) => routePath(branch, r)} />
+          <Home source={source} atHead={source === head} commits={commits} others={others} canSheets={canEdit && (session ? session.editable : true)} canPacks={canEdit && (me.role === "developer" || me.role === "admin") && (session ? session.editable : true)} edit={edit} open={(id) => go(branch, { kind: "sheet", id })} href={(id) => routePath(branch, { kind: "sheet", id })} showIssues={() => setSide({ kind: "issues" })} openType={(t) => go(branch, { kind: "type", name: t })} typeHref={(t) => routePath(branch, { kind: "type", name: t })} go={(r) => go(branch, r)} routeHref={(r) => routePath(branch, r)} />
         </main>
       )}
       {side?.kind === "issues" && source && (
