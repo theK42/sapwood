@@ -113,6 +113,39 @@ describe("a sheet as the grid shows it", () => {
     expect(at().cell(1, 1).input).toBe("Blaster");
   });
 
+  it("moves a selection of rows or columns, side by side or not, to a landing line", () => {
+    const p = krbsg();
+    const s = p.sheetId("Weapons");
+    const at = () => new SheetGrid(p, s);
+    at().edit([2, 3, 4, 5].flatMap((row) => [{ row, col: 0, input: "Weapon" }, { row, col: 1, input: `w${row}` }]));
+    const start = Array.from({ length: 4 }, (_, r) => at().cell(r + 1, 1).input);
+    // Rows 1 and 3 (not side by side) land before row 5: they come together there, in order.
+    const moved = at().moveTo("row", [3, 1], 5);
+    expect(moved.at).toBe(3);
+    expect(at().cell(3, 1).input).toBe(start[0]);
+    expect(at().cell(4, 1).input).toBe(start[2]);
+    expect(at().cell(1, 1).input).toBe(start[1]);
+    expect(at().cell(2, 1).input).toBe(start[3]);
+    // Landing where they already are moves nothing.
+    expect(at().moveTo("row", [3, 4], 3)).toEqual({ ops: [], at: null });
+    expect(at().moveTo("row", [3, 4], 5)).toEqual({ ops: [], at: null });
+    // A and B don't move, and nothing lands before them: they're dropped from the set.
+    expect(at().movable("col", [0, 1, 4, 3])).toEqual([3, 4]);
+    expect(at().moveTo("col", [0, 1], 6).ops).toEqual([]);
+    expect(at().moveTo("col", [4], 1).ops).toEqual([]);
+    // Columns keep their fields: cooldown's and range's columns go to the end.
+    const names = Array.from({ length: at().liveCols }, (_, c) => at().columnName("Weapon", c));
+    const end = at().liveCols;
+    const r = at().moveTo("col", [0, 3, 4], end);
+    expect(r.ops.map((o) => o.kind)).toEqual(["setLayout", "move"]);
+    expect(r.at).toBe(end - 2);
+    expect(at().columnName("Weapon", end - 2)).toBe(names[3]);
+    expect(at().columnName("Weapon", end - 1)).toBe(names[4]);
+    expect(at().columnName("Weapon", 3)).toBe(names[5]);
+    // Nothing moving leaves no pins behind.
+    expect(at().moveTo("col", [end - 1], end).ops).toEqual([]);
+  });
+
   it("fill repeats the source, moving formulas, and brings formats", () => {
     const p = krbsg();
     const s = p.sheetId("Weapons");

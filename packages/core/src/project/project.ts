@@ -672,6 +672,31 @@ export class Project {
     });
   }
 
+  /**
+   * Move the rows (or columns) at these positions, in their order, so they land just before
+   * position `before` (as they are now; one past the last for the end). They needn't be
+   * next to each other: they come together. No ops if nothing would move.
+   */
+  moveSet(sheet: SheetId, axis: Axis, positions: readonly number[], before: number): Edit {
+    return this.edit(() => {
+      const live = this.axisOf(sheet, axis).liveIds();
+      const at = new Set(positions.filter((x) => x >= 1 && x <= live.length));
+      if (at.size === 0) return [];
+      const ids = live.filter((_, i) => at.has(i + 1));
+      let after: string | null = null;
+      for (let i = Math.min(before, live.length + 1) - 2; i >= 0; i--)
+        if (!at.has(i + 1)) {
+          after = live[i]!;
+          break;
+        }
+      const rest = live.filter((_, i) => !at.has(i + 1));
+      const k = after === null ? 0 : rest.indexOf(after) + 1;
+      const result = [...rest.slice(0, k), ...ids, ...rest.slice(k)];
+      if (result.every((id, i) => id === live[i])) return [];
+      return [{ kind: "move", sheet, axis, after, ids }];
+    });
+  }
+
   /** Rename an entity ID and every literal reference to it (§8.2). Lists the formulas that mention it, which it leaves alone. */
   renameId(from: string, to: string): Edit & { formulas: { sheet: SheetId; row: RowId; col: ColId }[] } {
     const e = this.edit(() => [{ kind: "renameId", from, to }]);

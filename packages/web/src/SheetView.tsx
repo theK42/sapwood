@@ -21,6 +21,7 @@ import { copyPayload, parsePaste } from "./clipboard.ts";
 import { SheetGrid, typeColor, type Axis, type CellEdit, type CellView, type Rect } from "./grid.ts";
 import type { Source } from "./head.ts";
 import { plural, useSource } from "./hooks.ts";
+import { useHeaderDrag } from "./headerDrag.ts";
 import { idsAt } from "./refs.ts";
 
 export interface SheetProps {
@@ -64,7 +65,8 @@ export function SheetView(p: SheetProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; issue: Issue } | null>(null);
   const [widths, setWidths] = useState<Record<number, number>>({});
-  const [menu, setMenu] = useState<{ x: number; y: number; rect: Rect; cell: { row: number; col: number } | null } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; rect: Rect; cell: { row: number; col: number } | null; whole: Axis | null } | null>(null);
+  const [box, setBox] = useState<HTMLDivElement | null>(null);
   const theme = useTheme();
   useEffect(() => setTip(null), [g]); // an edit may have settled the issue under the pointer
 
@@ -166,10 +168,16 @@ export function SheetView(p: SheetProps) {
     [p.edit, p.sheet],
   );
 
+  /** The selected range; whole rows or columns as far as the sheet has them. */
   const range = (): Rect | null => {
     const r = selection.current?.range;
-    return r ? { row: r.y, col: r.x, rows: r.height, cols: r.width } : null;
+    if (!r || !g) return null;
+    const rows = selection.columns.length > 0 ? Math.max(1, Math.min(r.height, g.liveRows - r.y)) : r.height;
+    const cols = selection.rows.length > 0 ? Math.max(1, Math.min(r.width, g.liveCols - r.x)) : r.width;
+    return { row: r.y, col: r.x, rows, cols };
   };
+  /** Whole rows or columns are selected (from the row numbers or the headers). */
+  const whole = (): Axis | null => (selection.columns.length > 0 ? "col" : selection.rows.length > 0 ? "row" : null);
   const change = (fn: (g: SheetGrid) => { ops: Op[] }) => {
     setMenu(null);
     p.edit((proj) => fn(new SheetGrid(proj, p.sheet)));
@@ -217,11 +225,18 @@ export function SheetView(p: SheetProps) {
     };
   });
 
-  /** The rows or columns a menu acts on: the selection's, if the cell is in it, else the cell's. */
+  /**
+   * The rows or columns a menu acts on: the selection's, if the cell is in it, else the cell's.
+   * On a header or a row number (col -1), the whole column or row.
+   */
   const menuAt = (x: number, y: number, col: number, row: number | null) => {
     const r = range();
-    const inside = r !== null && col >= r.col && col < r.col + r.cols && (row === null || (row >= r.row && row < r.row + r.rows));
-    setMenu({ x, y, rect: inside ? r : { row: row ?? 0, col, rows: 1, cols: 1 }, cell: row === null ? null : { row, col } });
+    const w = whole();
+    const c = Math.max(col, 0);
+    const inside = r !== null && c >= r.col && c < r.col + r.cols && (row === null || (row >= r.row && row < r.row + r.rows));
+    const own: Rect = { row: row ?? 0, col: c, rows: 1, cols: 1 };
+    const on: Axis | null = row === null ? "col" : col < 0 ? "row" : null;
+    setMenu({ x, y, rect: inside ? r : own, cell: row === null || col < 0 ? null : { row, col }, whole: inside ? w ?? on : on });
   };
   const format = (change: Format | null) => {
     const r = range();
@@ -257,6 +272,17 @@ export function SheetView(p: SheetProps) {
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
+  });
+
+  const { block, line } = useHeaderDrag({
+    editor: ref,
+    box,
+    grid: g,
+    selection,
+    select: (s) => (setSelection(s), setDraft(null)),
+    topRow,
+    canEdit: p.canEdit,
+    move: (axis, indices, before) => change((x) => x.moveTo(axis, indices, before)),
   });
 
   if (!g)
@@ -343,7 +369,7 @@ export function SheetView(p: SheetProps) {
         />
         {curView?.issue && <span className={`issue ${curView.issue.level}`}>{curView.issue.message}</span>}
       </div>
-      <div className="sheet-grid">
+      <div className="sheet-grid" ref={setBox}>
         <DataEditor
           ref={ref}
           width="100%"
@@ -382,13 +408,6 @@ export function SheetView(p: SheetProps) {
             const { patternSource: a, fillDestination: b } = e;
             change((x) => x.fill({ row: a.y, col: a.x, rows: a.height, cols: a.width }, { row: b.y, col: b.x, rows: b.height, cols: b.width }));
           }}
-          {...(p.canEdit
-            ? {
-                onRowMoved: (from: number, to: number) => change((x) => x.move("row", from, 1, to)),
-                onColumnMoved: (from: number, to: number) => change((x) => x.move("col", from, 1, to)),
-              }
-            : {})}
-          onColumnProposeMove={(from, to) => g.canChange("col", from, 1) && (g.kind !== "data" || to >= 2) && to < g.liveCols}
           onCellContextMenu={([col, row], e) => {
             e.preventDefault();
             menuAt(e.bounds.x + e.localEventX, e.bounds.y + e.localEventY, col, row);
@@ -422,6 +441,9 @@ export function SheetView(p: SheetProps) {
           smoothScrollY
           rowHeight={26}
         />
+        {/* A move's preview (headerDrag.ts): the block being dragged and where it lands. */}
+        <div ref={block} className="drag-block" />
+        <div ref={line} className="drag-line" />
       </div>
       {menu && (
         <SheetMenu
@@ -469,7 +491,7 @@ export function cellContent(v: CellView, canEdit: boolean, theme: { formula: str
 /** Right-click: copy and cut, clear, and inserting and deleting rows and columns. */
 function SheetMenu(p: {
   grid: SheetGrid;
-  at: { x: number; y: number; rect: Rect; cell: { row: number; col: number } | null };
+  at: { x: number; y: number; rect: Rect; cell: { row: number; col: number } | null; whole: Axis | null };
   navigate(f: (s: SheetProps) => void): void;
   canEdit: boolean;
   close(): void;
@@ -546,14 +568,22 @@ function SheetMenu(p: {
       {item("Cut", p.canEdit, copy(true))}
       <span className="muted small hint">Paste with Ctrl+V</span>
       {item("Clear", p.canEdit, () => (p.close(), p.clear(r)))}
-      <hr />
+      {p.at.whole !== "col" && (
+        <>
+          <hr />
       {item(`Insert ${rows(r.rows)} above`, p.canEdit && rowsHere, insert("row", r.row, r.rows))}
       {item(`Insert ${rows(r.rows)} below`, p.canEdit && rowsHere, insert("row", r.row + r.rows, r.rows))}
       {item(`Delete ${rows(r.rows)}`, p.canEdit && g.canChange("row", r.row, r.rows), () => p.change((x) => x.remove("row", r.row, r.rows)))}
-      <hr />
+        </>
+      )}
+      {p.at.whole !== "row" && (
+        <>
+          <hr />
       {item(`Insert ${cols(r.cols)} left`, p.canEdit && colsHere && r.col >= fixed, insert("col", r.col, r.cols))}
       {item(`Insert ${cols(r.cols)} right`, p.canEdit && colsHere && r.col + r.cols >= fixed, insert("col", r.col + r.cols, r.cols))}
       {item(`Delete ${cols(r.cols)}`, p.canEdit && g.canChange("col", r.col, r.cols), () => p.change((x) => x.remove("col", r.col, r.cols)))}
+        </>
+      )}
     </div>
   );
 }

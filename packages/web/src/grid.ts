@@ -280,6 +280,42 @@ export class SheetGrid {
     return this.all(() => [...this.pins(axis, true), this.project.move(this.sheet, axis, from + 1, n, to + 1)]);
   }
 
+  /**
+   * What a drag of these rows or columns moves: the ones the sheet has, less A and B on a
+   * data sheet, in order. Empty if nothing can go.
+   */
+  movable(axis: Axis, indices: Iterable<number>): number[] {
+    const len = axis === "row" ? this.rowIds.length : this.colIds.length;
+    const from = axis === "col" ? this.fixedCols() : 0;
+    return [...new Set(indices)].filter((i) => i >= from && i < len).sort((a, b) => a - b);
+  }
+
+  /** Where a dragged set may land: a boundary between `min` and `max` (before that index). */
+  landing(axis: Axis): { min: number; max: number } {
+    return { min: axis === "col" ? this.fixedCols() : 0, max: axis === "row" ? this.rowIds.length : this.colIds.length };
+  }
+
+  /**
+   * Move these rows or columns (0-based; any, not only side by side) so they land together
+   * just before `before`, as the sheet is now (a drag's landing line). Where the first of them
+   * ends up, or null when nothing moves.
+   */
+  moveTo(axis: Axis, indices: Iterable<number>, before: number): { ops: Op[]; at: number | null } {
+    const set = this.movable(axis, indices);
+    const { min, max } = this.landing(axis);
+    if (set.length === 0 || before < min || before > max) return { ops: [], at: null };
+    const at = before - set.filter((i) => i < before).length;
+    // The fields are pinned to their columns first; if nothing then moves, that's undone.
+    const res = this.all(() => {
+      const pins = this.pins(axis, true);
+      const e = this.project.moveSet(this.sheet, axis, set.map((i) => i + 1), before + 1);
+      if (e.ops.length) return [...pins, e];
+      for (const x of pins.reverse()) this.project.apply(x.inverse);
+      return [];
+    });
+    return { ...res, at: res.ops.length ? at : null };
+  }
+
   /** Before columns change on a data sheet, each type's fields are fixed to their columns. */
   private pins(axis: Axis, shifts: boolean): Edit[] {
     if (axis !== "col" || !shifts || this.kind !== "data") return [];
