@@ -394,7 +394,7 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
   const mineMoved = new Set<string>(); // rows mine' really moved on the head
   const ctxMoved = new Set<string>(); // rows mine moved as written
   const place = (sh: SheetId, axis: Axis, after: string | null, moving: string[]) => {
-    const at = anchor(cur, ctx, T, mineFirst, (k) => (T.moved.has(k) || ctxMoved.has(k)) && !mineMoved.has(k), sh, axis, after, moving);
+    const at = anchor(cur, ctx, T, mineFirst, (k) => (T.moved.has(k) || ctxMoved.has(k)) && !mineMoved.has(k), (k) => mineMoved.has(k), sh, axis, after, moving);
     for (const id of moving) mineMoved.add(axisKey(sh, axis, id));
     return at;
   };
@@ -654,7 +654,10 @@ function placeSchema(cur: Doc, ctx: Doc, T: Analysis, mineFirst: boolean, parent
  *   would make the result depend on which side landed first.
  * - On a data sheet, columns never go before A and B.
  * - Then they skip past rows theirs placed at the same spot (recursively), so the
- *   earlier-landed side comes first (DESIGN §8.5).
+ *   earlier-landed side comes first (DESIGN §8.5). Rows being moved are passed over, as
+ *   they leave the spot; they must not stop the skip, or a row moved to where it already
+ *   is would land before theirs' rows. A row mine has since moved itself is mine's now,
+ *   not theirs' placement, so it ends the skip like any other row.
  */
 function anchor(
   cur: Doc,
@@ -664,6 +667,8 @@ function anchor(
   mineFirst: boolean,
   /** The row is not where mine saw it: theirs moved it, or mine's own move of it was dropped. */
   movedAway: (k: string) => boolean,
+  /** Mine moved the row on the head, overriding wherever theirs placed it. */
+  mineMoved: (k: string) => boolean,
   sh: SheetId,
   axis: Axis,
   after: string | null,
@@ -685,13 +690,13 @@ function anchor(
   }
   const skipped = new Set<string>([a ?? START]);
   let i = a === null ? -1 : ord.indexOf(a);
-  while (!mineFirst) {
-    const next = ord[i + 1];
-    if (next === undefined || moving.includes(next)) break;
+  for (let j = i + 1; !mineFirst && j < ord.length; j++) {
+    const next = ord[j]!;
+    if (moving.includes(next)) continue;
     const k = axisKey(sh, axis, next);
-    if (!T.placed.has(k) || !skipped.has(T.placed.get(k) ?? START)) break;
+    if (!T.placed.has(k) || mineMoved(k) || !skipped.has(T.placed.get(k) ?? START)) break;
     skipped.add(next);
-    i++;
+    i = j;
   }
   return i < 0 ? null : ord[i]!;
 }
