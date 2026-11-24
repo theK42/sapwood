@@ -607,6 +607,8 @@ The grid described in §6, plus:
 
 ### 9.3 Form view
 
+- **The entity page**, beside the packs page: the types down the left, the chosen type's entities as a list to search (by ID or sheet, with where each one is, whether it's commented out, and its issue count), and the chosen entity's form on the right. ↑ and ↓ step through the list; the type and the ID are in the address. A new entity is made there too. So entities are read and edited without opening a sheet; a type's grid (its type view) is a link away.
+- A ref field lists the IDs it may be as soon as it's entered, the current one picked out, narrowed as you type; a ▾ at its end opens the list with the mouse. Enter or a click picks; Tab moves on without changing it.
 - Generated per type from the schema:
   - enum → dropdown
   - ref → searchable picker, filtered by allowed types *and* pack reach

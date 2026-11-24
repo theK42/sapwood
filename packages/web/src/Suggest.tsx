@@ -25,7 +25,10 @@ export interface Suggesting {
   onKeyDown(e: KeyboardEvent<HTMLInputElement>): boolean;
   /** Call when the text changes by typing, to look again. */
   typed(): void;
+  /** Open on every ID it may be, the current one picked out (on focus, or ▾); typing narrows it. */
+  browse(): void;
   close(): void;
+  open: boolean;
   /** The list, when open. */
   list: React.ReactNode;
 }
@@ -33,13 +36,16 @@ export interface Suggesting {
 export function useSuggest(o: Options): Suggesting {
   const [caret, setCaret] = useState<number | null>(o.openAt ?? null); // null: closed
   const [hi, setHi] = useState(0);
+  // Opened to browse: every candidate, until something is typed.
+  const [browsing, setBrowsing] = useState(false);
   const key = o.target ? `${o.target.from}|${o.target.reach ?? ""}|${JSON.stringify(o.target.targets)}` : "";
   const all = useMemo(() => (o.target ? candidates(o.project, o.target) : []), [o.project, key]);
   const tok = o.target && caret !== null ? tokenAt(o.text, caret, o.target.list) : null;
   // An ID typed in full needs nothing more, so Enter writes it rather than picking another.
-  const items = tok && !all.some((c) => c.id === tok.prefix) ? suggest(all, tok.prefix) : [];
+  const items = !tok ? [] : browsing ? suggest(all, "", 500) : !all.some((c) => c.id === tok.prefix) ? suggest(all, tok.prefix) : [];
   const open = items.length > 0;
-  useEffect(() => setHi(0), [tok?.prefix]);
+  // Browsing starts on the current ID, if it's there.
+  useEffect(() => setHi(browsing ? Math.max(0, items.findIndex((c) => c.id === tok?.prefix)) : 0), [tok?.prefix, browsing]);
 
   const pick = (i: number) => {
     const c = items[i];
@@ -50,6 +56,7 @@ export function useSuggest(o: Options): Suggesting {
     const r = complete(o.text, t, c.id);
     o.set(r.text, r.caret);
     setCaret(null);
+    setBrowsing(false);
     requestAnimationFrame(() => o.input.current?.setSelectionRange(r.caret, r.caret));
   };
 
@@ -75,17 +82,27 @@ export function useSuggest(o: Options): Suggesting {
       const stop = () => (e.preventDefault(), e.stopPropagation(), true);
       if (e.key === "ArrowDown") return setHi((h) => (h + 1) % items.length), stop();
       if (e.key === "ArrowUp") return setHi((h) => (h - 1 + items.length) % items.length), stop();
+      // Browsing, Tab moves on rather than picking: tabbing through a form changes nothing.
+      if (e.key === "Tab" && browsing) return setCaret(null), setBrowsing(false), false;
       if (e.key === "Enter" || e.key === "Tab") return pick(hi), stop();
-      if (e.key === "Escape") return setCaret(null), stop();
+      if (e.key === "Escape") return setCaret(null), setBrowsing(false), stop();
       return false;
     },
     typed() {
       // Read now: by the time of a frame, more keys may have come.
       setCaret(o.input.current?.selectionStart ?? null);
+      setBrowsing(false);
+    },
+    browse() {
+      if (!o.target) return;
+      setCaret(o.input.current?.selectionStart ?? o.text.length);
+      setBrowsing(true);
     },
     close() {
       setCaret(null);
+      setBrowsing(false);
     },
+    open,
     // On the page itself: inside Glide's cell editor it would be clipped. Glide leaves the
     // editor open for a click on it (click-outside-ignore).
     list:
@@ -97,6 +114,7 @@ export function useSuggest(o: Options): Suggesting {
               role="option"
               aria-selected={i === hi}
               className={i === hi ? "on" : ""}
+              ref={i === hi ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
               onMouseDown={(e) => (e.preventDefault(), pick(i))}
               onMouseEnter={() => setHi(i)}
             >

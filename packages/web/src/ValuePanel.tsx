@@ -418,25 +418,46 @@ function Text(p: { value: unknown; readOnly: boolean; set(v: unknown): void; num
     setDraft(null);
     p.set(v);
   };
+  const box = (
+    <input
+      ref={input}
+      className={p.number ? "vf-input num" : "vf-input"}
+      value={draft ?? shown}
+      readOnly={p.readOnly}
+      spellCheck={false}
+      placeholder={p.placeholder ?? (p.refTo ? "an ID" : undefined)}
+      onChange={(e) => (setDraft(e.target.value), s.typed())}
+      // A ref lists the IDs it may be as soon as it's entered.
+      onFocus={() => p.refTo && !p.readOnly && s.browse()}
+      onBlur={() => (s.close(), commit())}
+      onKeyDown={(e) => {
+        if (s.onKeyDown(e)) return;
+        if (e.key === "Enter") commit();
+        else if (e.key === "Escape") setDraft(null);
+      }}
+    />
+  );
+  if (!p.refTo || p.readOnly) return box;
   return (
-    <>
-      <input
-        ref={input}
-        className={p.number ? "vf-input num" : "vf-input"}
-        value={draft ?? shown}
-        readOnly={p.readOnly}
-        spellCheck={false}
-        placeholder={p.placeholder ?? (p.refTo ? "an ID (↓ for the list)" : undefined)}
-        onChange={(e) => (setDraft(e.target.value), s.typed())}
-        onBlur={() => (s.close(), commit())}
-        onKeyDown={(e) => {
-          if (s.onKeyDown(e)) return;
-          if (e.key === "Enter") commit();
-          else if (e.key === "Escape") setDraft(null);
+    <span className="vf-ref">
+      {box}
+      <button
+        type="button"
+        className="vf-drop"
+        tabIndex={-1}
+        title="Show the IDs it may be"
+        aria-label="Show the IDs it may be"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => {
+          if (s.open) return s.close();
+          input.current?.focus();
+          s.browse();
         }}
-      />
+      >
+        ▾
+      </button>
       {s.list}
-    </>
+    </span>
   );
 }
 

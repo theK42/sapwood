@@ -66,24 +66,26 @@ export function Home({ source, atHead, commits, others, open, href, showIssues, 
         <Pack node={tree.root} depth={0} open={open} href={href} />
       </section>
       <aside className="side">
-        <section className="panel" aria-label="Types">
+        <section className="panel" aria-label="Entities">
           <h2>
-            Types <span className="muted small">every entity of one type, from all sheets</span>
+            Entities <span className="muted small">by type, each in a form; or every one of a type as a grid</span>
           </h2>
           <ul className="type-list">
             {types.map((t) => (
               <li key={t.name}>
+                {nav({ kind: "entities", type: t.name, id: null }, t.name)} <span className="muted small">{t.count}</span>{" "}
                 <a
+                  className="small"
                   href={typeHref(t.name)}
+                  title={`Every ${t.name} as a grid`}
                   onClick={(e) => {
                     if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
                     e.preventDefault();
                     openType(t.name);
                   }}
                 >
-                  {t.name}
-                </a>{" "}
-                <span className="muted small">{t.count}</span>
+                  grid
+                </a>
               </li>
             ))}
           </ul>

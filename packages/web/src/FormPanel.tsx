@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatType, Sapwood, type FieldDef, type FieldType, type JsonValue, type Op, type PackId, type Patch, type Project, type RowId, type SheetId } from "@thek42/sapwood-core";
 import { SheetGrid } from "./grid.ts";
-import { entityAt, formOf, placing, refusal, type FormField } from "./form.ts";
+import { aOrAn, entityAt, formOf, placing, refusal, type FormField } from "./form.ts";
 import type { Source } from "./head.ts";
 import { useSource } from "./hooks.ts";
 import { issuesByPath, summary } from "./panel.ts";
@@ -33,22 +33,29 @@ interface Props {
   goTo(sheet: SheetId, row: number, col: number | null): void;
   /** A new entity of this type, from a form. */
   newEntity(type: string, pack: PackId): void;
-  close(): void;
+  /** Absent on the entity page, where the form isn't closed. */
+  close?: () => void;
+  embedded?: boolean;
 }
 
 const nested = (k: string) => k === "struct" || k === "union" || k === "list" || k === "json";
 
-function Head(p: { title: string; close(): void }) {
+function Head(p: { title: string; close?: (() => void) | undefined }) {
   return (
     <div className="issues-head">
       <h2>{p.title}</h2>
       <span className="spacer" />
-      <button className="button quiet" onClick={p.close} title="Close" aria-label="Close the form">
-        ×
-      </button>
+      {p.close && (
+        <button className="button quiet" onClick={p.close} title="Close" aria-label="Close the form">
+          ×
+        </button>
+      )}
     </div>
   );
 }
+
+/** Beside a sheet, a panel; on the entity page, the page's right-hand part. */
+const frame = (embedded: boolean | undefined) => (embedded ? "entity-form" : "issues value-panel form-panel");
 
 export function FormPanel(p: Props) {
   const tick = useSource(p.source);
@@ -62,7 +69,7 @@ export function FormPanel(p: Props) {
 
   if (!form)
     return (
-      <aside className="issues value-panel form-panel" aria-label="Form">
+      <aside className={frame(p.embedded)} aria-label="Form">
         <Head title="Form" close={p.close} />
         <p className="muted small pad">This row isn't an entity's: put a type in column A and an ID in column B.</p>
       </aside>
@@ -103,7 +110,7 @@ export function FormPanel(p: Props) {
   };
 
   return (
-    <aside className="issues value-panel form-panel" aria-label={`${e.id ?? "No ID"}, as a form`}>
+    <aside className={frame(p.embedded)} aria-label={`${e.id ?? "No ID"}, as a form`}>
       <Head title={`${e.id ?? "(no ID)"} · ${e.type}`} close={p.close} />
       <div className="issues-filter small">
         <button className="link" onClick={() => p.goTo(e.at.sheet, rowPos, null)} title="Show the row">
@@ -247,7 +254,8 @@ interface NewProps {
   edit(fn: (p: Project) => { ops: Op[] }): void;
   /** Made: show it in the form, and on its sheet. */
   made(at: FormRow, row: number): void;
-  close(): void;
+  close?: () => void;
+  embedded?: boolean;
 }
 
 export function NewEntityPanel(p: NewProps) {
@@ -302,7 +310,7 @@ export function NewEntityPanel(p: NewProps) {
   };
 
   return (
-    <aside className="issues value-panel form-panel" aria-label="A new entity">
+    <aside className={frame(p.embedded)} aria-label="A new entity">
       <Head title={type ? `New ${type}` : "New entity"} close={p.close} />
       {!p.canEdit ? (
         <p className="muted small pad">You can't edit here, so you can't add one.</p>
@@ -350,10 +358,10 @@ export function NewEntityPanel(p: NewProps) {
                   </label>
                   <p className="muted small vf-hint">
                     {where.pick
-                      ? `Several sheets have a ${type}: pick one. It goes after the last ${type} there.`
+                      ? `Several sheets have ${aOrAn(type)}: pick one. It goes after the last ${type} there.`
                       : where.sheets.length === 1
                         ? `After the last ${type} there.`
-                        : `No sheet in ${project.wb.packName(pack)} has a ${type} yet, so it goes on the sheet named after the type.`}
+                        : `No sheet in ${project.wb.packName(pack)} has ${aOrAn(type)} yet, so it goes on the sheet named after the type.`}
                   </p>
                 </div>
               )}

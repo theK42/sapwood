@@ -97,3 +97,45 @@ export function placing(project: Project, type: string, pack: PackId): Placing {
 export function refusal(e: unknown): string | null {
   return e instanceof ApiError ? e.message : null;
 }
+
+/** One entity in the entity page's list. */
+export interface ListedEntity {
+  id: string | null;
+  at: { sheet: SheetId; row: RowId };
+  /** "Enemies", or "level1 / Enemies" outside the root pack. */
+  where: string;
+  active: boolean;
+  errors: number;
+  warnings: number;
+}
+
+/**
+ * The entities of a type, in pack-tree order, with their issue counts; those whose ID or
+ * sheet holds the search text (any case), when there is one.
+ */
+export function entityList(project: Project, type: string, search = "", issues: readonly Issue[] = validate(project).issues): ListedEntity[] {
+  const count = new Map<string, { errors: number; warnings: number }>();
+  for (const i of issues) {
+    if (!i.at) continue;
+    const k = `${i.at.sheet}|${i.at.row}`;
+    const c = count.get(k) ?? { errors: 0, warnings: 0 };
+    if (i.level === "error") c.errors++;
+    else c.warnings++;
+    count.set(k, c);
+  }
+  const q = search.trim().toLowerCase();
+  const wb = project.wb;
+  const out: ListedEntity[] = [];
+  for (const e of project.project().entities) {
+    if (e.type !== type) continue;
+    const sheet = wb.sheet(e.at.sheet).name;
+    const where = e.pack === wb.root ? sheet : `${wb.packName(e.pack)} / ${sheet}`;
+    if (q && !(e.id ?? "").toLowerCase().includes(q) && !where.toLowerCase().includes(q)) continue;
+    const c = count.get(`${e.at.sheet}|${e.at.row}`);
+    out.push({ id: e.id, at: { sheet: e.at.sheet, row: e.at.row }, where, active: e.active, errors: c?.errors ?? 0, warnings: c?.warnings ?? 0 });
+  }
+  return out;
+}
+
+/** "a Weapon", "an Enemy": by the first letter, which is right for type names nearly always. */
+export const aOrAn = (word: string): string => `${/^[aeiou]/i.test(word) ? "an" : "a"} ${word}`;

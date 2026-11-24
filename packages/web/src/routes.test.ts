@@ -17,3 +17,14 @@ describe("addresses", () => {
     expect(routeFromPath("/")).toEqual({ kind: "home" });
   });
 });
+
+describe("the entity page's address", () => {
+  it("the type and the ID, each optional", () => {
+    for (const r of [
+      { kind: "entities", type: null, id: null },
+      { kind: "entities", type: "Enemy", id: null },
+      { kind: "entities", type: "Enemy", id: "basic enemy/2" },
+    ] as Route[])
+      expect(routeFromPath(routePath("main", r))).toEqual(r);
+  });
+});

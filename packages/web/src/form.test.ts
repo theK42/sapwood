@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadProject, Sapwood } from "@thek42/sapwood-core";
-import { entityAt, formOf, placing } from "./form.ts";
+import { aOrAn, entityAt, entityList, formOf, placing } from "./form.ts";
 
 const schema = `structs:
   Cost: { fields: { currency: { type: "ref<Coin>" }, amount: { type: int } } }
@@ -75,4 +75,24 @@ describe("where a new entity goes (§9.3)", () => {
     ]);
     expect(api.get("bow")).toMatchObject({ $sheet: "Item", $pack: "dlc", weight: 1 });
   });
+});
+
+describe("the entity page's list", () => {
+  it("a type's entities, with where they are, issues, and a search", () => {
+    const p = project();
+    new Sapwood(p).set("axe", { price: { currency: "silver", amount: 1 } });
+    const all = entityList(p, "Item");
+    expect(all.map((e) => [e.id, e.where, e.active, e.errors])).toEqual([
+      ["sword", "Items", true, 0],
+      ["old", "Items", false, 0],
+      ["axe", "More", true, 1],
+    ]);
+    expect(entityList(p, "Item", "AX").map((e) => e.id)).toEqual(["axe"]);
+    expect(entityList(p, "Item", "more").map((e) => e.id)).toEqual(["axe"]); // by sheet too
+    expect(entityList(p, "Coin").map((e) => e.where)).toEqual(["Items", "dlc / Notes"]);
+  });
+});
+
+it("a or an before a type", () => {
+  expect([aOrAn("Enemy"), aOrAn("Weapon"), aOrAn("item")]).toEqual(["an Enemy", "a Weapon", "an item"]);
 });

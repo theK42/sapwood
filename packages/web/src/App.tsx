@@ -13,6 +13,7 @@ import { refList } from "./refs.ts";
 import { RefsPanel } from "./RefsPanel.tsx";
 import { ValuePanel, type PanelCell } from "./ValuePanel.tsx";
 import { FormPanel, NewEntityPanel, type FormRow } from "./FormPanel.tsx";
+import { EntitiesPage } from "./EntitiesPage.tsx";
 import { entityAt } from "./form.ts";
 import { TypeView } from "./TypeView.tsx";
 import { Home } from "./Home.tsx";
@@ -127,6 +128,11 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
     setRoute(r);
     setJump(null); // a sheet opened another way starts where it starts
     scrollTo(0, 0);
+  };
+  /** Another address for the page shown, without a new page in the history. */
+  const show = (r: Route) => {
+    history.replaceState(null, "", routePath(branch, r));
+    setRoute(r);
   };
   useEffect(() => {
     const back = () => {
@@ -363,6 +369,18 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           selected={selected}
           openForm={openForm}
           newEntity={newEntity}
+        />
+      ) : route.kind === "entities" ? (
+        <EntitiesPage
+          source={source}
+          type={route.type}
+          id={route.id}
+          canEdit={canEdit && (session ? session.editable : true)}
+          edit={edit}
+          openType={(t) => go(branch, { kind: "entities", type: t, id: null })}
+          showId={(t, id) => (t === route.type ? show : (r: Route) => go(branch, r))({ kind: "entities", type: t, id })}
+          openGrid={(t) => go(branch, { kind: "type", name: t })}
+          goTo={goTo}
         />
       ) : route.kind === "history" ? (
         <HistoryPage api={api} branch={branch} tick={headTick} open={(id) => go(branch, { kind: "commit", id })} href={(id) => routePath(branch, { kind: "commit", id })} back={() => go(branch)} />
