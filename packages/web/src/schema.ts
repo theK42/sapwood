@@ -22,6 +22,8 @@ export interface SchemaPreview {
   issues: IssueJson[];
   /** Issues it clears. */
   fixed: number;
+  /** The project as applying it would leave it (when the text reads): rules are checked against it. */
+  project?: Project;
 }
 
 const key = (i: IssueJson) => `${i.code}|${i.message}|${i.entity?.type ?? ""}|${i.entity?.id ?? ""}`;
@@ -47,7 +49,7 @@ export function previewSchema(project: Project, yaml: string): SchemaPreview {
     const c = copy.applySchema(yaml, { force: true });
     if (c.ops.length === 0) return { ...none, same: true, notes: c.notes };
     const after = copy.validate().issues;
-    return { ...none, changes: describe(old, copy.project.doc.schema, c.ops), scratch: c.scratch, formulas: c.formulas, rules: c.rules, notes: c.notes, issues: minus(after, before), fixed: minus(before, after).length };
+    return { ...none, project: copy.project, changes: describe(old, copy.project.doc.schema, c.ops), scratch: c.scratch, formulas: c.formulas, rules: c.rules, notes: c.notes, issues: minus(after, before), fixed: minus(before, after).length };
   } catch (e) {
     if (!(e instanceof ApiError)) throw e;
     // "The schema has problems:\n- a\n- b", or one message.

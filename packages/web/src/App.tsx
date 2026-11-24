@@ -403,6 +403,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
             }
           }}
           back={() => go(branch)}
+          openEntity={(type, id) => go(branch, { kind: "entities", type, id })}
           goTo={(sheetName, cell) => {
             const s = [...source.project.wb.sheets.values()].find((x) => x.name === sheetName);
             const m = /^([A-Z]+)(\d+)$/.exec(cell);

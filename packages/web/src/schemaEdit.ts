@@ -158,3 +158,30 @@ export function constraintsFor(t: FieldType): (keyof FieldDef)[] {
       return [];
   }
 }
+
+// ------------------------------------------------------------ rules (§5.7)
+
+/** A new rule, for a type or trait (or, with none, global): it flags nothing until its expression says what. */
+export function addRule(s: Schema, type: string | undefined): Schema {
+  const n = copy(s);
+  n.rules.push({ id: "", ...(type ? { type } : {}), severity: "warning", expr: "=TRUE", message: "Describe what's wrong" });
+  return n;
+}
+
+export function removeRule(s: Schema, id: string): Schema {
+  const n = copy(s);
+  n.rules = n.rules.filter((r) => r.id !== id);
+  return n;
+}
+
+/** Set a rule's type (undefined: global), severity, expression or message. */
+export function setRule(s: Schema, id: string, patch: Partial<Record<"type" | "severity" | "expr" | "message", string | undefined>>): Schema {
+  const n = copy(s);
+  const r = n.rules.find((x) => x.id === id) as unknown as Record<string, unknown> | undefined;
+  if (!r) return s;
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) delete r[k];
+    else r[k] = v;
+  }
+  return n;
+}

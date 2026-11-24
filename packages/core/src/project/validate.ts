@@ -7,7 +7,7 @@
 import type { PackId } from "../formula/model.ts";
 import { numberToCol } from "../formula/parse.ts";
 import { display, isErr, scalar, toBool, type Value } from "../formula/values.ts";
-import type { FieldDef, FieldType } from "../schema/model.ts";
+import type { FieldDef, FieldType, RuleDef } from "../schema/model.ts";
 import { refAccepts } from "../schema/resolve.ts";
 import type { Entity, FieldEntry, Issue, Location, Project, Projection, SingletonEntry } from "./project.ts";
 import { checkJsonSchema } from "./jsonSchema.ts";
@@ -177,30 +177,7 @@ export function validate(project: Project): Validation {
 
   // ---- custom rules (§5.7)
   const unique = (e: Entity) => e.id !== null && byId.get(e.id.toLowerCase())!.filter((x) => x.active).length === 1;
-  for (const r of project.schema.schema.rules) {
-    const run = (entity: Entity | null) => {
-      let v: Value;
-      try {
-        v = project.engine.evalRule(r.expr, entity?.id ?? null);
-      } catch (err) {
-        v = null;
-        issues.push({ level: "error", code: "rule.invalid", message: `Rule ${r.id}: ${(err as Error).message}`, ...(entity ? { at: entity.at } : {}) });
-        return;
-      }
-      const b = toBool(scalar(v));
-      if (isErr(b)) {
-        const why = isErr(v) ? `${v.code}${v.detail ? " " + v.detail : ""}` : `got ${display(v)}`;
-        issues.push({ level: "error", code: "rule.error", message: `Rule ${r.id} couldn't be checked: ${why}`, ...(entity ? { at: entity.at } : {}) });
-      } else if (!b) issues.push({ level: r.severity, code: "rule", message: r.message, ...(entity ? { at: entity.at } : {}) });
-    };
-    if (r.type === undefined) {
-      run(null);
-      continue;
-    }
-    const target = r.type;
-    for (const e of active)
-      if ((e.type === target || project.schema.types.get(e.type)!.traits.has(target)) && unique(e)) run(e);
-  }
+  for (const r of project.schema.schema.rules) issues.push(...runRule(project, r, active, unique).issues);
 
   let errors = 0;
   for (const i of issues) if (i.level === "error") errors++;
@@ -348,4 +325,49 @@ function formulaText(project: Project, at: Location): string | null {
   const c = s.cols.posOf(at.col);
   if (r === null || c === null) return null;
   return project.engine.formula(at.sheet, `${numberToCol(c)}${r}`);
+}
+
+/**
+ * One rule's results (§5.7): an issue for each entity it flags or can't check (or one, for a
+ * global rule). `active` are the active entities; a per-entity rule runs on those of its type
+ * or trait with a unique ID. `checked` is how many times it ran.
+ */
+function runRule(project: Project, r: RuleDef, active: readonly Entity[], unique: (e: Entity) => boolean): { issues: Issue[]; checked: number } {
+  const issues: Issue[] = [];
+  let checked = 0;
+  const run = (entity: Entity | null) => {
+    checked++;
+    let v: Value;
+    try {
+      v = project.engine.evalRule(r.expr, entity?.id ?? null);
+    } catch (err) {
+      issues.push({ level: "error", code: "rule.invalid", message: `Rule ${r.id}: ${(err as Error).message}`, ...(entity ? { at: entity.at } : {}) });
+      return;
+    }
+    const b = toBool(scalar(v));
+    if (isErr(b)) {
+      const why = isErr(v) ? `${v.code}${v.detail ? " " + v.detail : ""}` : `got ${display(v)}`;
+      issues.push({ level: "error", code: "rule.error", message: `Rule ${r.id} couldn't be checked: ${why}`, ...(entity ? { at: entity.at } : {}) });
+    } else if (!b) issues.push({ level: r.severity, code: "rule", message: r.message, ...(entity ? { at: entity.at } : {}) });
+  };
+  if (r.type === undefined) run(null);
+  else
+    for (const e of active)
+      if ((e.type === r.type || project.schema.types.get(e.type)?.traits.has(r.type)) && unique(e)) run(e);
+  return { issues, checked };
+}
+
+/**
+ * What a rule finds in a project as it is (§5.7), as validation would report it: for the
+ * rule editor, to show a rule's effect before it's saved. The rule needn't be in the schema.
+ * `entities` are the entities each issue is about (null for a global rule's).
+ */
+export function checkRule(project: Project, r: RuleDef): { issues: Issue[]; checked: number; entities: (Entity | null)[] } {
+  const all = project.project().entities;
+  const active = all.filter((e) => e.active);
+  const count = new Map<string, number>();
+  for (const e of active) if (e.id !== null) count.set(e.id.toLowerCase(), (count.get(e.id.toLowerCase()) ?? 0) + 1);
+  const res = runRule(project, r, active, (e) => e.id !== null && count.get(e.id.toLowerCase()) === 1);
+  const byRow = new Map(active.map((e) => [`${e.at.sheet}|${e.at.row}`, e]));
+  return { ...res, entities: res.issues.map((i) => (i.at ? (byRow.get(`${i.at.sheet}|${i.at.row}`) ?? null) : null)) };
 }

@@ -4,14 +4,15 @@
 // in place and kept on Enter or leaving the box; field types are picked, not typed (§13).
 
 import { useEffect, useState } from "react";
-import { formatType, type EnumDef, type FieldDef, type FieldType, type Schema, type TraitDef, type TypeDef, type UnionDef } from "@thek42/sapwood-core";
+import { formatType, type EnumDef, type FieldDef, type FieldType, type Project, type Schema, type TraitDef, type TypeDef, type UnionDef } from "@thek42/sapwood-core";
+import { RuleForm } from "./RuleForm.tsx";
 import {
-  addDef, addField, constraintsFor, defOf, NAME, removeDef, removeField, renameDef, renameMember, SECTIONS, setDef, setField,
+  addDef, addField, addRule, constraintsFor, defOf, NAME, removeDef, removeField, renameDef, renameMember, SECTIONS, setDef, setField,
   type Def, type Section, type WithFields,
 } from "./schemaEdit.ts";
 
 export interface Selected {
-  section: Section;
+  section: Section | "rules";
   id: string;
 }
 
@@ -22,13 +23,17 @@ interface Props {
   packs: string[];
   canEdit: boolean;
   /** A change to the working copy; `select` names a definition to show after it (by name: a new one has no ID yet). */
-  change(next: Schema, select?: { section: Section; name: string }): void;
+  change(next: Schema, select?: { section: Section | "rules"; name: string }): void;
   selected: Selected | null;
   select(s: Selected | null): void;
+  /** Rules are checked on this: the project as applying the draft would leave it. */
+  checkOn: Project;
+  openEntity(type: string, id: string): void;
 }
 
 export function SchemaForms(p: Props) {
-  const sel = p.selected && defOf(p.schema, p.selected.section, p.selected.id) ? p.selected : null;
+  const sel = !p.selected ? null : p.selected.section === "rules" ? (p.schema.rules.some((r) => r.id === p.selected!.id) ? p.selected : null) : defOf(p.schema, p.selected.section, p.selected.id) ? p.selected : null;
+  const rule = sel?.section === "rules" ? p.schema.rules.find((r) => r.id === sel.id)! : null;
   const [adding, setAdding] = useState<Section | null>(null);
   const isNew = (section: Section, id: string) => !defOf(p.applied, section, id);
   return (
@@ -62,19 +67,42 @@ export function SchemaForms(p: Props) {
             </ul>
           </section>
         ))}
+        <section>
+          <h3>
+            Rules
+            {p.canEdit && (
+              <button className="link small" onClick={() => p.change(addRule(p.schema, sel && sel.section === "types" ? defOf(p.schema, "types", sel.id)?.name : undefined), { section: "rules", name: "" })} title="A new validation rule">
+                + Add
+              </button>
+            )}
+          </h3>
+          <ul>
+            {p.schema.rules.map((r) => (
+              <li key={r.id}>
+                <button className={sel?.section === "rules" && sel.id === r.id ? "on" : ""} onClick={() => p.select({ section: "rules", id: r.id })} title={r.expr}>
+                  <span className="rule-name">{r.message}</span>
+                  {!p.applied.rules.some((x) => x.id === r.id) && <span className="tag">new</span>}
+                  <span className="muted small">{r.type ?? "global"}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
       </nav>
       <div className="schema-def">
         {!sel ? (
           <p className="muted pad">Pick a definition on the left{p.canEdit ? ", or add one" : ""}.</p>
-        ) : (
-          <DefForm {...p} sel={sel} def={defOf(p.schema, sel.section, sel.id)!} />
+        ) : rule ? (
+          <RuleForm schema={p.schema} rule={rule} canEdit={p.canEdit} change={(n) => p.change(n)} checkOn={p.checkOn} openEntity={p.openEntity} close={() => p.select(null)} />
+        ) : sel.section === "rules" ? null : (
+          <DefForm {...p} sel={sel as { section: Section; id: string }} def={defOf(p.schema, sel.section as Section, sel.id)!} />
         )}
       </div>
     </div>
   );
 }
 
-function DefForm(p: Props & { sel: Selected; def: Def }) {
+function DefForm(p: Props & { sel: { section: Section; id: string }; def: Def }) {
   const { sel, def, schema } = p;
   const ro = !p.canEdit;
   const one = SECTIONS.find((x) => x.key === sel.section)!.one;

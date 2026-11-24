@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { formatSchema, loadProject, parseSchema, type Schema } from "@thek42/sapwood-core";
 import { previewSchema } from "./schema.ts";
-import { addDef, addField, constraintsFor, defOf, removeField, renameDef, renameMember, setDef, setField } from "./schemaEdit.ts";
+import { addDef, addField, addRule, constraintsFor, defOf, removeField, removeRule, renameDef, renameMember, setDef, setField, setRule } from "./schemaEdit.ts";
 
 const fixture = (f: string) => readFileSync(new URL(`../../core/fixtures/krbsg/${f}`, import.meta.url), "utf8");
 const krbsg = () => loadProject(fixture("schema.yaml"), fixture("project.yaml")).project;
@@ -70,5 +70,19 @@ describe("the schema editor's forms", () => {
     expect(constraintsFor({ kind: "string" })).toEqual(["minLength", "maxLength", "pattern", "nonEmpty"]);
     expect(constraintsFor({ kind: "list", of: { kind: "ref", targets: ["A"] } })).toEqual(["minItems", "maxItems", "unique", "reach"]);
     expect(constraintsFor({ kind: "bool" })).toEqual([]);
+  });
+});
+
+describe("rules in the schema editor", () => {
+  it("added, set and taken out, through the YAML", () => {
+    const p = krbsg();
+    let r = through(p, addRule(p.doc.schema, "Weapon"));
+    const added = r.schema.rules.at(-1)!;
+    expect(added).toMatchObject({ type: "Weapon", severity: "warning", expr: "=TRUE" });
+    expect(added.id).not.toBe("");
+    r = through(p, setRule(r.schema, added.id, { expr: "=cooldown >= 0.5", message: "Too fast", type: undefined }));
+    expect(r.schema.rules.at(-1)).toMatchObject({ expr: "=cooldown >= 0.5", message: "Too fast" });
+    expect(r.schema.rules.at(-1)!.type).toBeUndefined();
+    expect(removeRule(r.schema, added.id).rules.length).toBe(p.doc.schema.rules.length);
   });
 });

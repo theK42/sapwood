@@ -10,7 +10,7 @@ import type { Source } from "./head.ts";
 import { plural, useSource } from "./hooks.ts";
 import { previewSchema } from "./schema.ts";
 import { SchemaForms, type Selected } from "./SchemaForms.tsx";
-import { defOf, type Section } from "./schemaEdit.ts";
+import type { Section } from "./schemaEdit.ts";
 
 interface Props {
   source: Source;
@@ -20,6 +20,7 @@ interface Props {
   apply(yaml: string, force: boolean): Promise<string | null>;
   back(): void;
   goTo(sheet: string, cell: string): void;
+  openEntity(type: string, id: string): void;
 }
 
 export function SchemaPage(p: Props) {
@@ -42,14 +43,15 @@ export function SchemaPage(p: Props) {
   // The forms read the draft: one working copy for both tabs.
   const parsed = useMemo(() => parseSchema(text, { existing: project.doc.schema }), [text, project, tick]);
   const [selected, setSelected] = useState<Selected | null>(null);
-  const [selectName, setSelectName] = useState<{ section: Section; name: string } | null>(null);
+  const [selectName, setSelectName] = useState<{ section: Section | "rules"; name: string } | null>(null);
   useEffect(() => {
     if (!selectName) return;
-    const d = (parsed.schema[selectName.section] as { id: string; name: string }[]).find((x) => x.name === selectName.name);
+    // A rule has no name: the new one is the last.
+    const d = selectName.section === "rules" ? parsed.schema.rules.at(-1) : (parsed.schema[selectName.section] as { id: string; name: string }[]).find((x) => x.name === selectName.name);
     if (d) setSelected({ section: selectName.section, id: d.id });
     setSelectName(null);
   }, [parsed, selectName]);
-  const change = (next: Schema, select?: { section: Section; name: string }) => {
+  const change = (next: Schema, select?: { section: Section | "rules"; name: string }) => {
     const t = formatSchema(next);
     setDraft(t === current ? null : t);
     setResult(null);
@@ -110,8 +112,10 @@ export function SchemaPage(p: Props) {
               packs={[...project.wb.packs.values()].map((x) => x.name)}
               canEdit={p.canEdit}
               change={change}
-              selected={selected && defOf(parsed.schema, selected.section, selected.id) ? selected : null}
+              selected={selected}
               select={setSelected}
+              checkOn={preview?.project ?? project}
+              openEntity={p.openEntity}
             />
           )
         ) : (

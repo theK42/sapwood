@@ -351,6 +351,9 @@ button.link.muted:hover { text-decoration: underline; }
 .chip { display: inline-flex; gap: 2px; align-items: center; border: 1px solid var(--line); border-radius: 10px; padding: 0 4px 0 8px; font-size: 12px; }
 .chip .link { padding: 0 3px; }
 .button.danger { color: var(--error); }
+.rule-expr textarea { flex: 1; min-width: 0; font: 13px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; resize: vertical; }
+.rule-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rule-results { min-height: 2.5em; }
 @media (max-width: 800px) { .schema-body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; } .schema-preview { max-height: 40vh; } }
 .vf-keep { margin: 2px 0 6px; gap: 6px; color: var(--muted); }
 .tree-suggest { margin-left: 8px; font-weight: 400; text-transform: none; letter-spacing: 0; }
