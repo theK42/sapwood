@@ -133,7 +133,7 @@ DESIGN §12's targets at 10k entities are met: an edit with validation in under 
 - Tests run each command in a temporary folder. The API's property test now rebuilds the project from the document's JSON form, as a saved file would be.
 - Against the server (2026-11-21): `login`, `logout`, `whoami`, `token create`, `branch`, `task`, `undo` and `redo`, and the data, schema, validation and export commands in your current task (DESIGN §9.4). A local `sapwood.json` still works, and comes first when there is one. Tests run the CLI against the real server app in the same process. Running the suite in a loop showed saves failing now and then on Windows: renaming the new file over the old one is refused while something (a virus scanner, the indexer) has it open for a moment. Saves now try the rename again for up to about two seconds.
 
-Importing KRBSG showed that its per-tab names collide once IDs are global (`Ship` was both a texture and a sprite, and so on). The fixture prefixes them. Phase 5's importer will need a way to handle this.
+Importing KRBSG showed that its per-tab names collide once IDs are global (`Ship` was both a texture and a sprite, and so on). The fixture prefixes them. (An importer was planned for Phase 5 to handle this; it was dropped, see there.)
 
 Still to do in Phase 1:
 
@@ -283,7 +283,7 @@ Not yet, as the run showed: structs and unions (a collision shape's boxes) are t
 
 ## Phase 5: Adoption
 
-- Importers: Google Sheets, `.xlsx`, CSV. Map tabs and columns to types and fields.
+- ~~Importers: Google Sheets, `.xlsx`, CSV. Map tabs and columns to types and fields.~~ **Dropped (2026-11-25).** There aren't several projects with spreadsheets similar enough for one importer to serve, and the one demo project, KRBSG, is already converted (the reference fixture) and small. A team bringing data over can write the schema in the Schema page, paste rows into sheets, or `apply` patch files from the CLI (which an LLM can write). If it's ever wanted, the small version is a CLI command reading a CSV with a header row: a type suggested as YAML to edit, and the rows as a patch file.
 - Wizards (declarative templates with interleaved placement).
 - Performance pass to the 100k-entity ceiling. Known costs at 100k rows: the checks that span rows (unique IDs, refs) are rebuilt on every validation (about 120 ms); `SUM(ENTITIES(type, field))` re-reads its whole column on each edit (about 30 ms for 80k); loading applies 700k cell ops (about 3 s besides recalculation).
   - **Building a project from the document**, which a new task's first read and a server's first read of a head do: about 4.2 s at 100k rows (`npm run bench:server`). Recalculating every formula is about 40% of it; feeding the cells in is the rest. Two ways to weigh against each other: snapshots that keep computed values and their dependencies, so a load needn't recalculate (formulas' dependencies are found by evaluating them, so values alone aren't enough), and a cheaper build that feeds the cells in without applying the whole document again as ops.
