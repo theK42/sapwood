@@ -342,6 +342,39 @@ export class Engine {
     if (this.batchDepth === 0) this.flush();
   }
 
+  /**
+   * Every cell of a sheet just made, at once (building a project from a document): no
+   * dependents to tell and nothing stale yet, so none of setContent's bookkeeping. The
+   * formulas, and the entity index, are worked out together when the batch ends.
+   * `cells` are by `row|col`, as a document keeps them.
+   */
+  loadCells(sheet: SheetId, cells: ReadonlyMap<string, Content>): void {
+    const s = this.wb.sheet(sheet);
+    if (this.grid.get(sheet)?.size) throw new Error(`loadCells: ${sheet} has cells already`);
+    const data = s.kind === "data";
+    const [a, b] = [s.cols.length >= 1 ? s.cols.idAt(1) : null, s.cols.length >= 2 ? s.cols.idAt(2) : null];
+    for (const [k, content] of cells) {
+      if (content === null) continue;
+      const bar = k.indexOf("|");
+      const row = k.slice(0, bar);
+      const col = k.slice(bar + 1);
+      const c = this.newCell(sheet, row, col);
+      if ("v" in content) c.value = content.v;
+      else if ("f" in content) {
+        c.formula = content.f;
+        c.state = "stale";
+        this.pending.push(c.key);
+      } else {
+        c.invalidText = content.bad;
+        c.value = new FError(content.code, content.message);
+      }
+      if (data && (col === a || col === b)) this.dirtyEntityRows.set(row, sheet);
+    }
+    this.changed = "all";
+    this.changedRows = "all";
+    if (this.batchDepth === 0) this.flush();
+  }
+
   /** A cell's stored content. */
   content(sheet: SheetId, row: RowId, col: ColId): Content {
     const c = this.cells.get(keyOf(sheet, row, col));

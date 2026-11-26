@@ -144,22 +144,25 @@ export class Project {
       for (const [type, layout] of s.layouts) ops.push({ kind: "setLayout", sheet: s.id, type, layout });
       for (const [row, flags] of s.rowFlags) for (const flag of flags) ops.push({ kind: "setRowFlag", sheet: s.id, row, flag, on: true });
     }
-    // Cells on tombstones are written while their rows are live, then deleted.
-    for (const s of doc.sheets.values()) {
-      for (const [k, content] of s.cells) {
-        const [row, col] = splitCellKey(k);
-        ops.push({ kind: "setCell", sheet: s.id, row, col, content });
-      }
-      for (const [k, format] of s.formats) {
-        const [row, col] = splitCellKey(k);
-        ops.push({ kind: "setFormat", sheet: s.id, row, col, format });
-      }
+    // The cells all at once, rather than as an op each: into the document as they are (contents
+    // are values, shared safely), and into the engine in bulk. Cells on tombstones go in while
+    // their rows are live, and are hidden as they're deleted.
+    const dead: Op[] = [];
+    for (const s of doc.sheets.values())
       for (const axis of ["row", "col"] as const) {
         const a = axis === "row" ? s.rows : s.cols;
-        if (a.dead.size) ops.push({ kind: "delete", sheet: s.id, axis, ids: [...a.dead] });
+        if (a.dead.size) dead.push({ kind: "delete", sheet: s.id, axis, ids: [...a.dead] });
       }
-    }
-    p.apply(ops);
+    p.engine.batch(() => {
+      p.apply(ops);
+      for (const s of doc.sheets.values()) {
+        const mine = p.doc.sheets.get(s.id)!;
+        mine.cells = new Map(s.cells);
+        mine.formats = new Map(s.formats);
+        p.engine.loadCells(s.id, s.cells);
+      }
+      p.apply(dead);
+    });
     return p;
   }
 
