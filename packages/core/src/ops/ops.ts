@@ -8,7 +8,7 @@
 import { sameContent, type Content } from "../formula/content.ts";
 import { anchorIndex, insertAfter, type ColId, type PackId, type RowId, type SheetId, type SheetKind } from "../formula/model.ts";
 import type { Layout } from "../project/layout.ts";
-import { axisOf, cellKey, OpError, hasId, isLive, splitCellKey, type Axis, type Doc, type Format, type RowFlag, type SheetDoc } from "./doc.ts";
+import { axisOf, cellKey, OpError, hasId, isLive, own, splitCellKey, type Axis, type Doc, type Format, type RowFlag, type SheetDoc } from "./doc.ts";
 import type { Id } from "../schema/model.ts";
 import { renameEnumMemberOps, renameFieldOps, renameIdWrites, renameTypeOps } from "./rename.ts";
 import { addNode, removeNode, setNodeProp, type SchemaDef, type SchemaParent } from "./schema.ts";
@@ -97,10 +97,11 @@ export function applyOps(doc: Doc, ops: readonly Op[]): Op[] {
   return undoAll(ops.map((op) => applyOp(doc, op)));
 }
 
+/** A sheet to write to: its own, not shared with a copy (cloneDoc). */
 function sheetOf(doc: Doc, id: SheetId): SheetDoc {
   const s = doc.sheets.get(id);
   if (!s) throw new OpError(`No sheet ${id}`);
-  return s;
+  return own(s);
 }
 
 /**

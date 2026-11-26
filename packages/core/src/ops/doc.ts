@@ -11,6 +11,7 @@ import type { ColId, PackId, RowId, SheetId, SheetKind } from "../formula/model.
 import type { Schema } from "../schema/model.ts";
 import { resolveSchema, type ResolvedSchema } from "../schema/resolve.ts";
 import type { Layout } from "../project/layout.ts";
+import { forkMap } from "./cowmap.ts";
 
 export type Axis = "row" | "col";
 
@@ -44,6 +45,11 @@ export interface SheetDoc {
   layouts: Map<string, Layout>;
   /** Flags on rows, by stable row ID: `keepHere` is "don't suggest moving" (§7.4). */
   rowFlags: Map<RowId, Set<RowFlag>>;
+  /**
+   * Its rows, columns, cells, formats, layouts and flags are shared with a copy (cloneDoc):
+   * `own` copies them before a write. Not part of the document.
+   */
+  shared?: boolean;
 }
 
 /** A flag a row can carry. */
@@ -85,23 +91,37 @@ function indexOf(a: AxisDoc): Map<string, number> {
   if (!a.index) a.index = new Map(a.order.map((id, i) => [id, i]));
   return a.index;
 }
+/** A sheet that's about to be written: its parts, if shared with a copy, are copied first. */
+export function own(s: SheetDoc): SheetDoc {
+  if (!s.shared) return s;
+  s.rows = { order: [...s.rows.order], dead: new Set(s.rows.dead) };
+  s.cols = { order: [...s.cols.order], dead: new Set(s.cols.dead) };
+  // Cells and formats can be large: copy-on-write maps, which copy only their recent changes.
+  s.cells = forkMap(s.cells);
+  s.formats = forkMap(s.formats);
+  s.layouts = new Map(s.layouts);
+  s.rowFlags = new Map([...s.rowFlags].map(([r, f]) => [r, new Set(f)]));
+  s.shared = false;
+  return s;
+}
+
 /** Position in the full order, or -1. */
 export const posIn = (a: AxisDoc, id: string): number => indexOf(a).get(id) ?? -1;
 export const hasId = (a: AxisDoc, id: string): boolean => indexOf(a).has(id);
 export const isLive = (a: AxisDoc, id: string): boolean => !a.dead.has(id) && hasId(a, id);
 
+/**
+ * A copy of a document. Copy-on-write by sheet: each sheet's rows, columns, cells and the
+ * rest are shared with the original until either writes to that sheet (ops.ts takes each
+ * sheet it writes through `own`), so copying a large document costs little, and a change
+ * copies only the sheets it touches.
+ */
 export function cloneDoc(doc: Doc): Doc {
   const sheets = new Map<SheetId, SheetDoc>();
-  for (const [id, s] of doc.sheets)
-    sheets.set(id, {
-      ...s,
-      rows: { order: [...s.rows.order], dead: new Set(s.rows.dead) },
-      cols: { order: [...s.cols.order], dead: new Set(s.cols.dead) },
-      cells: new Map(s.cells),
-      formats: new Map(s.formats),
-      layouts: new Map(s.layouts),
-      rowFlags: new Map([...s.rowFlags].map(([r, f]) => [r, new Set(f)])),
-    });
+  for (const [id, s] of doc.sheets) {
+    s.shared = true;
+    sheets.set(id, { ...s });
+  }
   const packs = new Map<PackId, PackDoc>();
   for (const [id, p] of doc.packs) packs.set(id, { ...p });
   return { schema: doc.schema, packs, sheets };
@@ -147,11 +167,12 @@ export function docsEqual(a: Doc, b: Doc): boolean {
   for (const s of a.sheets.values()) {
     const t = others.next().value!; // in order, as canonDoc lists them
     if (s.id !== t.id || s.name !== t.name || s.pack !== t.pack || s.kind !== t.kind) return false;
-    if (!sameAxis(s.rows, t.rows) || !sameAxis(s.cols, t.cols)) return false;
-    if (!sameEntries(s.cells, t.cells, (x, y) => contentKey(x) === contentKey(y))) return false;
-    if (!sameEntries(s.formats, t.formats, (x, y) => stableJson(x) === stableJson(y))) return false;
-    if (!sameEntries(s.layouts, t.layouts, (x, y) => stableJson(x) === stableJson(y))) return false;
-    if (!sameEntries(s.rowFlags, t.rowFlags, (x, y) => x.size === y.size && [...x].every((f) => y.has(f)))) return false;
+    // Parts still shared between copies (cloneDoc) are the same without looking.
+    if ((s.rows !== t.rows && !sameAxis(s.rows, t.rows)) || (s.cols !== t.cols && !sameAxis(s.cols, t.cols))) return false;
+    if (s.cells !== t.cells && !sameEntries(s.cells, t.cells, (x, y) => contentKey(x) === contentKey(y))) return false;
+    if (s.formats !== t.formats && !sameEntries(s.formats, t.formats, (x, y) => stableJson(x) === stableJson(y))) return false;
+    if (s.layouts !== t.layouts && !sameEntries(s.layouts, t.layouts, (x, y) => stableJson(x) === stableJson(y))) return false;
+    if (s.rowFlags !== t.rowFlags && !sameEntries(s.rowFlags, t.rowFlags, (x, y) => x.size === y.size && [...x].every((f) => y.has(f)))) return false;
   }
   return true;
 }

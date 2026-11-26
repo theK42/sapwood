@@ -29,6 +29,7 @@ import {
   axisOf, cellKey, cloneDoc, hasId, isLive, splitCellKey,
   type Axis, type Doc, type Format, type SheetDoc,
 } from "./doc.ts";
+import { differingKeys } from "./cowmap.ts";
 import { applyOp, OpError, type Op } from "./ops.ts";
 import type { Id } from "../schema/model.ts";
 import { isSection, LIST_KEYS, mapDefNames, mergeList, propsOf, schemaNodes, siblings, subtreeIds, type SchemaParent } from "./schema.ts";
@@ -137,15 +138,24 @@ export function analyze(base: Doc, ops: readonly Op[]): Analysis {
       edited.add(axisKey(id, "row", r));
       edited.add(axisKey(id, "col", c));
     };
-    for (const k of f.cells.keys()) cell(k);
-    for (const k of b.cells.keys()) if (!f.cells.has(k)) cell(k);
+    // Copies share their cells but for what each changed (cowmap.ts): only those can differ.
+    const changedCells = differingKeys(f.cells, b.cells);
+    if (changedCells) for (const k of changedCells) cell(k);
+    else {
+      for (const k of f.cells.keys()) cell(k);
+      for (const k of b.cells.keys()) if (!f.cells.has(k)) cell(k);
+    }
     const format = (k: string) => {
       const v = f.formats.get(k) ?? null;
       const was = b.formats.get(k) ?? null;
       if (v !== was && stableJson(v) !== stableJson(was)) formats.set(`${id}/${k}`, v);
     };
-    for (const k of f.formats.keys()) format(k);
-    for (const k of b.formats.keys()) if (!f.formats.has(k)) format(k);
+    const changedFormats = differingKeys(f.formats, b.formats);
+    if (changedFormats) for (const k of changedFormats) format(k);
+    else {
+      for (const k of f.formats.keys()) format(k);
+      for (const k of b.formats.keys()) if (!f.formats.has(k)) format(k);
+    }
   }
   for (const k of moved.keys()) edited.add(k);
   const finalRenames = new Map<string, string>();

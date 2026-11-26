@@ -156,9 +156,12 @@ export class Project {
     p.engine.batch(() => {
       p.apply(ops);
       for (const s of doc.sheets.values()) {
+        // Shared with the document given, copy-on-write (doc.ts, `own`): neither writes the other's.
         const mine = p.doc.sheets.get(s.id)!;
-        mine.cells = new Map(s.cells);
-        mine.formats = new Map(s.formats);
+        s.shared = true;
+        mine.shared = true;
+        mine.cells = s.cells;
+        mine.formats = s.formats;
         p.engine.loadCells(s.id, s.cells);
       }
       p.apply(dead);
