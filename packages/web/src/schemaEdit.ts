@@ -79,6 +79,11 @@ export function renameDef(s: Schema, section: Section, id: string, to: string): 
   if (section === "traits") for (const t of [...n.types, ...n.traits]) t.traits = t.traits.map((x) => (x === from ? to : x));
   if (section === "structs") for (const u of n.unions) u.variants = u.variants.map((x) => (x === from ? to : x));
   if (section === "types" || section === "traits") for (const r of n.rules) if (r.type === from) r.type = to;
+  // Wizards: their rows' types, and the names in their parameters' types (`list<ref<Ammo>>`).
+  for (const w of n.wizards) {
+    if (section === "types") for (const r of w.rows) if (r.type === from) r.type = to;
+    for (const p of Object.values(w.params)) p.type = p.type.replace(/[A-Za-z_]\w*/g, (x) => (x === from ? to : x));
+  }
   return n;
 }
 

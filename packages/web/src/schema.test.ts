@@ -24,7 +24,8 @@ describe("the schema editor's preview", () => {
     const p = krbsg();
     const before = new Sapwood(p).schemaYaml();
     // Weapon's cooldown goes; its script becomes required on Sprite... a field every Sprite lacks.
-    const yaml = before.replace(/\n\s*cooldown:[^\n]*/, "").replace(/(\n(\s*)height:[^\n]*)/, "$1\n$2frames: { type: int, required: true }");
+    // (The DLC wizard stops setting it too.)
+    const yaml = before.replace(/\n\s*cooldown:[^\n]*/, "").replace(/, cooldown: "\{cooldown\}"/, "").replace(/(\n(\s*)height:[^\n]*)/, "$1\n$2frames: { type: int, required: true }");
     const r = previewSchema(p, yaml);
     expect(r.problems).toEqual([]);
     expect(r.scratch.map((c) => c.sheet)).toContain("Weapons");

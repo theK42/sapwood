@@ -104,3 +104,57 @@ rules:
     severity: warning
     expr: "=cooldown >= 0.05"
     message: "Cooldown under 50ms is probably a typo"
+
+wizards:
+  NewDLC:
+    id: w1
+    title: "A DLC pack"
+    description: "A content pack with its own Art and Ships sheets, an enemy, and optionally a weapon and its bolt, using the root's Textured shader and collision shapes."
+    params:
+      name:     { type: string, required: true, pattern: "^[A-Z][A-Za-z0-9]*$", description: "The pack, such as VoidRaiders" }
+      parent:   { type: pack, default: root, description: "The pack it goes in" }
+      enemy:    { type: string, required: true, pattern: "^[a-z][a-z0-9_]*$", description: "The enemy's ID, such as void_raider" }
+      size:     { type: int, default: 48, description: "The enemy sprite's width and height" }
+      collider: { type: "ref<CollisionShape>", default: house, description: "The enemy's collision shape" }
+      weapon:   { type: string, pattern: "^[A-Z][A-Za-z0-9]*$", description: "A weapon's ID, such as IonCannon: leave it blank for none" }
+      bolt:     { type: string, pattern: "^[A-Z][A-Za-z0-9]*$", description: "Its projectile's ID, such as IonBolt: needed with a weapon" }
+      damage:   { type: float, default: 1 }
+      cooldown: { type: float, default: 0.5 }
+    steps:
+      - createPack: "{name}"
+        parent: "{parent}"
+      - createSheet: Art
+        pack: "{name}"
+      - createSheet: Ships
+        pack: "{name}"
+    sheet: { name: Ships, pack: "{name}" }
+    rows:
+      - type: Texture
+        id: "tex_{enemy}"
+        sheet: Art
+        fields: { filename: "{enemy}.png", isPixelArt: true }
+      - type: Sprite
+        id: "spr_{enemy}"
+        sheet: Art
+        fields: { shader: Textured, texture: "tex_{enemy}", width: "{size}", height: "{size}" }
+      - type: Texture
+        id: "tex_{bolt}"
+        sheet: Art
+        when: bolt
+        fields: { filename: "{bolt}.png", isPixelArt: true }
+      - type: Sprite
+        id: "spr_{bolt}"
+        sheet: Art
+        when: bolt
+        fields: { shader: Textured, texture: "tex_{bolt}", width: 16, height: 16 }
+      - type: Projectile
+        id: "{bolt}"
+        when: bolt
+        fields: { sprite: "spr_{bolt}", script: "{bolt}.lua", collider: bolt }
+      - type: Weapon
+        id: "{weapon}"
+        when: weapon
+        fields: { projectiles: ["{bolt}"], script: "{weapon}.lua", cooldown: "{cooldown}", damage: "{damage}" }
+      - type: Enemy
+        id: "{enemy}"
+        fields: { sprite: "spr_{enemy}", script: "{enemy}.lua", collider: "{collider}" }

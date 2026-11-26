@@ -124,7 +124,58 @@ const PATCH = z.discriminatedUnion("op", [
     pack: z.string().optional().describe("Its pack (default: root)"),
     kind: z.enum(["data", "scratch"]).optional().describe("data (the default) holds entities; scratch holds notes and working"),
   }),
+  z.object({
+    op: z.literal("runWizard"),
+    wizard: z.string().describe("The wizard's name, from the schema's wizards section"),
+    params: z.record(z.string(), z.unknown()).describe("Its parameters by name; missing ones take their defaults"),
+    cursor: z
+      .object({ sheet: z.string(), pack: z.string().optional(), row: z.number().int().positive() })
+      .optional()
+      .describe("For a wizard with position: cursor, the row it goes at (1-based)"),
+  }),
 ]);
+
+/** For an LLM writing wizards: the YAML, briefly but completely (DESIGN §9.3). */
+export const WIZARD_GUIDE = `Wizards are templates in the schema's wizards section, written by Developers and run by Editors as a form (or with patch's runWizard). A run makes its packs, sheets and entities as one change, all or nothing.
+
+wizards:
+  NewDLC:                          # its name; an id is added when the schema is applied
+    title: "A DLC pack"            # shown on the form (optional)
+    description: "…"               # optional
+    params:                        # the form's fields, by name
+      name:   { type: string, required: true, pattern: "^[A-Za-z]\\w*$", description: "…" }
+      parent: { type: pack, default: root }      # pack: pick an existing pack
+      size:   { type: int, default: 48 }
+      tags:   { type: "list<string>", minItems: 1, maxItems: 5 }
+      # any field type: string, int, float, bool, ref<T>, list<…>, struct<S>, enum<E>
+    steps:                         # made first, each skipped if it's there
+      - createPack: "{name}"
+        parent: "{parent}"
+        editors: true              # let Editors run it; otherwise making a pack needs a Developer
+      - createSheet: Art
+        pack: "{name}"
+        when: name                 # steps and rows take when: param, !param, param == value, param != value
+    sheet: { name: Ships, pack: "{name}", create: true }   # where rows go; create: make missing sheets
+    position: end                  # end (default), afterLastGroup (after this wizard's last run there), cursor (at the row it's launched from)
+    spacing: 1                     # blank rows above each run's rows on a sheet
+    rows:                          # entities, in order; each sheet's rows are written together
+      - type: Texture
+        id: "tex_{name}"
+        sheet: Art                 # this row's own sheet (templated); pack: too, else the wizard sheet's pack
+        fields: { filename: "{name}.png", isPixelArt: TRUE }
+      - type: Weapon
+        id: "{name}Gun"
+        fields:
+          damage: "{size}"         # a placeholder alone keeps its value: a number, a list
+          cooldown: "=1/{size}"    # starts with = : a formula
+          projectiles: "{bolts.ids}"
+      - name: bolts                # lets other rows use {bolts.ids}, the IDs this row makes
+        forEach: tags              # one row per item of a list parameter
+        as: t                      # the item: {t.field} for a struct, {t.value} for a plain value, {t.index} from 0
+        type: Projectile
+        id: "bolt_{name}_{t.index}"
+
+Placeholders: {param}, {param.field}, the forEach item, and {rowName.ids}. In text they're written in; lists are joined with ", ". Text for a non-text field is read as typed (JSON, numbers, TRUE). A run is refused, saying why, when a parameter fails its checks or an ID it would make exists. apply_schema refuses a wizard that names an unknown type, field or placeholder, saying where. Check one with wizard_preview before running it.`;
 
 const INSTRUCTIONS = `Sapwood holds a game's data: entities of types the schema defines, kept in spreadsheet sheets, with formulas and validation.
 
@@ -132,6 +183,7 @@ const INSTRUCTIONS = `Sapwood holds a game's data: entities of types the schema 
 - Read with get and query. Entities come as JSON: "$type", "$id", "$pack", "$sheet", "$active", then fields. A field backed by a formula shows {"$value", "$formula"}.
 - Change things with patch: a list of patches applied all or nothing, as one change. Prefer one patch call with several patches to many calls.
 - Packs: entities in a pack may refer to entities in it and in the packs above it, not below. To add content in a new pack (a DLC), make the pack and a sheet in it (createPack, createSheet), then create entities with that sheet and pack. Making a pack needs a Developer's token.
+- Wizards (the schema's wizards section) make several entities, sheets or packs at once from a few parameters. Run one with patch's runWizard, after wizard_preview shows what it makes. To write or change one, read wizard_guide, then apply_schema.
 - Errors come with a code in brackets ([not-found], [bad-value], [formula], …) and a message saying what to fix.
 - After editing, check validate: a change with validation errors can't land.
 - On a server, your edits go into the user's current task on the branch, alongside theirs. You can't land, merge or discard: the user reviews the task and lands it. undo takes back the last change in the task, yours or theirs.
@@ -252,7 +304,7 @@ export function createServer(conn: Connection): McpServer {
     {
       title: "Edit entities",
       description:
-        "Apply patches, all or nothing, as one change: set fields, create, comment out, uncomment or delete entities, and set a singleton's fields. Values are checked as the cells would be read; a bad one refuses the whole call.",
+        "Apply patches, all or nothing, as one change: set fields, create, comment out, uncomment or delete entities, set a singleton's fields, make packs and sheets, and run wizards. Values are checked as the cells would be read; a bad one refuses the whole call.",
       inputSchema: { patches: z.array(PATCH).min(1) },
       annotations: EDIT,
     },
@@ -263,11 +315,36 @@ export function createServer(conn: Connection): McpServer {
   );
 
   server.registerTool(
+    "wizard_guide",
+    {
+      title: "How to write wizards",
+      description: "The YAML for the schema's wizards section, with every option: read it before writing or changing a wizard.",
+      annotations: READ,
+    },
+    guard(async () => text(WIZARD_GUIDE)),
+  );
+
+  server.registerTool(
+    "wizard_preview",
+    {
+      title: "Preview a wizard",
+      description: "What running a wizard with these parameters would make: packs, sheets, entities and where, and the issues it would add. Changes nothing; a wizard that can't run says why.",
+      inputSchema: {
+        wizard: z.string(),
+        params: z.record(z.string(), z.unknown()).optional(),
+        cursor: z.object({ sheet: z.string(), pack: z.string().optional(), row: z.number().int().positive() }).optional(),
+      },
+      annotations: READ,
+    },
+    guard(async ({ wizard, params, cursor }) => json(await conn.backend().previewWizard(wizard, params ?? {}, cursor && { sheet: cursor.sheet, row: cursor.row, ...(cursor.pack !== undefined ? { pack: cursor.pack } : {}) }))),
+  );
+
+  server.registerTool(
     "apply_schema",
     {
       title: "Change the schema",
       description:
-        "Replace the schema with this YAML, as one change. Renames are found and carried into the data. Removing a field that has data needs force; its cells become scratch.",
+        "Replace the schema with this YAML, as one change: types, rules and wizards (see wizard_guide). Renames are found and carried into the data. Removing a field that has data needs force; its cells become scratch. Changing the schema needs a Developer.",
       inputSchema: { yaml: z.string().describe("The whole schema, edited from what the schema tool gave"), force: z.boolean().optional() },
       annotations: EDIT,
     },

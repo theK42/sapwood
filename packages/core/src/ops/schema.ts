@@ -186,14 +186,18 @@ export function mapDefNames(parent: SchemaParent, key: string | null, value: unk
   if (key !== null) {
     if (key === "type" && field && value && typeof value === "object") return mapTypeNames(value as FieldType, f);
     if (key === "type" && parent === "rules" && typeof value === "string") return f(value);
-    // A wizard's rows name types.
+    // A wizard's rows name types; its parameters' types are text (`list<ref<Ammo>>`).
     if (key === "rows" && parent === "wizards" && Array.isArray(value)) return value.map((r) => (r && typeof r === "object" && typeof (r as { type?: unknown }).type === "string" ? { ...r, type: f((r as { type: string }).type) } : r));
+    if (key === "params" && parent === "wizards" && value && typeof value === "object" && !Array.isArray(value))
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([k, d]) => [k, d && typeof d === "object" && typeof (d as { type?: unknown }).type === "string" ? { ...d, type: (d as { type: string }).type.replace(/[A-Za-z_]\w*/g, f) } : d]),
+      );
     if ((key === "traits" && (parent === "types" || parent === "traits")) || (key === "variants" && parent === "unions")) return names(value);
     return value;
   }
   const def = { ...(value as SchemaDef) };
   if (field) return def.type && typeof def.type === "object" ? { ...def, type: mapTypeNames(def.type as FieldType, f) } : def;
-  for (const k of ["type", "traits", "variants"]) if (k in def) def[k] = mapDefNames(parent, k, def[k], f);
+  for (const k of ["type", "traits", "variants", "rows", "params"]) if (k in def) def[k] = mapDefNames(parent, k, def[k], f);
   if (Array.isArray(def.fields)) def.fields = (def.fields as SchemaDef[]).map((x) => mapDefNames(def.id, null, x, f));
   return def;
 }

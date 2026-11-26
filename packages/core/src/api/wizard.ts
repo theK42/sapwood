@@ -16,10 +16,12 @@ export interface PlannedRow {
   id: string;
   /** Field values as the API takes them: a formula as `{ $formula }`. Blank ones left out. */
   fields: Record<string, JsonValue>;
+  /** The sheet it goes on, by name, in a pack by name. */
+  sheet: { name: string; pack: string };
 }
 
 export interface WizardPlan {
-  /** The sheet its rows go on, by name, in a pack by name; made if `create` and it isn't there. */
+  /** The sheet its rows go on unless they say, by name, in a pack by name; made if `create` and it isn't there (rows' own sheets too). */
   sheet: { name: string; pack: string; create: boolean };
   /** Packs and sheets the steps make first (skipped if there already). */
   packs: { name: string; parent: string; editors: boolean }[];
@@ -108,6 +110,8 @@ export function planWizard(w: WizardDef, given: Record<string, unknown>): { plan
   });
   for (const r of w.rows) if (r.name && !named[r.name]) named[r.name] = { ids: [] };
 
+  const text = (t: unknown, s: Scope = scope) => String(fill(t, s) ?? "").trim();
+  const sheet = { name: text(w.sheet.name), pack: text(w.sheet.pack ?? "root") || "root", create: w.sheet.create === true };
   const rows: PlannedRow[] = expanded.map((x, i) => {
     const full = { ...x.scope, ...named };
     const fields: Record<string, JsonValue> = {};
@@ -116,7 +120,9 @@ export function planWizard(w: WizardDef, given: Record<string, unknown>): { plan
       if (v === undefined || v === null || v === "") continue;
       fields[k] = typeof v === "string" && v.startsWith("=") ? { $formula: v } : (v as JsonValue);
     }
-    return { type: x.row.type, id: ids[i]!, fields };
+    const pack = x.row.pack !== undefined ? text(x.row.pack, x.scope) || "root" : sheet.pack;
+    const own = x.row.sheet !== undefined ? text(x.row.sheet, x.scope) : "";
+    return { type: x.row.type, id: ids[i]!, fields, sheet: { name: own || sheet.name, pack } };
   });
   const seen = new Set<string>();
   for (const r of rows) {
@@ -125,8 +131,6 @@ export function planWizard(w: WizardDef, given: Record<string, unknown>): { plan
     seen.add(r.id.toLowerCase());
   }
 
-  const text = (t: unknown, s: Scope = scope) => String(fill(t, s) ?? "").trim();
-  const sheet = { name: text(w.sheet.name), pack: text(w.sheet.pack ?? "root") || "root", create: w.sheet.create === true };
   const packs: WizardPlan["packs"] = [];
   const sheets: WizardPlan["sheets"] = [];
   for (const st of w.steps ?? ([] as WizardStep[])) {

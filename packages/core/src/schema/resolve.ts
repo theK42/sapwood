@@ -316,6 +316,10 @@ export function resolveSchema(schema: Schema): ResolvedSchema {
         if (!root || !params.has(root)) issue(`${rp}.when`, `when names no parameter: ${String(r.when)}`);
       }
       if (t && r.fields) for (const f of Object.keys(r.fields)) if (!t.fieldByName.has(f)) issue(`${rp}.fields.${f}`, `${r.type} has no field "${f}"`);
+      for (const k of ["sheet", "pack"] as const)
+        if (r[k] !== undefined && (typeof r[k] !== "string" || r[k] === "")) issue(`${rp}.${k}`, `A row's ${k} is a name, or a template such as level_{n}`);
+      placeholders(r.sheet, `${rp}.sheet`, item);
+      placeholders(r.pack, `${rp}.pack`, item);
       placeholders(r.id, `${rp}.id`, item);
       placeholders(r.fields, `${rp}.fields`, item);
     });

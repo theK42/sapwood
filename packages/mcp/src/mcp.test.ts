@@ -77,7 +77,7 @@ describe("the MCP server, on a local project file", () => {
 
   it("reads, edits all or nothing, and says what to fix", async () => {
     const { file, call, json, tools, instructions } = await local();
-    expect(await tools()).toEqual(["apply_schema", "get", "patch", "query", "schema", "validate"]);
+    expect(await tools()).toEqual(["apply_schema", "get", "patch", "query", "schema", "validate", "wizard_guide", "wizard_preview"]);
     expect(instructions).toContain(`This connection works on the project file ${file}.`);
     expect(await json("get", { id: "w2" })).toMatchObject({ $type: "Weapon", $id: "w2", damage: { $value: 20, $formula: "=C1*2" } });
     expect(await json("get", { id: "Config" })).toMatchObject({ $type: "Config", lives: 3 });
@@ -130,6 +130,48 @@ describe("the MCP server, on a local project file", () => {
     expect((await call("apply_schema", { yaml })).text).toMatch(/^Schema updated\./);
     expect((await call("apply_schema", { yaml })).text).toBe("The schema is unchanged.");
   });
+
+  it("writes a wizard with apply_schema, previews it and runs it", async () => {
+    const { call, json } = await local();
+    expect((await call("wizard_guide")).text).toContain("forEach");
+    const wizard = `
+wizards:
+  Loadout:
+    title: "A weapon and its ammo"
+    params:
+      key: { type: string, required: true, pattern: "^[a-z]+$" }
+      speeds: { type: "list<float>", minItems: 1 }
+    steps:
+      - createPack: "kit_{key}"
+        editors: true
+    sheet: { name: Weapons, pack: "kit_{key}", create: true }
+    rows:
+      - { type: Weapon, id: "w_{key}", fields: { damage: 5, shots: "{ammo.ids}" } }
+      - name: ammo
+        forEach: speeds
+        as: s
+        type: Ammo
+        id: "a_{key}_{s.index}"
+        sheet: Ammo
+        fields: { speed: "{s.value}" }
+`;
+    const typo = (await call("schema")).text + wizard.replace("{s.value}", "{s.valu}").replace("{ammo.ids}", "{amo.ids}");
+    const refused = await call("apply_schema", { yaml: typo });
+    expect(refused.error).toBe(true);
+    expect(refused.text).toContain("{amo.ids} names no parameter");
+    expect((await call("apply_schema", { yaml: (await call("schema")).text + wizard })).text).toMatch(/^Schema updated\./);
+    expect((await call("schema")).text).toContain("Loadout:");
+
+    const preview = await json("wizard_preview", { wizard: "Loadout", params: { key: "ice", speeds: [100, 200] } });
+    expect(preview).toMatchObject({ packs: ["kit_ice"], sheets: ["Weapons", "Ammo"], issues: [] });
+    expect(preview.made.map((m: { id: string; sheet: string }) => `${m.sheet} ${m.id}`)).toEqual(["Weapons w_ice", "Ammo a_ice_0", "Ammo a_ice_1"]);
+    expect((await call("wizard_preview", { wizard: "Loadout", params: { key: "Ice" } })).text).toMatch(/key must match.*\[bad-value\]$/s);
+
+    const ran = await call("patch", { patches: [{ op: "runWizard", wizard: "Loadout", params: { key: "ice", speeds: [100, 200] } }] });
+    expect(ran).toEqual({ error: false, text: "Applied 1 patch.\nValidation now: 0 errors, 0 warnings." });
+    expect(await json("get", { id: "w_ice" })).toMatchObject({ $pack: "kit_ice", shots: ["a_ice_0", "a_ice_1"] });
+    expect(await json("get", { id: "a_ice_1" })).toMatchObject({ $sheet: "Ammo", speed: 200 });
+  });
 });
 
 describe("the MCP server, on a server", () => {
@@ -161,7 +203,7 @@ describe("the MCP server, on a server", () => {
     // No tools to land, merge or discard.
     expect(await tools()).toEqual([
       "apply_schema", "branch_create", "branch_list", "branch_switch", "get", "log", "patch", "query", "redo", "schema",
-      "task_list", "task_name", "task_new", "task_status", "task_switch", "undo", "validate",
+      "task_list", "task_name", "task_new", "task_status", "task_switch", "undo", "validate", "wizard_guide", "wizard_preview",
     ]);
     expect(instructions).toContain(`This connection works on the Sapwood server ${URL}.`);
     expect((await call("task_status")).text).toBe("There's no current task on main yet: the first edit starts one.");

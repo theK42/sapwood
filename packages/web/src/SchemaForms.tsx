@@ -559,6 +559,7 @@ function WizardView(p: { w: WizardDef; canEdit: boolean; openYaml(): void }) {
             <code>{r.type}</code> <code>{r.id}</code>
             {r.forEach ? ` for each of ${r.forEach}` : ""}
             {r.when ? ` when ${r.when}` : ""}
+            {r.sheet || r.pack ? ` on ${r.sheet ?? "its sheet"}${r.pack ? ` in ${r.pack}` : ""}` : ""}
             {r.fields && Object.keys(r.fields).length > 0 && <span className="muted"> · {Object.entries(r.fields).map(([k, v]) => `${k}: ${json(v)}`).join(", ")}</span>}
           </li>
         ))}

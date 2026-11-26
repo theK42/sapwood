@@ -551,66 +551,76 @@ export class Sapwood {
       this.stage({ kind: "createSheet", sheet: wb.freshSheetId(), name: s.name, pack, sheetKind: "data" });
       sheets.push(s.name);
     }
-    // Where the rows go.
-    let sheet: SheetId;
-    let after: RowId | null;
-    let spacing = w.spacing ?? 0;
-    if (w.position === "cursor" && cursor) {
-      sheet = this.dataSheet(cursor.sheet, cursor.pack);
-      const live = wb.sheet(sheet).rows.liveIds();
-      if (!Number.isInteger(cursor.row) || cursor.row < 1) throw new ApiError("bad-value", "The cursor is a row number, from 1");
-      after = cursor.row > 1 ? (live[Math.min(cursor.row, live.length + 1) - 2] ?? null) : null;
-      if (cursor.row > live.length + 1) this.growRows(sheet, cursor.row - 1);
-      spacing = 0;
-    } else {
-      const pack = this.packId(plan.sheet.pack);
-      const found = wb.findSheet(pack, plan.sheet.name);
-      if (!found) {
-        if (!plan.sheet.create) throw new ApiError("not-found", `No sheet called ${plan.sheet.name} in pack ${plan.sheet.pack}: the wizard doesn't make it`);
-        sheet = this.newSheet(plan.sheet.name, pack);
-        sheets.push(plan.sheet.name);
-      } else {
-        if (found.kind !== "data") throw new ApiError("bad-value", `${plan.sheet.name} is a scratch sheet: entities live on data sheets`);
-        sheet = found.id;
-      }
-      after = this.lastUsedRow(sheet);
-      if (w.position === "afterLastGroup") {
-        const flags = this.project.doc.sheets.get(sheet)!.rowFlags;
-        const last = [...wb.sheet(sheet).rows.liveIds()].reverse().find((r) => flags.get(r)?.has(`wizard:${name}`));
-        if (last !== undefined) after = last;
-      }
+    // Where the rows go: each sheet's rows together, in template order. The wizard's own sheet
+    // takes the cursor; other sheets (and it, with no cursor) the wizard's position.
+    const groups = new Map<string, { at: { name: string; pack: string }; rows: typeof plan.rows }>();
+    for (const pr of plan.rows) {
+      const key = `${pr.sheet.pack}\u0000${pr.sheet.name}`;
+      if (!groups.has(key)) groups.set(key, { at: pr.sheet, rows: [] });
+      groups.get(key)!.rows.push(pr);
     }
-    if (after === null) spacing = 0;
-    this.growColumns(sheet, 2);
-    const ids = wb.sheet(sheet).rows.freshIds(spacing + plan.rows.length);
-    if (ids.length) this.stage({ kind: "insert", sheet, axis: "row", after, ids });
     const ops: Op[] = [];
     const made: { sheet: SheetId; row: RowId; id: string; type: string }[] = [];
-    plan.rows.forEach((pr, i) => {
-      const row = ids[spacing + i]!;
-      const t = this.schema.types.get(pr.type);
-      if (!t || t.def.singleton) throw new ApiError("unknown-type", `No entity type called ${pr.type}`);
-      const id = this.newId(pr.id);
-      ops.push(
-        this.cellOp(sheet, row, this.colAt(sheet, 1), { v: pr.type }),
-        this.cellOp(sheet, row, this.colAt(sheet, 2), { v: id }),
-        { kind: "setRowFlag", sheet, row, flag: `wizard:${name}`, on: true },
-      );
-      const e: Entity = { type: pr.type, id, pack: wb.sheet(sheet).pack, at: { sheet, row }, active: true, fields: new Map() };
-      for (const [k, v] of Object.entries(pr.fields)) {
-        // Text for a field that isn't text is read as it would be typed: JSON, a number, TRUE.
-        const kind = t.fieldByName.get(k)?.def.type.kind;
-        let value: JsonValue = v;
-        if (typeof v === "string" && kind && ["list", "struct", "union", "json", "int", "float", "bool"].includes(kind))
-          try {
-            value = JSON.parse(kind === "bool" ? v.toLowerCase() : v) as JsonValue;
-          } catch {
-            // left as text: the field says what's wrong
-          }
-        ops.push(...this.fieldOps(e, k, value, false));
+    for (const g of groups.values()) {
+      let sheet: SheetId;
+      let after: RowId | null;
+      let spacing = w.spacing ?? 0;
+      const own = g.at.name === plan.sheet.name && g.at.pack === plan.sheet.pack;
+      if (w.position === "cursor" && cursor && own) {
+        sheet = this.dataSheet(cursor.sheet, cursor.pack);
+        const live = wb.sheet(sheet).rows.liveIds();
+        if (!Number.isInteger(cursor.row) || cursor.row < 1) throw new ApiError("bad-value", "The cursor is a row number, from 1");
+        after = cursor.row > 1 ? (live[Math.min(cursor.row, live.length + 1) - 2] ?? null) : null;
+        if (cursor.row > live.length + 1) this.growRows(sheet, cursor.row - 1);
+        spacing = 0;
+      } else {
+        const pack = this.packId(g.at.pack);
+        const found = wb.findSheet(pack, g.at.name);
+        if (!found) {
+          if (!plan.sheet.create) throw new ApiError("not-found", `No sheet called ${g.at.name} in pack ${g.at.pack}: the wizard doesn't make it`);
+          sheet = this.newSheet(g.at.name, pack);
+          sheets.push(g.at.name);
+        } else {
+          if (found.kind !== "data") throw new ApiError("bad-value", `${g.at.name} is a scratch sheet: entities live on data sheets`);
+          sheet = found.id;
+        }
+        after = this.lastUsedRow(sheet);
+        if (w.position === "afterLastGroup") {
+          const flags = this.project.doc.sheets.get(sheet)!.rowFlags;
+          const last = [...wb.sheet(sheet).rows.liveIds()].reverse().find((r) => flags.get(r)?.has(`wizard:${name}`));
+          if (last !== undefined) after = last;
+        }
       }
-      made.push({ sheet, row, id, type: pr.type });
-    });
+      if (after === null) spacing = 0;
+      this.growColumns(sheet, 2);
+      const ids = wb.sheet(sheet).rows.freshIds(spacing + g.rows.length);
+      if (ids.length) this.stage({ kind: "insert", sheet, axis: "row", after, ids });
+      g.rows.forEach((pr, i) => {
+        const row = ids[spacing + i]!;
+        const t = this.schema.types.get(pr.type);
+        if (!t || t.def.singleton) throw new ApiError("unknown-type", `No entity type called ${pr.type}`);
+        const id = this.newId(pr.id);
+        ops.push(
+          this.cellOp(sheet, row, this.colAt(sheet, 1), { v: pr.type }),
+          this.cellOp(sheet, row, this.colAt(sheet, 2), { v: id }),
+          { kind: "setRowFlag", sheet, row, flag: `wizard:${name}`, on: true },
+        );
+        const e: Entity = { type: pr.type, id, pack: wb.sheet(sheet).pack, at: { sheet, row }, active: true, fields: new Map() };
+        for (const [k, v] of Object.entries(pr.fields)) {
+          // Text for a field that isn't text is read as it would be typed: JSON, a number, TRUE.
+          const kind = t.fieldByName.get(k)?.def.type.kind;
+          let value: JsonValue = v;
+          if (typeof v === "string" && kind && ["list", "struct", "union", "json", "int", "float", "bool"].includes(kind))
+            try {
+              value = JSON.parse(kind === "bool" ? v.toLowerCase() : v) as JsonValue;
+            } catch {
+              // left as text: the field says what's wrong
+            }
+          ops.push(...this.fieldOps(e, k, value, false));
+        }
+        made.push({ sheet, row, id, type: pr.type });
+      });
+    }
     return { ops, made, sheets, packs };
   }
 

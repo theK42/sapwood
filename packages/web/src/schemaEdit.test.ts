@@ -35,6 +35,13 @@ describe("the schema editor's forms", () => {
     const t = through(p, renameDef(s, "traits", visual.id, "Drawn"));
     expect(t.preview.problems).toEqual([]);
     expect(t.text).toMatch(/traits: \[Drawn\]/);
+    // The DLC wizard's rows, and its parameters' types.
+    const dlc = (x: Schema) => x.wizards.find((w) => w.name === "NewDLC")!;
+    expect(dlc(r.schema).rows.filter((x) => x.type === "Image").length).toBe(2);
+    const shape = s.types.find((x) => x.name === "CollisionShape")!;
+    const c = through(p, renameDef(s, "types", shape.id, "Hitbox"));
+    expect(c.preview.problems).toEqual([]);
+    expect(dlc(c.schema).params.collider!.type).toBe("ref<Hitbox>");
   });
 
   it("a new type with fields, set and taken out; IDs come when it's read back", () => {

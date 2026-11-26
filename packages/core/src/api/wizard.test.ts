@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { canonDoc, cloneDoc } from "../ops/doc.ts";
 import { resolveSchema } from "../schema/resolve.ts";
@@ -144,6 +145,61 @@ describe("wizards (DESIGN §9.3)", () => {
     expect(s.query("Note", { pack: "root" }).map((e) => e.$id)).toEqual(["n0", "here_x", "n1", "here_y"]);
     const ws = s.project.schema.schema.wizards;
     expect(ws.map((w) => [w.name, needsDeveloper(w)])).toEqual([["RewardedMail", false], ["Event", false], ["Here", false]]);
+  });
+});
+
+describe("KRBSG's DLC wizard", () => {
+  const krbsg = () => {
+    const f = (n: string) => readFileSync(new URL(`../../fixtures/krbsg/${n}`, import.meta.url), "utf8");
+    return Sapwood.load(f("schema.yaml"), f("project.yaml"));
+  };
+  const raiders = { name: "VoidRaiders", enemy: "void_raider", weapon: "IonCannon", bolt: "IonBolt", cooldown: 0.9, damage: 3 };
+
+  it("makes a pack with Art and Ships sheets, each row on its own sheet, and validates", () => {
+    const s = krbsg();
+    const r = s.runWizard("NewDLC", raiders).report;
+    expect([r.packs, r.sheets]).toEqual([["VoidRaiders"], ["Art", "Ships"]]);
+    expect(r.made.map((m) => `${m.sheet}!${m.cell} ${m.id}`)).toEqual([
+      "Art!A1 tex_void_raider",
+      "Art!A2 spr_void_raider",
+      "Art!A3 tex_IonBolt",
+      "Art!A4 spr_IonBolt",
+      "Ships!A1 IonBolt",
+      "Ships!A2 IonCannon",
+      "Ships!A3 void_raider",
+    ]);
+    expect(s.get("IonCannon")).toMatchObject({ $pack: "VoidRaiders", projectiles: ["IonBolt"], cooldown: 0.9, damage: 3, script: "IonCannon.lua" });
+    expect(s.get("spr_void_raider")).toMatchObject({ $sheet: "Art", width: 48, height: 48, shader: "Textured" });
+    expect(s.get("void_raider")).toMatchObject({ $sheet: "Ships", collider: "house" });
+    expect(r.issues).toEqual([]);
+    expect(s.validate().errors).toBe(0);
+    // A second enemy in the same pack: the pack and sheets are there, its rows go after the first's.
+    const again = s.runWizard("NewDLC", { name: "VoidRaiders", enemy: "void_drone", size: 32 }).report;
+    expect([again.packs, again.sheets]).toEqual([[], []]);
+    expect(again.made.map((m) => `${m.sheet}!${m.cell} ${m.id}`)).toEqual(["Art!A5 tex_void_drone", "Art!A6 spr_void_drone", "Ships!A4 void_drone"]);
+    expect(s.validate().errors).toBe(0);
+  });
+
+  it("needs a Developer, as it makes a pack", () => {
+    expect(needsDeveloper(krbsg().project.schema.schema.wizards.find((w) => w.name === "NewDLC")!)).toBe(true);
+  });
+
+  it("a row's sheet that's missing is refused unless the wizard makes it", () => {
+    const s = Sapwood.load(SCHEMA + `
+  Split:
+    params: { key: { type: string, required: true } }
+    sheet: Other
+    rows:
+      - { type: Note, id: "a_{key}" }
+      - { type: Note, id: "b_{key}", sheet: "Elsewhere" }
+`, { sheets: [{ name: "Other", rows: [] }] });
+    expect(() => s.previewWizard("Split", { key: "x" })).toThrow(/No sheet called Elsewhere in pack root/);
+    const bad = parseSchema(SCHEMA + `
+  Bad:
+    params: {}
+    rows: [{ type: Note, id: n, sheet: "{nope}" }]
+`);
+    expect(resolveSchema(bad.schema).issues.map((i) => i.message)).toContain("{nope} names no parameter");
   });
 });
 

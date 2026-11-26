@@ -5,7 +5,7 @@
 // plus an add. Items written without an ID get a fresh one on parse. The writer is
 // deterministic: the same schema always prints the same bytes.
 
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { Document, isMap, parse as parseYaml } from "yaml";
 import {
   emptySchema,
   formatType,
@@ -396,9 +396,8 @@ export function formatSchema(s: Schema): string {
     if (out.length) out.push("");
     out.push("wizards:");
     for (const w of s.wizards) {
-      const { id, name, ...body } = w;
-      const lines = stringifyYaml({ ...(id ? { id } : {}), ...body }, { lineWidth: 0 }).trimEnd().split("\n");
-      out.push(`  ${name}:`, ...lines.map((l) => `    ${l}`));
+      const lines = formatWizard(w).trimEnd().split("\n");
+      out.push(`  ${w.name}:`, ...lines.map((l) => `    ${l}`));
     }
   }
   if (s.rules.length) {
@@ -410,6 +409,35 @@ export function formatSchema(s: Schema): string {
     }
   }
   return out.join("\n") + "\n";
+}
+
+/** A wizard's body as YAML, in reading order: what it is, its parameters (one line each), steps, where, then rows (fields on one line). */
+function formatWizard(w: WizardDef): string {
+  const { id, name: _name, title, description, params, steps, sheet, position, spacing, rows, ...rest } = w;
+  const body: Record<string, unknown> = {};
+  if (id) body.id = id;
+  if (title !== undefined) body.title = title;
+  if (description !== undefined) body.description = description;
+  body.params = params;
+  if (steps !== undefined) body.steps = steps;
+  body.sheet = sheet;
+  if (position !== undefined) body.position = position;
+  if (spacing !== undefined) body.spacing = spacing;
+  Object.assign(body, rest);
+  body.rows = rows;
+  const doc = new Document(body);
+  const flow = (n: unknown) => {
+    if (isMap(n)) n.flow = true;
+  };
+  const top = doc.contents;
+  if (isMap(top)) {
+    const ps = top.get("params", true);
+    if (isMap(ps)) for (const it of ps.items) flow(it.value);
+    flow(top.get("sheet", true));
+    const rs = top.get("rows", true) as { items?: unknown[] } | undefined;
+    for (const r of rs?.items ?? []) if (isMap(r)) flow(r.get("fields", true));
+  }
+  return doc.toString({ lineWidth: 0 });
 }
 
 function formatField(f: FieldDef): string {

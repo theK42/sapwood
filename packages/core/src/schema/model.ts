@@ -158,6 +158,9 @@ export interface WizardRow {
   name?: string;
   /** Include the row only when this holds: `param`, `!param`, or `param == value`. */
   when?: string;
+  /** The sheet it goes on, by name (templated), if not the wizard's; in the wizard sheet's pack unless `pack` says. */
+  sheet?: string;
+  pack?: string;
 }
 
 export interface Schema {
