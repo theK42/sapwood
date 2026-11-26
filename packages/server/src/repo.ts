@@ -524,24 +524,20 @@ export class Repo {
    */
   entityHistory(branch: string, id: string, limit = 50): EntityChange[] {
     const { root, steps } = this.history(branch);
-    const get = (commit: string, eid: string): EntityJson | null => {
+    const touches = entityTouches(this.stateAt(root), steps, id).reverse().slice(0, limit);
+    const ids = new Map(touches.map((t) => [t.index, t]));
+    const get = (s: Sapwood, eid: string): EntityJson | null => {
       try {
-        return this.at(commit).get(eid);
+        return s.get(eid);
       } catch (e) {
         if (e instanceof ApiError) return null;
         throw e;
       }
     };
-    const out: EntityChange[] = entityTouches(this.stateAt(root), steps, id).reverse().slice(0, limit).map((t) => ({
-      commit: this.commit(t.commit),
-      before: get(this.commitRow(t.commit).parent!, t.idBefore),
-      after: get(t.commit, t.idAfter),
-    }));
+    const { first, at } = this.walk(root, steps, new Set(ids.keys()), (s, i, when) => (i < 0 ? get(s, idAtStart(steps, id)) : get(s, when === "before" ? ids.get(i)!.idBefore : ids.get(i)!.idAfter)));
+    const out: EntityChange[] = touches.map((t) => ({ commit: this.commit(t.commit), ...at.get(t.index)! }));
     // There from the start: the first commit made it.
-    if (out.length < limit) {
-      const atRoot = get(root, idAtStart(steps, id));
-      if (atRoot) out.push({ commit: this.commit(root), before: null, after: atRoot });
-    }
+    if (out.length < limit && first) out.push({ commit: this.commit(root), before: null, after: first });
     return out;
   }
 
@@ -552,8 +548,7 @@ export class Repo {
    */
   cellHistory(branch: string, sheet: string, row: string, col: string, limit = 50): CellChange[] {
     const { root, steps } = this.history(branch);
-    const at = (commit: string): CellState | null => {
-      const s = this.at(commit);
+    const read = (s: Sapwood): CellState | null => {
       const sh = s.project.wb.sheets.get(sheet);
       const r = sh?.rows.posOf(row);
       const c = sh?.cols.posOf(col);
@@ -564,16 +559,29 @@ export class Repo {
       const shown = v === null ? "" : display(v);
       return { input: formula ?? shown, shown, cell: `${sh.name}!${a1}` };
     };
-    const out: CellChange[] = cellTouches(this.stateAt(root), steps, sheet, row, col).reverse().slice(0, limit).map((t) => ({
-      commit: this.commit(t.commit),
-      before: at(this.commitRow(t.commit).parent!),
-      after: at(t.commit),
-    }));
-    if (out.length < limit) {
-      const first = at(root);
-      if (first && first.input !== "") out.push({ commit: this.commit(root), before: null, after: first });
-    }
+    const touches = cellTouches(this.stateAt(root), steps, sheet, row, col).reverse().slice(0, limit);
+    const { first, at } = this.walk(root, steps, new Set(touches.map((t) => t.index)), (s) => read(s));
+    const out: CellChange[] = touches.map((t) => ({ commit: this.commit(t.commit), ...at.get(t.index)! }));
+    if (out.length < limit && first && first.input !== "") out.push({ commit: this.commit(root), before: null, after: first });
     return out;
+  }
+
+  /**
+   * Values read along a branch's history: at its first commit, and just before and after each
+   * of the steps named. One project, built at the first commit and walked forward commit by
+   * commit (each an ordinary apply), rather than built anew at each.
+   */
+  private walk<T>(root: string, steps: readonly HistoryStep[], at: ReadonlySet<number>, read: (s: Sapwood, step: number, when: "before" | "after") => T): { first: T; at: Map<number, { before: T; after: T }> } {
+    const s = Sapwood.fromDoc(this.stateAt(root));
+    const first = read(s, -1, "after");
+    const out = new Map<number, { before: T; after: T }>();
+    const last = Math.max(-1, ...at);
+    for (let i = 0; i <= last; i++) {
+      const before = at.has(i) ? read(s, i, "before") : undefined;
+      s.project.apply(steps[i]!.ops);
+      if (at.has(i)) out.set(i, { before: before as T, after: read(s, i, "after") });
+    }
+    return { first, at: out };
   }
 
   /** A branch's commits after its first, oldest first, following first parents, with their ops. */
