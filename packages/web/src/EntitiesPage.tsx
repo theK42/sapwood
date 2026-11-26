@@ -27,6 +27,8 @@ interface Props {
   moveEntities?(ids: string[]): void;
   /** An entity's history. */
   history?(id: string): void;
+  /** Run a wizard. */
+  runWizard?(name: string): void;
 }
 
 export function EntitiesPage(p: Props) {
@@ -89,6 +91,20 @@ export function EntitiesPage(p: Props) {
             </li>
           ))}
         </ul>
+        {p.runWizard && project.schema.schema.wizards.length > 0 && (
+          <>
+            <h2>Wizards</h2>
+            <ul>
+              {project.schema.schema.wizards.map((w) => (
+                <li key={w.id}>
+                  <button onClick={() => p.runWizard!(w.name)} title={w.description ?? `Run ${w.name}`}>
+                    <span>{w.title ?? w.name}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
       </nav>
       <section className="entities-list" aria-label={type ? `Every ${type}` : "Entities"}>
         {type === null ? (

@@ -15,7 +15,7 @@ import {
   type DataEditorRef, type DrawCellCallback, type ProvideEditorCallback, type ProvideEditorCallbackResult, type DrawHeaderCallback, type EditListItem, type GridCell, type GridColumn, type GridSelection, type Item, type Theme,
 } from "@glideapps/glide-data-grid";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { FieldColumns, Format, Issue, Op, PackId, Project } from "@thek42/sapwood-core";
+import type { FieldColumns, Format, Issue, Op, PackId, Project, WizardCursor } from "@thek42/sapwood-core";
 import { numberToCol } from "@thek42/sapwood-core";
 import { copyPayload, parsePaste } from "./clipboard.ts";
 import { SheetGrid, typeColor, type Axis, type CellEdit, type CellView, type Rect } from "./grid.ts";
@@ -58,6 +58,8 @@ export interface SheetProps {
   moveEntities?(ids: string[]): void;
   /** The history of an entity or a cell. */
   history?(of: HistoryOf): void;
+  /** Run a wizard, at the selected row for one that goes at the cursor. */
+  runWizard?(name: string, cursor?: WizardCursor): void;
 }
 
 /** How long a cell flashes for (§6.7: a brief pulse, once). */
@@ -654,6 +656,12 @@ function SheetMenu(p: {
     ...(type ? [item(`Show every ${type}`, true, () => p.navigate((s) => s.openType(type)))] : []),
     // History: of the entity on this row, and of this cell.
     ...(c && g.rowClass(c.row).kind === "entity" && g.cell(c.row, 1).input.trim() ? [item(`History of “${g.cell(c.row, 1).input.trim()}”`, true, () => p.navigate((s) => s.history?.({ kind: "entity", id: g.cell(c.row, 1).input.trim() })))] : []),
+    // Wizards that go where you are: at this row.
+    ...(p.canEdit && g.kind === "data" && p.at.whole !== "col"
+      ? g.project.schema.schema.wizards
+          .filter((w) => w.position === "cursor")
+          .map((w) => item(`Run “${w.title ?? w.name}” here…`, true, () => p.navigate((s) => s.runWizard?.(w.name, { sheet: g.name, pack: g.project.wb.packName(g.project.wb.sheet(g.sheet).pack), row: r.row + 1 }))))
+      : []),
     ...(c && c.row < g.liveRows && g.colId(c.col) ? [item("History of this cell", true, () => p.navigate((s) => s.history?.({ kind: "cell", sheet: g.sheet, row: g.rowId(c.row), col: g.colId(c.col)!, label: `${g.name}!${g.address(c.row, c.col)}` })))] : []),
     // The entities in the rows the menu is for: moved to another pack, together.
     ...(() => {

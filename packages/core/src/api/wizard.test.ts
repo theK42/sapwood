@@ -146,3 +146,14 @@ describe("wizards (DESIGN §9.3)", () => {
     expect(ws.map((w) => [w.name, needsDeveloper(w)])).toEqual([["RewardedMail", false], ["Event", false], ["Here", false]]);
   });
 });
+
+describe("documents saved before wizards", () => {
+  it("load, with no wizards", async () => {
+    const { docToJson, docFromJson } = await import("../ops/doc.ts");
+    const json = docToJson(Sapwood.load("types:\n  T: { fields: {} }\n", { sheets: [{ name: "S", rows: [["T", "t1"]] }] }).doc) as unknown as { schema: Record<string, unknown> };
+    delete json.schema.wizards;
+    const s = Sapwood.fromDoc(docFromJson(json));
+    expect(s.get("t1").$type).toBe("T");
+    expect(s.project.schema.schema.wizards).toEqual([]);
+  });
+});

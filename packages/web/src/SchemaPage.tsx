@@ -116,6 +116,7 @@ export function SchemaPage(p: Props) {
               select={setSelected}
               checkOn={preview?.project ?? project}
               openEntity={p.openEntity}
+              openYaml={() => setTab("yaml")}
             />
           )
         ) : (

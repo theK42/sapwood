@@ -2,7 +2,7 @@
 // The branch is in the address (/branches/<name>), so a link or a reload keeps it.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { colToNumber, type Op, type PackId, type Project } from "@thek42/sapwood-core";
+import { colToNumber, type Op, type PackId, type Project, type WizardCursor } from "@thek42/sapwood-core";
 import { Api, ApiError, type BranchInfo, type CommitInfo, type Health, type Me, type TaskInfo } from "./api.ts";
 import { listen } from "./events.ts";
 import { HeadView } from "./head.ts";
@@ -18,6 +18,7 @@ import { MovePanel } from "./MovePanel.tsx";
 import { SuggestPanel } from "./SuggestPanel.tsx";
 import { SchemaPage } from "./SchemaPage.tsx";
 import { HistoryPanel, type HistoryOf } from "./HistoryPanel.tsx";
+import { WizardPanel } from "./WizardPanel.tsx";
 import { entityAt } from "./form.ts";
 import { TypeView } from "./TypeView.tsx";
 import { Home } from "./Home.tsx";
@@ -110,6 +111,7 @@ type Side =
   | { kind: "move"; ids: string[]; n: number; pack?: string }
   | { kind: "suggest"; pack: string | null }
   | { kind: "history"; of: HistoryOf }
+  | { kind: "wizard"; name: string; cursor?: WizardCursor; n: number }
   | null;
 
 function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
@@ -268,6 +270,14 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const openPanel = (at: PanelCell) => setSide({ kind: "value", at });
   const openForm = (at: FormRow) => setSide({ kind: "form", at });
   const showHistory = (of: HistoryOf) => setSide({ kind: "history", of });
+  const runWizard = (name: string, cursor?: WizardCursor) => setSide((x) => ({ kind: "wizard", name, ...(cursor ? { cursor } : {}), n: (x?.kind === "wizard" ? x.n : 0) + 1 }));
+  /** Show a cell by its sheet's name and A1 address. */
+  const goToCell = (sheetName: string, cell: string) => {
+    if (!source) return;
+    const s = [...source.project.wb.sheets.values()].find((x) => x.name === sheetName);
+    const m = /^([A-Z]+)(\d+)$/.exec(cell);
+    if (s && m) goTo(s.id, Number(m[2]) - 1, colToNumber(m[1]!) - 1);
+  };
   // Where you were in each tab, so a tab takes you back there; forgotten with the branch.
   const lastInTab = useRef<Partial<Record<Tab, Route>>>({});
   // Forgetting first: effects run in order, and on the first render both do.
@@ -402,6 +412,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           newEntity={newEntity}
           moveEntities={moveEntities}
           history={showHistory}
+          runWizard={runWizard}
         />
       ) : route.kind === "type" ? (
         <TypeView
@@ -437,6 +448,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           goTo={goTo}
           moveEntities={moveEntities}
           history={(id) => showHistory({ kind: "entity", id })}
+          runWizard={(name) => runWizard(name)}
         />
       ) : route.kind === "schema" ? (
         <SchemaPage
@@ -518,6 +530,24 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           newEntity={newEntity}
           move={(id) => moveEntities([id])}
           history={(id) => showHistory({ kind: "entity", id })}
+          close={() => setSide(null)}
+        />
+      )}
+      {side?.kind === "wizard" && source && (
+        <WizardPanel
+          key={side.n}
+          source={source}
+          name={side.name}
+          cursor={side.cursor}
+          canEdit={canEdit && (session ? session.editable : true)}
+          run={async (wizard, params, cursor) => {
+            try {
+              return await (session ?? (await ensureSession())).patch([{ op: "runWizard", wizard, params: params as never, ...(cursor ? { cursor } : {}) }]);
+            } catch (e) {
+              return (e as Error).message;
+            }
+          }}
+          show={goToCell}
           close={() => setSide(null)}
         />
       )}

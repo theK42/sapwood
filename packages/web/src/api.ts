@@ -3,7 +3,7 @@
 // The shapes here mirror the server's (packages/server/src/repo.ts), which the app doesn't
 // import: that code runs on Node.
 
-import type { Conflict, DocJson, EntityJson, Op } from "@thek42/sapwood-core";
+import type { Conflict, DocJson, EntityJson, Op, Patch } from "@thek42/sapwood-core";
 
 export type Role = "viewer" | "editor" | "developer" | "admin";
 export type TaskState = "open" | "landed" | "abandoned";
@@ -176,6 +176,8 @@ export class Api {
   /** A schema change as YAML (DESIGN §5.8), into a task: a Developer's. `force` lets data cells become scratch. */
   applySchema = (id: number, yaml: string, force: boolean) =>
     this.call<{ task: TaskInfo; ops: number; scratch: { sheet: string; cell: string }[]; notes: string[] }>("POST", `/api/tasks/${id}/schema`, { yaml, force });
+  /** Patches into a task, applied by the server (DESIGN §9.4): for what the server decides, such as a wizard's run. */
+  patches = (id: number, patches: Patch[]) => this.call<{ task: TaskInfo; ops: number }>("POST", `/api/tasks/${id}/patches`, patches);
   writeOps = (id: number, ops: Op[], rev: number) => this.call<{ task: TaskInfo; ops: number }>("POST", `/api/tasks/${id}/ops`, { ops, rev });
   undo = (id: number, rev: number) => this.call<{ done: boolean; ops: Op[]; task: TaskInfo }>("POST", `/api/tasks/${id}/undo`, { rev });
   redo = (id: number, rev: number) => this.call<{ done: boolean; ops: Op[]; task: TaskInfo }>("POST", `/api/tasks/${id}/redo`, { rev });

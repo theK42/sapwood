@@ -9,7 +9,7 @@
 // applies there is dropped, and said so. Undo and redo are the server's (they survive a
 // reload, and take back edits made elsewhere too), so they wait for what's being sent.
 
-import { docFromJson, OpError, Project, type Op } from "@thek42/sapwood-core";
+import { docFromJson, OpError, Project, type Op, type Patch } from "@thek42/sapwood-core";
 import { ApiError, type Api, type TaskInfo } from "./api.ts";
 
 /** What an edit gives back: the ops it applied (every Project edit returns these). */
@@ -25,7 +25,7 @@ export interface SessionState {
   notice: string | null;
 }
 
-type ApiFor = Pick<Api, "taskDoc" | "writeOps" | "undo" | "redo" | "applySchema">;
+type ApiFor = Pick<Api, "taskDoc" | "writeOps" | "undo" | "redo" | "applySchema" | "patches">;
 
 export class TaskSession {
   project: Project;
@@ -94,6 +94,24 @@ export class TaskSession {
     await this.run(async () => {
       try {
         await this.api.applySchema(this.task.id, yaml, force);
+      } catch (e) {
+        refused = message(e);
+      }
+      await this.resync();
+    });
+    return refused;
+  }
+
+  /**
+   * Patches the server applies itself (a wizard's run: who may make its packs is the server's
+   * to say), after anything not yet sent; then the task is read again. The reason, if refused.
+   */
+  async patch(patches: Patch[]): Promise<string | null> {
+    if (!this.editable) return `Task ${this.task.id} is ${this.task.state}: it can't be edited`;
+    let refused: string | null = null;
+    await this.run(async () => {
+      try {
+        await this.api.patches(this.task.id, patches);
       } catch (e) {
         refused = message(e);
       }

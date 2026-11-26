@@ -6,13 +6,14 @@
 import { useEffect, useState } from "react";
 import { formatType, type EnumDef, type FieldDef, type FieldType, type Project, type Schema, type TraitDef, type TypeDef, type UnionDef } from "@thek42/sapwood-core";
 import { RuleForm } from "./RuleForm.tsx";
+import type { WizardDef } from "@thek42/sapwood-core";
 import {
   addDef, addField, addRule, constraintsFor, defOf, NAME, removeDef, removeField, renameDef, renameMember, SECTIONS, setDef, setField,
   type Def, type Section, type WithFields,
 } from "./schemaEdit.ts";
 
 export interface Selected {
-  section: Section | "rules";
+  section: Section | "rules" | "wizards";
   id: string;
 }
 
@@ -29,10 +30,19 @@ interface Props {
   /** Rules are checked on this: the project as applying the draft would leave it. */
   checkOn: Project;
   openEntity(type: string, id: string): void;
+  /** Wizards are edited as YAML: switch to the YAML tab. */
+  openYaml(): void;
 }
 
 export function SchemaForms(p: Props) {
-  const sel = !p.selected ? null : p.selected.section === "rules" ? (p.schema.rules.some((r) => r.id === p.selected!.id) ? p.selected : null) : defOf(p.schema, p.selected.section, p.selected.id) ? p.selected : null;
+  const sel = !p.selected
+    ? null
+    : p.selected.section === "rules"
+      ? (p.schema.rules.some((r) => r.id === p.selected!.id) ? p.selected : null)
+      : p.selected.section === "wizards"
+        ? (p.schema.wizards.some((w) => w.id === p.selected!.id) ? p.selected : null)
+        : defOf(p.schema, p.selected.section, p.selected.id) ? p.selected : null;
+  const wizard = sel?.section === "wizards" ? p.schema.wizards.find((w) => w.id === sel.id)! : null;
   const rule = sel?.section === "rules" ? p.schema.rules.find((r) => r.id === sel.id)! : null;
   const [adding, setAdding] = useState<Section | null>(null);
   const isNew = (section: Section, id: string) => !defOf(p.applied, section, id);
@@ -88,13 +98,35 @@ export function SchemaForms(p: Props) {
             ))}
           </ul>
         </section>
+        <section>
+          <h3>
+            Wizards
+            {p.canEdit && (
+              <button className="link small" onClick={p.openYaml} title="Wizards are written in the YAML tab (wizards:)">
+                + Add
+              </button>
+            )}
+          </h3>
+          <ul>
+            {p.schema.wizards.map((w) => (
+              <li key={w.id}>
+                <button className={sel?.section === "wizards" && sel.id === w.id ? "on" : ""} onClick={() => p.select({ section: "wizards", id: w.id })}>
+                  <span className="rule-name">{w.title ?? w.name}</span>
+                  {!p.applied.wizards.some((x) => x.id === w.id) && <span className="tag">new</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
       </nav>
       <div className="schema-def">
         {!sel ? (
           <p className="muted pad">Pick a definition on the left{p.canEdit ? ", or add one" : ""}.</p>
         ) : rule ? (
           <RuleForm schema={p.schema} rule={rule} canEdit={p.canEdit} change={(n) => p.change(n)} checkOn={p.checkOn} openEntity={p.openEntity} close={() => p.select(null)} />
-        ) : sel.section === "rules" ? null : (
+        ) : wizard ? (
+          <WizardView w={wizard} canEdit={p.canEdit} openYaml={p.openYaml} />
+        ) : sel.section === "rules" || sel.section === "wizards" ? null : (
           <DefForm {...p} sel={sel as { section: Section; id: string }} def={defOf(p.schema, sel.section as Section, sel.id)!} />
         )}
       </div>
@@ -471,5 +503,73 @@ function NameBox(p: { start: string; label: string; done(name: string | null): v
       />
       {bad && <span className="vf-bad small">Letters, digits and _</span>}
     </span>
+  );
+}
+
+/** A wizard, to read (DESIGN §9.3): it's edited as YAML. */
+function WizardView(p: { w: WizardDef; canEdit: boolean; openYaml(): void }) {
+  const { w } = p;
+  const json = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
+  return (
+    <div className="vf schema-def-form">
+      <h3 className="vf-h">{w.title ?? w.name}</h3>
+      {w.description && <p className="small">{w.description}</p>}
+      <p className="small">
+        Name <code>{w.name}</code>. Writes on <code>{w.sheet.name}</code>
+        {w.sheet.pack ? <> in <code>{w.sheet.pack}</code></> : null}
+        {w.sheet.create ? " (made if it isn't there)" : ""},{" "}
+        {w.position === "afterLastGroup" ? "after its last run there" : w.position === "cursor" ? "at the selected row" : "at the end"}
+        {w.spacing ? `, ${w.spacing} blank ${w.spacing === 1 ? "row" : "rows"} before each run` : ""}.
+      </p>
+      <h3 className="vf-h">Parameters</h3>
+      <table className="history-diff small">
+        <tbody>
+          {Object.entries(w.params).map(([n, d]) => (
+            <tr key={n}>
+              <th>{n}</th>
+              <td>
+                <code>{d.type}</code>
+                {d.required ? " required" : ""}
+                {d.default !== undefined ? ` (default ${json(d.default)})` : ""}
+                {d.pattern ? ` matching ${d.pattern}` : ""}
+              </td>
+            </tr>
+          ))}
+          {Object.keys(w.params).length === 0 && (
+            <tr>
+              <td className="muted">None.</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      {(w.steps ?? []).length > 0 && (
+        <>
+          <h3 className="vf-h">First</h3>
+          <ul className="move-list small">
+            {(w.steps ?? []).map((st, i) => (
+              <li key={i}>{"createPack" in st ? `Makes pack ${st.createPack}${st.editors ? " (Editors may)" : " (a Developer's)"}` : `Makes sheet ${st.createSheet}${st.pack ? ` in ${st.pack}` : ""}`}</li>
+            ))}
+          </ul>
+        </>
+      )}
+      <h3 className="vf-h">Rows</h3>
+      <ul className="move-list small">
+        {w.rows.map((r, i) => (
+          <li key={i}>
+            <code>{r.type}</code> <code>{r.id}</code>
+            {r.forEach ? ` for each of ${r.forEach}` : ""}
+            {r.when ? ` when ${r.when}` : ""}
+            {r.fields && Object.keys(r.fields).length > 0 && <span className="muted"> · {Object.entries(r.fields).map(([k, v]) => `${k}: ${json(v)}`).join(", ")}</span>}
+          </li>
+        ))}
+      </ul>
+      {p.canEdit && (
+        <div className="vf-buttons">
+          <button className="button quiet small" onClick={p.openYaml}>
+            Edit it in the YAML tab
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

@@ -707,7 +707,8 @@ Wizard capabilities:
   - It runs as one undoable op group in the user's current task.
   - The results are validated like any other edit.
   - It is refused if an ID it would create already exists.
-- **Permissions:** running a wizard needs Editor. A wizard that creates packs can only be run by someone allowed to create packs, unless the Developer who wrote it marks that step as allowed for Editors.
+- **Permissions:** running a wizard needs Editor. A wizard that creates packs can only be run by someone allowed to create packs, unless the Developer who wrote it marks that step as allowed for Editors (`editors: true`).
+- **As built (2026-11-26):** wizards are a `wizards` section of the schema, each with an ID. `when:` is `param`, `!param` or `param == value`. A placeholder alone (`"{rewards}"`) keeps its value as is; text for a field that isn't text is read as it would be typed. Steps are `createPack: name` (`parent`, `editors`) and `createSheet: name` (`pack`), each skipped if it's there. Each run's rows carry a `wizard:<name>` row flag, which is how `afterLastGroup` finds the last group. `cursor` inserts at the row the wizard was launched from. Runs go to the server as a patch (`runWizard`); `wizard-preview` reads what one would make. In the CLI: `wizard list` and `wizard run <name> param=value… [--dry-run]`.
 
 ### 9.4 JSON, CLI, HTTP and MCP
 

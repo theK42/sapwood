@@ -8,7 +8,7 @@
 
 import { contentKey, stableJson, type Content } from "../formula/content.ts";
 import type { ColId, PackId, RowId, SheetId, SheetKind } from "../formula/model.ts";
-import type { Schema } from "../schema/model.ts";
+import { emptySchema, type Schema } from "../schema/model.ts";
 import { resolveSchema, type ResolvedSchema } from "../schema/resolve.ts";
 import type { Layout } from "../project/layout.ts";
 import { forkMap } from "./cowmap.ts";
@@ -270,7 +270,8 @@ export function docFromJson(json: unknown): Doc {
   if (j.version !== 1) throw new Error(`Unsupported Sapwood document version ${String(j.version)}`);
   const axis = (a: { order: string[]; dead: string[] }): AxisDoc => ({ order: [...a.order], dead: new Set(a.dead) });
   return {
-    schema: j.schema!,
+    // Sections added since (wizards) are missing from older documents: empty, then.
+    schema: { ...emptySchema(), ...j.schema! },
     packs: new Map(j.packs!.map((p) => [p.id, { ...p }])),
     sheets: new Map(
       j.sheets!.map((s) => [
