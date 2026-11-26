@@ -290,6 +290,28 @@ Not yet, as the run showed: structs and unions (a collision shape's boxes) are t
   - **Copying documents:** a rebase copies the whole document about ten times, about 250 ms each at 100k rows. A land that rebases takes 3.5 s there, and an open task's next read after another task lands 3.8 s.
   - **The web app's size:** it builds to one script of about 900 KB (280 KB compressed), mostly the grid, React and core, and Vite warns past 500 KB. Loading parts later saves little, since nearly every page has the grid. Splitting React, the grid and core into scripts of their own would let an update to Sapwood's own code download only that part, with the rest cached. Not by raising the warning's limit.
 
+**Performance pass (2026-11-26), at 100k rows on one sheet** (`npm run bench`, `npm run bench:server -- 100000`, `node packages/server/bench/history.bench.ts`):
+
+| | Before | After |
+|---|---|---|
+| Building a project from a document (`fromDoc`) | 4.0–5.0 s | about 2.5 s |
+| Server: cold load of a head | 5.4 s | 3.5 s |
+| Server: a task's first edit | 4.9 s | 2.9 s |
+| Server: a task's read after another lands (rebased) | 4.0 s | 0.4 s |
+| Server: a land that rebases | 3.9 s | 0.9 s |
+| `stateAt` of a head (the document alone) | 312 ms | under 1 ms |
+| First validation | 760 ms | 670 ms |
+| An entity's history, 100 commits | 87 s | 4.3 s |
+| A cell's history, 100 commits | 67 s | 2.1 s |
+
+- **Bulk load:** `Project.fromDoc` puts the structure in as ops but the cells straight into the document and into the engine at once (`Engine.loadCells`: no dependents to tell, nothing stale yet), and every formula is worked out together at the end.
+- **Copy-on-write documents:** `cloneDoc` shares each sheet with the copy until one writes it (`own`, which ops.ts takes every sheet it writes through). A sheet's cells and formats are copy-on-write maps (`CowMap`: a shared base and each copy's own layer of changes, folded into a new base once large), so even one big sheet copies at the cost of its recent changes. A rebase's analysis compares only the keys the two layers can differ in (`differingKeys`).
+- **Validation** renders an ID cell's formula text (to see if it uses `ROW()` or `COLUMN()`) only when it is a formula.
+- **History** builds one project at the first commit and walks it forward, reading values only where they changed, and looks for an entity's rows only after a commit that could have changed them.
+- **The web app** builds to four files besides the runtime: its own code (184 KB), core (174 KB), React (219 KB) and the other libraries, mostly the grid (417 KB); none past Vite's warning.
+
+Left, measured: building a project is still about 2.5 s (a cold load, a task's first read, a page opening a task): about 1 s is making the engine's maps for 700k cells and 0.8 s is working out 200k formulas once; snapshots with computed values, or a leaner engine store, would be next. Validation after an edit is 0.1–0.15 s, mostly the checks across rows (unique IDs, refs) rebuilt each time; incremental ones would bring it down. History still builds a project at the first commit, so it costs about a project build whatever the commit count; starting from the cached head and walking back would avoid it.
+
 ## Stretch and later
 
 - Export plugins (custom binary, codegen) from private packages.
