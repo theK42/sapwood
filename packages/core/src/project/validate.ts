@@ -54,7 +54,10 @@ function entityChecks(project: Project, e: Entity): EntityChecks {
     const at = entry?.cells[0] ?? e.at;
     checkField(project, f.def, entry, at, e.pack, e.type, c.issues, c.refs);
   }
-  const f = formulaText(project, { ...e.at, ...(colB(project, e.at) ?? {}) });
+  // Rendering a formula's text costs; most IDs aren't formulas, which the stored cell says.
+  const b = colB(project, e.at);
+  const stored = b === null ? undefined : project.doc.sheets.get(e.at.sheet)?.cells.get(`${e.at.row}|${b.col}`);
+  const f = stored && "f" in stored ? formulaText(project, { ...e.at, ...b }) : null;
   c.positional = f !== null && /\b(ROW|COLUMN)\s*\(/i.test(f);
   checked.set(e, c);
   return c;

@@ -24,5 +24,20 @@ export default defineConfig({
   plugins: [react()],
   resolve: { alias: { "glide-overlay-editor": overlayEditor } },
   server: { port: 5173, strictPort: true, proxy: { "/api": proxy, "/auth": proxy, "/healthz": proxy } },
-  build: { sourcemap: true },
+  build: {
+    sourcemap: true,
+    // Libraries and core in files of their own: an update to the app's own code downloads only
+    // that part, and the rest stays cached (ROADMAP Phase 5, the web app's size).
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: "react", test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/, priority: 3 },
+            { name: "libs", test: /node_modules[\\/]/, priority: 2 },
+            { name: "core", test: /packages[\\/]core[\\/]/, priority: 1 },
+          ],
+        },
+      },
+    },
+  },
 });
