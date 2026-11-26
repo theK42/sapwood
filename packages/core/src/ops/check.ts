@@ -10,7 +10,7 @@ import type { Content } from "../formula/content.ts";
 import type { BoundPoint, Expr } from "../formula/bind.ts";
 import { ERROR_CODES, type BinOp, type ErrorCode } from "../formula/parse.ts";
 import type { Layout, LayoutColumn } from "../project/layout.ts";
-import { OpError, ROW_FLAGS, type Format } from "./doc.ts";
+import { isRowFlag, OpError, type Format } from "./doc.ts";
 import type { Op } from "./ops.ts";
 
 /** Op kinds that change the schema. */
@@ -195,7 +195,8 @@ function op(x: unknown, at: At): Op {
     case "setRowFlag": {
       const on = o.on;
       if (typeof on !== "boolean") return fail(at.in("on"), "expected true or false");
-      return { kind, sheet: sheet(), row: str(o, "row", at), flag: oneOf(o, "flag", ROW_FLAGS, at), on };
+      if (!isRowFlag(o.flag)) return fail(at.in("flag"), 'expected "keepHere" or "wizard:<name>"');
+      return { kind, sheet: sheet(), row: str(o, "row", at), flag: o.flag, on };
     }
     case "createPack":
       return { kind, pack: str(o, "pack", at), name: str(o, "name", at), parent: str(o, "parent", at) };

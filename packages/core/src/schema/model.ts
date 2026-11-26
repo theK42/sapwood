@@ -109,6 +109,57 @@ export interface RuleDef {
   message: string;
 }
 
+/**
+ * A wizard (DESIGN §9.3): a template, written by a Developer, that makes several entities at
+ * once from a few parameters, as one change. Everything but its ID and name is kept as written
+ * (see wizard.ts for what each part means), so the schema's ops version it like any definition.
+ */
+export interface WizardDef {
+  id: Id;
+  name: string;
+  title?: string;
+  description?: string;
+  /** By name: a field type as text (`string`, `list<struct<Reward>>`) or `pack`, and constraints. */
+  params: Record<string, WizardParam>;
+  /** Where its rows go: a sheet by name (templated), in a pack, made if `create`. */
+  sheet: { name: string; pack?: string; create?: boolean };
+  position?: "end" | "afterLastGroup" | "cursor";
+  /** Blank rows between one run's rows and what's above them. */
+  spacing?: number;
+  /** Packs and sheets made before the rows. */
+  steps?: WizardStep[];
+  rows: WizardRow[];
+}
+
+export interface WizardParam {
+  type: string;
+  required?: boolean;
+  default?: unknown;
+  description?: string;
+  pattern?: string;
+  minItems?: number;
+  maxItems?: number;
+}
+
+export type WizardStep =
+  | { createPack: string; parent?: string; when?: string; editors?: boolean }
+  | { createSheet: string; pack?: string; when?: string };
+
+export interface WizardRow {
+  type: string;
+  /** The entity's ID, templated. */
+  id: string;
+  /** Field values, templated: `"{param}"` alone keeps its value as is (a number, a list). */
+  fields?: Record<string, unknown>;
+  /** Repeat the row for each item of this list parameter, as `as` (default `item`), with `.index`. */
+  forEach?: string;
+  as?: string;
+  /** Lets other rows name the IDs this row makes: `{name.ids}`. */
+  name?: string;
+  /** Include the row only when this holds: `param`, `!param`, or `param == value`. */
+  when?: string;
+}
+
 export interface Schema {
   enums: EnumDef[];
   traits: TraitDef[];
@@ -116,9 +167,10 @@ export interface Schema {
   unions: UnionDef[];
   types: TypeDef[];
   rules: RuleDef[];
+  wizards: WizardDef[];
 }
 
-export const emptySchema = (): Schema => ({ enums: [], traits: [], structs: [], unions: [], types: [], rules: [] });
+export const emptySchema = (): Schema => ({ enums: [], traits: [], structs: [], unions: [], types: [], rules: [], wizards: [] });
 
 // ------------------------------------------------------------ type expressions
 

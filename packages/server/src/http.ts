@@ -15,7 +15,7 @@ import { Hono, type Context } from "hono";
 import { WebSocketServer } from "ws";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import {
-  ApiError, checkOps, docToJson, ExportRefused, OpError, PACK_OP_KINDS, Sapwood, sha256, whereFilter,
+  ApiError, checkOps, docToJson, ExportRefused, needsDeveloper, OpError, PACK_OP_KINDS, Sapwood, sha256, whereFilter,
   type ApiErrorCode, type ExportFile, type JsonValue, type Patch, type QueryOptions,
 } from "@thek42/sapwood-core";
 import { demand, isRole, type Auth, type Principal, type Role, type Scopes } from "./auth.ts";
@@ -452,6 +452,13 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     if (!Array.isArray(list)) throw new RepoError("bad-request", "Send a list of patches, or { patches: [...] }");
     // Making, renaming and moving packs is a Developer's (DESIGN §11.2); sheets are an Editor's.
     if (list.some((x) => ["createPack", "renamePack", "movePack"].includes(String((x as { op?: unknown } | null)?.op)))) may(c, "developer", "write", repo.task(id).branch);
+    // A wizard that makes packs is a Developer's to run, unless its step allows Editors (DESIGN §9.3).
+    const wizards = repo.view(id).project.schema.schema.wizards;
+    for (const x of list as { op?: unknown; wizard?: unknown }[])
+      if (x?.op === "runWizard") {
+        const w = wizards.find((y) => y.name === x.wizard);
+        if (w && needsDeveloper(w)) may(c, "developer", "write", repo.task(id).branch);
+      }
     const change = repo.write(id, me(c).login, (s) => s.apply(list as Patch[]));
     return c.json({ task: repo.task(id), ops: change.ops.length, formulas: change.formulas });
   };
@@ -541,6 +548,19 @@ function reads(app: Hono<Env>, prefix: string, place: (c: C) => Place): void {
   });
   app.get(`${prefix}/schema`, (c) => c.body(place(c).s.schemaYaml(), 200, { "Content-Type": "application/yaml; charset=utf-8" }));
   app.get(`${prefix}/validate`, (c) => c.json(place(c).s.validate()));
+  /** What running a wizard would make (DESIGN §9.3), changing nothing: `?wizard=&params=<JSON>&sheet=&pack=&row=` (the last three for a cursor). */
+  app.get(`${prefix}/wizard-preview`, (c) => {
+    let params: unknown;
+    try {
+      params = JSON.parse(c.req.query("params") ?? "{}");
+    } catch {
+      throw new RepoError("bad-request", "params is a JSON object");
+    }
+    const sheet = c.req.query("sheet");
+    const pack = c.req.query("pack");
+    const cursor = sheet ? { sheet, row: Number(c.req.query("row") ?? 1), ...(pack ? { pack } : {}) } : undefined;
+    return c.json(place(c).s.previewWizard(c.req.query("wizard") ?? "", (params ?? {}) as Record<string, unknown>, cursor ? { cursor } : {}));
+  });
   /** Entities that could move down the pack tree (DESIGN §7.4): `?pack=` for one pack and below. */
   app.get(`${prefix}/move-suggestions`, (c) => {
     const pack = c.req.query("pack");

@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   parseSchema, resolveSchema,
-  type EntityJson, type ExportFile, type MoveReport, type MoveSuggestion, type Patch, type ResolvedSchema, type ValidationJson,
+  type EntityJson, type ExportFile, type MoveReport, type MoveSuggestion, type Patch, type WizardCursor, type WizardReport, type ResolvedSchema, type ValidationJson,
 } from "@thek42/sapwood-core";
 import type { Backend, QueryArgs, Readable, SchemaWritten, Written } from "./backend.ts";
 import { saveFile } from "./fsutil.ts";
@@ -224,6 +224,16 @@ export class RemoteBackend implements Backend {
     params.set("pack", pack);
     if (sheet !== undefined) params.set("sheet", sheet);
     return this.client.json("GET", `${await this.readPlace()}/move-preview?${params}`);
+  }
+
+  async previewWizard(name: string, params: Record<string, unknown>, cursor?: WizardCursor): Promise<WizardReport> {
+    const q = new URLSearchParams({ wizard: name, params: JSON.stringify(params) });
+    if (cursor) {
+      q.set("sheet", cursor.sheet);
+      q.set("row", String(cursor.row));
+      if (cursor.pack !== undefined) q.set("pack", cursor.pack);
+    }
+    return this.client.json("GET", `${await this.readPlace()}/wizard-preview?${q}`);
   }
 
   async suggestMoves(pack?: string): Promise<MoveSuggestion[]> {

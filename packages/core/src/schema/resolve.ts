@@ -4,7 +4,7 @@
 // whatever it could resolve, so a schema editor can show every problem at once.
 
 import type { EnumDef, FieldDef, FieldType, Id, Schema, StructDef, TraitDef, TypeDef, UnionDef } from "./model.ts";
-import { formatType, isValidName } from "./model.ts";
+import { formatType, isValidName, parseType } from "./model.ts";
 import type { SchemaIssue } from "./yaml.ts";
 
 export interface ResolvedField {
@@ -263,6 +263,62 @@ export function resolveSchema(schema: Schema): ResolvedSchema {
       const k = kindOf.get(r.type);
       if (k !== "type" && k !== "trait") issue(`${p}.type`, `Unknown type or trait "${r.type}"`);
     }
+  }
+  // ---- wizards (§9.3)
+  for (const w of schema.wizards) {
+    const p = `wizards.${w.name}`;
+    claimId(w.id, p);
+    const params = new Set(Object.keys(w.params));
+    for (const [name, d] of Object.entries(w.params)) {
+      if (d.type === "pack") continue;
+      try {
+        parseType(d.type);
+      } catch (e) {
+        issue(`${p}.params.${name}.type`, (e as Error).message);
+      }
+    }
+    const named = new Set(w.rows.map((r) => r.name).filter((x): x is string => typeof x === "string"));
+    // `{a}` or `{a.b}`: a parameter, the row's item, or a named row's `.ids`.
+    const placeholders = (v: unknown, path: string, item: string | null) => {
+      const walk = (x: unknown) => {
+        if (typeof x === "string")
+          for (const m of x.matchAll(/\{([A-Za-z_]\w*)((?:\.\w+)*)\}/g)) {
+            const root = m[1]!;
+            if (params.has(root) || root === item) continue;
+            if (named.has(root)) {
+              if (m[2] !== ".ids") issue(path, `{${root}${m[2]}}: a named row gives {${root}.ids}, the IDs it makes`);
+              continue;
+            }
+            issue(path, `{${root}${m[2]}} names no parameter${item ? `, nor the row's item (${item})` : ""}`);
+          }
+        else if (Array.isArray(x)) x.forEach(walk);
+        else if (x && typeof x === "object") Object.values(x).forEach(walk);
+      };
+      walk(v);
+    };
+    placeholders(w.sheet, `${p}.sheet`, null);
+    (w.steps ?? []).forEach((st, i) => placeholders(st, `${p}.steps.${i}`, null));
+    w.rows.forEach((r, i) => {
+      const rp = `${p}.rows.${i}`;
+      const t = typeof r.type === "string" ? out.types.get(r.type) : undefined;
+      if (!t) issue(`${rp}.type`, `Unknown type "${String(r.type)}"`);
+      else if (t.def.singleton) issue(`${rp}.type`, `${r.type} is a singleton: a wizard makes entities`);
+      if (typeof r.id !== "string" || r.id === "") issue(`${rp}.id`, "Each row needs an ID, a template such as mail_{key}");
+      let item: string | null = null;
+      if (r.forEach !== undefined) {
+        const d = w.params[r.forEach];
+        if (!d) issue(`${rp}.forEach`, `forEach names no parameter: ${r.forEach}`);
+        else if (!/^list</.test(d.type)) issue(`${rp}.forEach`, `${r.forEach} isn't a list`);
+        item = r.as ?? "item";
+      }
+      if (r.when !== undefined) {
+        const root = /^!?\s*([A-Za-z_]\w*)/.exec(String(r.when))?.[1];
+        if (!root || !params.has(root)) issue(`${rp}.when`, `when names no parameter: ${String(r.when)}`);
+      }
+      if (t && r.fields) for (const f of Object.keys(r.fields)) if (!t.fieldByName.has(f)) issue(`${rp}.fields.${f}`, `${r.type} has no field "${f}"`);
+      placeholders(r.id, `${rp}.id`, item);
+      placeholders(r.fields, `${rp}.fields`, item);
+    });
   }
   return out;
 }

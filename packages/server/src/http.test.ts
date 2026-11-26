@@ -343,6 +343,32 @@ describe("the HTTP API", () => {
     expect((await app.request("/api/nope")).status).toBe(401);
   });
 
+  it("a wizard that makes packs is a Developer's to run, unless its step allows Editors", async () => {
+    const { ada, bob } = setup();
+    const wizards = `
+wizards:
+  Event:
+    params: { key: { type: string, required: true } }
+    steps: [{ createPack: "ev_{key}" }]
+    sheet: { pack: "ev_{key}", name: Ammo, create: true }
+    rows: [{ type: Ammo, id: "a_{key}", fields: { speed: 1 } }]
+  OpenEvent:
+    params: { key: { type: string, required: true } }
+    steps: [{ createPack: "open_{key}", editors: true }]
+    sheet: { pack: "open_{key}", name: Ammo, create: true }
+    rows: [{ type: Ammo, id: "o_{key}", fields: { speed: 1 } }]
+`;
+    const put = await ada("POST /api/branches/main/schema", { yaml: SCHEMA + wizards });
+    expect(put.status).toBe(200);
+    expect((await ada(`POST /api/tasks/${put.json.task.id}/land`, { message: "Wizards" })).status).toBe(201);
+    expect((await bob("POST /api/branches/main/patches", [{ op: "runWizard", wizard: "Event", params: { key: "x" } }])).status).toBe(403);
+    const ok = await bob("POST /api/branches/main/patches", [{ op: "runWizard", wizard: "OpenEvent", params: { key: "x" } }]);
+    expect(ok.status).toBe(200);
+    expect((await bob(`GET /api/tasks/${ok.json.task.id}/entities/o_x`)).json).toMatchObject({ $pack: "open_x" });
+    const preview = await bob("GET /api/branches/main/wizard-preview?wizard=OpenEvent&params=" + encodeURIComponent('{"key":"y"}'));
+    expect(preview.json).toMatchObject({ packs: ["open_y"], made: [{ id: "o_y", sheet: "Ammo", cell: "A1" }] });
+  });
+
   it("an Editor makes sheets, and only a Developer makes packs", async () => {
     const { ada, bob } = setup();
     expect((await bob("POST /api/branches/main/patches", [{ op: "createPack", name: "dlc" }])).status).toBe(403);

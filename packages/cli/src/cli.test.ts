@@ -121,6 +121,35 @@ describe("the sapwood command", () => {
     expect((await sw("suggest-moves")).out).toContain("No suggestions");
   });
 
+  it("lists and runs wizards, showing first what they make", async () => {
+    const { sw, json, dir } = await setup();
+    const wizard = `
+wizards:
+  Pair:
+    title: A weapon and its ammo
+    params:
+      key: { type: string, required: true }
+      speeds: { type: "list<float>" }
+    sheet: Weapons
+    rows:
+      - { type: Ammo, id: "{key}_ammo", name: ammo, forEach: speeds, as: s, fields: { speed: "{s.value}" } }
+      - { type: Weapon, id: "{key}", fields: { damage: 3, shots: "{ammo.ids}" } }
+`;
+    writeFileSync(join(dir, "with-wizard.yaml"), SCHEMA + wizard);
+    expect((await sw("schema", "apply", "with-wizard.yaml")).code).toBe(0);
+    expect((await sw("wizard", "list")).out).toBe(["Pair — A weapon and its ammo", "  key: string (required)", "  speeds: list<float>"].join("\n"));
+    const dry = await sw("wizard", "run", "Pair", "key=rifle", "speeds=[700]", "--dry-run");
+    expect(dry.err).toBe("");
+    expect(dry.out).toContain("Would make Ammo rifle_ammo at Weapons!A3");
+    expect(dry.out).toContain("Would make Weapon rifle at Weapons!A4");
+    expect((await sw("wizard", "run", "Pair", "key=rifle", "speeds=[700]")).out).toContain("Made 2 entities.");
+    expect(await json("get", "rifle_ammo")).toMatchObject({ speed: 700 });
+    expect(await json("get", "rifle")).toMatchObject({ damage: 3, shots: ["rifle_ammo"] });
+    const bad = await sw("wizard", "run", "Pair");
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain("key is required");
+  });
+
   it("renames and moves packs and sheets", async () => {
     const { sw, json } = await setup();
     await sw("pack", "create", "dlc");

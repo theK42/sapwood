@@ -3,7 +3,7 @@
 
 import {
   Sapwood, whereFilter,
-  type CellAddress, type EntityJson, type ExportFile, type JsonValue, type MoveReport, type MoveSuggestion, type Patch, type ResolvedSchema, type SingletonJson, type ValidationJson,
+  type CellAddress, type EntityJson, type ExportFile, type JsonValue, type MoveReport, type MoveSuggestion, type Patch, type WizardCursor, type WizardReport, type ResolvedSchema, type SingletonJson, type ValidationJson,
 } from "@thek42/sapwood-core";
 import { saveProjectFile } from "./store.ts";
 
@@ -42,6 +42,8 @@ export interface Backend {
   previewMove(ids: string[], pack: string, sheet?: string): Promise<MoveReport>;
   /** Entities that could move down the pack tree (in a pack and below, if named). */
   suggestMoves(pack?: string): Promise<MoveSuggestion[]>;
+  /** What running a wizard would make, changing nothing. */
+  previewWizard(name: string, params: Record<string, unknown>, cursor?: WizardCursor): Promise<WizardReport>;
 }
 
 /** A project in a local file. Each write saves it. */
@@ -96,6 +98,10 @@ export class LocalBackend implements Backend {
 
   async suggestMoves(pack?: string): Promise<MoveSuggestion[]> {
     return this.s.suggestMoves(pack === undefined ? {} : { pack });
+  }
+
+  async previewWizard(name: string, params: Record<string, unknown>, cursor?: WizardCursor): Promise<WizardReport> {
+    return this.s.previewWizard(name, params, cursor ? { cursor } : {});
   }
 
   async export(allowInvalid: boolean): Promise<ExportFile[]> {

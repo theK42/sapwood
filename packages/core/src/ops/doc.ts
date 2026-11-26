@@ -53,8 +53,12 @@ export interface SheetDoc {
 }
 
 /** A flag a row can carry. */
-export type RowFlag = "keepHere";
-export const ROW_FLAGS: readonly RowFlag[] = ["keepHere"];
+/**
+ * A flag a row can carry: `keepHere`, "don't suggest moving" (§7.4); `wizard:<name>`, made by a
+ * run of that wizard (§9.3), so the next run can go after the last one.
+ */
+export type RowFlag = "keepHere" | `wizard:${string}`;
+export const isRowFlag = (x: unknown): x is RowFlag => x === "keepHere" || (typeof x === "string" && /^wizard:[A-Za-z_]\w*$/.test(x));
 
 export interface PackDoc {
   id: PackId;

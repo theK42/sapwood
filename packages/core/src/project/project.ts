@@ -529,7 +529,7 @@ export class Project {
    * last). Fields may be given with it.
    */
   addDef(section: Section, def: { id?: Id; fields?: FieldInput[]; [k: string]: unknown }, after?: string): Edit & { id: Id } {
-    const prefix = { enums: "e", traits: "tr", structs: "s", unions: "u", types: "t", rules: "r" }[section];
+    const prefix = { enums: "e", traits: "tr", structs: "s", unions: "u", types: "t", rules: "r", wizards: "w" }[section];
     const id = def.id ?? this.freshSchemaId(prefix);
     const taken = new Set([id]);
     const full: SchemaDef = { ...def, id };

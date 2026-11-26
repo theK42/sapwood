@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { ApiError, Sapwood, type CellAddress, type MoveReport, type Patch, type ValidationJson } from "@thek42/sapwood-core";
+import { ApiError, Sapwood, type CellAddress, type JsonValue, type MoveReport, type Patch, type ValidationJson } from "@thek42/sapwood-core";
 import { LocalBackend, type Backend, type Written } from "./backend.ts";
 import { Client, configPath, enc, readConfig, RemoteBackend, ServerError, serverUrl, writeConfig, type Config, type Fetch, type ReadAt, type TaskJson } from "./remote.ts";
 import { findProject, loadProjectFile, PROJECT_FILE, saveProjectFile } from "./store.ts";
@@ -62,6 +62,11 @@ Data (on a server: reads show your current task, writes go into it)
   move <id>… --to <pack> [--sheet <s>] [--dry-run]
                                   To another pack, with formulas following; says
                                   what it would put out of reach first
+  wizard list                     The schema's wizards and their parameters
+  wizard run <name> [<param>=<value>…] [--sheet <s> --row <n>] [--dry-run]
+                                  Make what the wizard makes, after showing it; values
+                                  are JSON where they read as JSON ([…], {…}, 3), text
+                                  otherwise; --sheet and --row place a cursor wizard
   suggest-moves [--pack <p>]      Entities used only from a pack below theirs, and
                                   where they could go (set $keepHere=true to stop one)
   apply <patch.jsonl>             Patches, one JSON object per line, all or nothing
@@ -280,6 +285,50 @@ async function command(argv: string[], io: Io): Promise<number> {
       if (dry || !r.moved.length) return 0;
       const patch: Patch = { op: "moveEntities", ids, pack: to, ...(sheet === undefined ? {} : { sheet }) };
       return wrote(await b.patch([patch]), `Moved ${plural(r.moved.length, "entity", "entities")}.`);
+    }
+
+    case "wizard": {
+      const [sub, ...rest] = args;
+      if (sub === "list") {
+        const p = parse(rest, READ);
+        positionals(p, []);
+        const ws = (await backend(p, io).b.schema()).schema.wizards;
+        if (!ws.length) io.out("No wizards: Developers write them in the schema (wizards:).");
+        for (const w of ws) {
+          io.out(`${w.name}${w.title ? ` — ${w.title}` : ""}`);
+          for (const [n, d] of Object.entries(w.params)) io.out(`  ${n}: ${d.type}${d.required ? " (required)" : ""}${d.default !== undefined ? ` = ${JSON.stringify(d.default)}` : ""}`);
+        }
+        return 0;
+      }
+      if (sub !== "run") throw new UsageError("Try sapwood wizard list, or wizard run <name> <param>=<value>…");
+      const p = parse(rest, { task: { type: "string" }, sheet: { type: "string" }, pack: { type: "string" }, row: { type: "string" }, "dry-run": { type: "boolean" } });
+      const [name, ...pairs] = p.positionals;
+      if (!name) throw new UsageError("Say which wizard: sapwood wizard run <name> <param>=<value>…");
+      const params: Record<string, unknown> = {};
+      for (const pair of pairs) {
+        const eq = pair.indexOf("=");
+        if (eq < 1) throw new UsageError(`Write parameters as name=value (got ${pair})`);
+        const text = pair.slice(eq + 1);
+        let v: unknown = text;
+        if (/^\s*[[{\-\d"]|^(true|false|null)$/.test(text))
+          try {
+            v = JSON.parse(text);
+          } catch {
+            v = text;
+          }
+        params[pair.slice(0, eq)] = v;
+      }
+      const cursor = p.values.sheet !== undefined ? { sheet: p.values.sheet as string, row: Number(p.values.row ?? 1), ...(p.values.pack !== undefined ? { pack: p.values.pack as string } : {}) } : undefined;
+      const b = backend(p, io).b;
+      const r = await b.previewWizard(name, params, cursor);
+      const dry = p.values["dry-run"] === true;
+      for (const s of r.packs) io.out(`${dry ? "Would make" : "Making"} pack ${s}`);
+      for (const s of r.sheets) io.out(`${dry ? "Would make" : "Making"} sheet ${s}`);
+      for (const m of r.made) io.out(`${dry ? "Would make" : "Making"} ${m.type} ${m.id} at ${m.sheet}!${m.cell}`);
+      if (r.issues.length) io.out(`  ${plural(r.issues.length, "new issue")}: ${r.issues.slice(0, 5).map((i) => i.message).join("; ")}${r.issues.length > 5 ? "; …" : ""}`);
+      if (dry) return 0;
+      const patch: Patch = { op: "runWizard", wizard: name, params: params as Record<string, JsonValue>, ...(cursor ? { cursor } : {}) };
+      return wrote(await b.patch([patch]), `Made ${plural(r.made.length, "entity", "entities")}.`);
     }
 
     case "suggest-moves": {

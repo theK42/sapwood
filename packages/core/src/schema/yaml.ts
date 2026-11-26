@@ -5,7 +5,7 @@
 // plus an add. Items written without an ID get a fresh one on parse. The writer is
 // deterministic: the same schema always prints the same bytes.
 
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   emptySchema,
   formatType,
@@ -20,6 +20,10 @@ import {
   type TraitDef,
   type TypeDef,
   type UnionDef,
+  type WizardDef,
+  type WizardParam,
+  type WizardRow,
+  type WizardStep,
 } from "./model.ts";
 
 export interface SchemaIssue {
@@ -33,12 +37,12 @@ export interface SchemaIssue {
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 
-const SECTIONS = ["enums", "traits", "structs", "unions", "types", "rules"] as const;
+const SECTIONS = ["enums", "traits", "structs", "unions", "types", "rules", "wizards"] as const;
 const FIELD_KEYS = [
   "id", "type", "description", "required", "default", "min", "max", "finite", "minLength", "maxLength",
   "pattern", "nonEmpty", "minItems", "maxItems", "unique", "reach", "jsonSchema",
 ] as const;
-const PREFIX = { enums: "e", traits: "tr", structs: "s", unions: "u", types: "t", rules: "r", fields: "f" } as const;
+const PREFIX = { enums: "e", traits: "tr", structs: "s", unions: "u", types: "t", rules: "r", wizards: "w", fields: "f" } as const;
 
 export interface ParseOptions {
   /**
@@ -275,6 +279,52 @@ export function parseSchema(text: string, opts: ParseOptions = {}): { schema: Sc
         schema.rules.push(r);
       }
   }
+  for (const [name, v, path] of section("wizards")) {
+    unknownKeys(v, ["id", "title", "description", "params", "sheet", "position", "spacing", "steps", "rows"], path);
+    const w: WizardDef = { id: idOf(v, PREFIX.wizards, path, priorDef("wizards", name)), name, params: {}, sheet: { name }, rows: [] };
+    for (const key of ["title", "description"] as const) {
+      const x = optString(v, key, path);
+      if (x !== undefined) w[key] = x;
+    }
+    if (v.params !== undefined) {
+      if (!isObj(v.params)) issue(`${path}.params`, "Parameters are a map of names to definitions");
+      else
+        for (const [p, def] of Object.entries(v.params)) {
+          const d = typeof def === "string" ? { type: def } : def;
+          if (!isObj(d) || typeof d.type !== "string") {
+            issue(`${path}.params.${p}`, "A parameter needs a type");
+            continue;
+          }
+          unknownKeys(d, ["type", "required", "default", "description", "pattern", "minItems", "maxItems"], `${path}.params.${p}`);
+          w.params[p] = d as unknown as WizardParam;
+        }
+    }
+    if (v.sheet !== undefined) {
+      const sh = typeof v.sheet === "string" ? { name: v.sheet } : v.sheet;
+      if (!isObj(sh) || typeof sh.name !== "string") issue(`${path}.sheet`, "The sheet is a name, or { name, pack, create }");
+      else {
+        unknownKeys(sh, ["name", "pack", "create"], `${path}.sheet`);
+        w.sheet = { name: sh.name };
+        if (typeof sh.pack === "string") w.sheet.pack = sh.pack;
+        if (sh.create === true) w.sheet.create = true;
+      }
+    }
+    if (v.position !== undefined) {
+      if (v.position !== "end" && v.position !== "afterLastGroup" && v.position !== "cursor") issue(`${path}.position`, 'The position is "end", "afterLastGroup" or "cursor"');
+      else w.position = v.position;
+    }
+    if (v.spacing !== undefined) {
+      if (typeof v.spacing !== "number" || !Number.isInteger(v.spacing) || v.spacing < 0) issue(`${path}.spacing`, "Spacing is a number of blank rows");
+      else w.spacing = v.spacing;
+    }
+    if (v.steps !== undefined) {
+      if (!Array.isArray(v.steps)) issue(`${path}.steps`, "Steps are a list");
+      else w.steps = (v.steps as unknown[]).filter((x, i) => isObj(x) || (issue(`${path}.steps.${i}`, "Expected a map"), false)) as WizardStep[];
+    }
+    if (!Array.isArray(v.rows)) issue(`${path}.rows`, "A wizard needs rows: a list of the entities it makes");
+    else w.rows = (v.rows as unknown[]).filter((x, i) => isObj(x) || (issue(`${path}.rows.${i}`, "Expected a map"), false)) as WizardRow[];
+    schema.wizards.push(w);
+  }
   return { schema, issues };
 }
 
@@ -282,14 +332,15 @@ function collectIds(v: unknown, out: Set<Id>): void {
   if (Array.isArray(v)) v.forEach((x) => collectIds(x, out));
   else if (isObj(v)) {
     if (typeof v.id === "string") out.add(v.id);
-    Object.values(v).forEach((x) => collectIds(x, out));
+    // A wizard's rows and steps hold entity ID templates (`mail_{key}`), not schema IDs.
+    for (const [k, x] of Object.entries(v)) if (k !== "rows" && k !== "steps" && k !== "params") collectIds(x, out);
   }
 }
 
 // ------------------------------------------------------------ write
 
-/** Print a schema as YAML. Deterministic; `parseSchema(formatSchema(s))` gives `s` back. */
-/** The schema as YAML text. An item with an empty ID is written without one: reading it back gives it a new one (§5.8). */
+/**
+ * The schema as YAML text. Deterministic: `parseSchema(formatSchema(s))` gives `s` back. An item with an empty ID is written without one: reading it back gives it a new one (§5.8). */
 export function formatSchema(s: Schema): string {
   const out: string[] = [];
   const block = (key: string, items: { name: string }[], body: (item: never) => string[]) => {
@@ -340,6 +391,16 @@ export function formatSchema(s: Schema): string {
       return lines;
     }),
   );
+  // Wizards: as written, under their ID (their parts are data, printed as YAML prints them).
+  if (s.wizards.length) {
+    if (out.length) out.push("");
+    out.push("wizards:");
+    for (const w of s.wizards) {
+      const { id, name, ...body } = w;
+      const lines = stringifyYaml({ ...(id ? { id } : {}), ...body }, { lineWidth: 0 }).trimEnd().split("\n");
+      out.push(`  ${name}:`, ...lines.map((l) => `    ${l}`));
+    }
+  }
   if (s.rules.length) {
     if (out.length) out.push("");
     out.push("rules:");

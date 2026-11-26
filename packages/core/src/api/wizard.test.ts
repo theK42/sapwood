@@ -1,0 +1,148 @@
+import { describe, expect, it } from "vitest";
+import { canonDoc, cloneDoc } from "../ops/doc.ts";
+import { resolveSchema } from "../schema/resolve.ts";
+import { formatSchema, parseSchema } from "../schema/yaml.ts";
+import { ApiError, Sapwood } from "./sapwood.ts";
+import { needsDeveloper } from "./wizard.ts";
+
+// DESIGN §9.3's example.
+const SCHEMA = `
+structs:
+  RewardSpec: { fields: { item: string, amount: int } }
+types:
+  MailMessage: { fields: { subject: string, format: "ref<Format>", rewards: "list<ref<Reward>>", cost: float, urgent: bool } }
+  Format: { fields: { template: string } }
+  Reward: { fields: { item: string, amount: int } }
+  Note: { fields: { text: string } }
+wizards:
+  RewardedMail:
+    title: "New rewarded mail"
+    params:
+      key: { type: string, required: true, pattern: "^[a-z0-9_]+$" }
+      subject: { type: string, required: true }
+      rewards: { type: "list<struct<RewardSpec>>", minItems: 1 }
+      tier: { type: int, default: 1 }
+      urgent: { type: bool }
+      pack: { type: pack, default: root }
+    sheet: { pack: "{pack}", name: RewardedMail, create: true }
+    position: afterLastGroup
+    spacing: 1
+    rows:
+      - type: MailMessage
+        id: "mail_{key}"
+        fields: { subject: "{subject}", format: "fmt_{key}", rewards: "{rewardRows.ids}", cost: "=10*{tier}", urgent: "{urgent}" }
+      - type: Format
+        id: "fmt_{key}"
+        fields: { template: standard }
+      - name: rewardRows
+        forEach: rewards
+        as: r
+        type: Reward
+        id: "rwd_{key}_{r.index}"
+        fields: { item: "{r.item}", amount: "{r.amount}" }
+      - type: Note
+        id: "note_{key}"
+        when: urgent
+        fields: { text: "Urgent: {subject}" }
+`;
+const project = () => Sapwood.load(SCHEMA, { sheets: [{ name: "Other", rows: [["Note", "n0", "hi"]] }] });
+const welcome = { key: "welcome", subject: "Welcome!", rewards: [{ item: "gold", amount: 100 }, { item: "gem", amount: 1 }] };
+
+describe("wizards (DESIGN §9.3)", () => {
+  it("read and written as YAML, and checked when the schema resolves", () => {
+    const s = parseSchema(SCHEMA);
+    expect(s.issues).toEqual([]);
+    expect(resolveSchema(s.schema).issues).toEqual([]);
+    const w = s.schema.wizards[0]!;
+    expect(w).toMatchObject({ name: "RewardedMail", title: "New rewarded mail", position: "afterLastGroup", spacing: 1, sheet: { name: "RewardedMail", create: true } });
+    expect(w.id).toMatch(/^w/);
+    const text = formatSchema(s.schema);
+    expect(formatSchema(parseSchema(text, { existing: s.schema }).schema)).toBe(text);
+    // What the checks catch.
+    const bad = parseSchema(SCHEMA.replace("type: Format\n", "type: Nope\n").replace("{subject}\", format", "{subjet}\", format").replace("forEach: rewards", "forEach: subject"));
+    const msgs = resolveSchema(bad.schema).issues.map((i) => i.message);
+    expect(msgs.some((m) => m.includes('Unknown type "Nope"'))).toBe(true);
+    expect(msgs.some((m) => m.includes("{subjet} names no parameter"))).toBe(true);
+    expect(msgs.some((m) => m.includes("subject isn't a list"))).toBe(true);
+  });
+
+  it("a run: its rows in order, filled in, on a sheet it makes; the next goes after it", () => {
+    const s = project();
+    const before = canonDoc(cloneDoc(s.doc));
+    const { report } = s.runWizard("RewardedMail", welcome);
+    expect(report.sheets).toEqual(["RewardedMail"]);
+    expect(report.made.map((m) => `${m.id}@${m.cell}`)).toEqual(["mail_welcome@A1", "fmt_welcome@A2", "rwd_welcome_0@A3", "rwd_welcome_1@A4"]);
+    expect(s.get("mail_welcome")).toMatchObject({ subject: "Welcome!", format: "fmt_welcome", rewards: ["rwd_welcome_0", "rwd_welcome_1"], cost: { $value: 10, $formula: "=10*1" } });
+    expect(s.get("rwd_welcome_1")).toMatchObject({ item: "gem", amount: 1 });
+    expect(report.issues).toEqual([]);
+    // Another run: after the last group, one blank row between.
+    const r2 = s.runWizard("RewardedMail", { key: "back", subject: "Come back", rewards: [{ item: "gold", amount: 5 }], tier: 3, urgent: true }).report;
+    expect(r2.made.map((m) => `${m.id}@${m.cell}`)).toEqual(["mail_back@A6", "fmt_back@A7", "rwd_back_0@A8", "note_back@A9"]);
+    expect(s.get("mail_back").cost).toMatchObject({ $value: 30 });
+    expect(s.get("note_back").text).toBe("Urgent: Come back");
+    expect(s.validate().errors).toBe(0);
+    s.undo();
+    s.undo();
+    expect(canonDoc(s.doc)).toEqual(before);
+  });
+
+  it("refused, saying why: parameters that don't do, an ID that exists", () => {
+    const s = project();
+    const msg = (p: Record<string, unknown>) => {
+      try {
+        s.runWizard("RewardedMail", p);
+      } catch (e) {
+        return (e as ApiError).message;
+      }
+      return "ran";
+    };
+    expect(msg({ subject: "x", rewards: [] })).toBe("New rewarded mail can't run: key is required; rewards needs at least 1 item");
+    expect(msg({ ...welcome, key: "Bad Key" })).toMatch(/key must match/);
+    expect(msg({ ...welcome, nope: 1 })).toMatch(/has no parameter nope/);
+    expect(msg({ ...welcome, key: "n0" }).length).toBeGreaterThan(0);
+    s.runWizard("RewardedMail", welcome);
+    expect(msg(welcome)).toMatch(/ID "mail_welcome" is taken/);
+  });
+
+  it("a preview changes nothing; as a patch; at the cursor", () => {
+    const s = project();
+    const before = canonDoc(cloneDoc(s.doc));
+    expect(s.previewWizard("RewardedMail", welcome).made.length).toBe(4);
+    expect(canonDoc(s.doc)).toEqual(before);
+    s.apply([{ op: "runWizard", wizard: "RewardedMail", params: welcome }]);
+    expect(s.get("fmt_welcome").$sheet).toBe("RewardedMail");
+  });
+
+  it("steps that make a pack and a sheet first; a run at the selected row", () => {
+    const schema = SCHEMA + `
+  Event:
+    params: { key: { type: string, required: true } }
+    steps:
+      - createPack: "event_{key}"
+        editors: true
+      - createSheet: Notes
+        pack: "event_{key}"
+    sheet: { pack: "event_{key}", name: Notes }
+    rows:
+      - { type: Note, id: "intro_{key}", fields: { text: "About {key}" } }
+  Here:
+    params: { key: { type: string, required: true } }
+    sheet: Other
+    position: cursor
+    rows:
+      - { type: Note, id: "here_{key}" }
+`;
+    const s = Sapwood.load(schema, { sheets: [{ name: "Other", rows: [["Note", "n0", "hi"], ["Note", "n1", "yo"]] }] });
+    const r = s.runWizard("Event", { key: "spring" }).report;
+    expect([r.packs, r.sheets]).toEqual([["event_spring"], ["Notes"]]);
+    expect(s.get("intro_spring")).toMatchObject({ $pack: "event_spring", $sheet: "Notes", text: "About spring" });
+    // At row 2 of Other: between n0 and n1.
+    s.runWizard("Here", { key: "x" }, { cursor: { sheet: "Other", row: 2 } });
+    expect(s.query("Note", { pack: "root" }).map((e) => e.$id)).toEqual(["n0", "here_x", "n1"]);
+    // Without a cursor it goes at the end.
+    s.runWizard("Here", { key: "y" });
+    expect(s.query("Note", { pack: "root" }).map((e) => e.$id)).toEqual(["n0", "here_x", "n1", "here_y"]);
+    const ws = s.project.schema.schema.wizards;
+    expect(ws.map((w) => [w.name, needsDeveloper(w)])).toEqual([["RewardedMail", false], ["Event", false], ["Here", false]]);
+  });
+});

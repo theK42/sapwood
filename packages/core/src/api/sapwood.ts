@@ -15,6 +15,7 @@ import type { Doc } from "../ops/doc.ts";
 import { cellKey, cloneDoc, OpError, splitCellKey } from "../ops/doc.ts";
 import { followMove, moveReach, type Moved, type ReachBreak } from "./move.ts";
 import { suggestMoves, type MoveSuggestion } from "./suggest.ts";
+import { planWizard } from "./wizard.ts";
 import { applyOp, undoAll, type Op } from "../ops/ops.ts";
 import { renameFieldMentions, renameIdFormulas, renameMemberMentions, renameTypeMentions, type Mention } from "../ops/rename.ts";
 import { isSection, schemaNodes } from "../ops/schema.ts";
@@ -93,7 +94,25 @@ export type Patch =
   | { op: "movePack"; name: string; parent: string }
   | { op: "renameSheet"; name: string; to: string; pack?: string }
   | { op: "moveSheet"; name: string; to: string; pack?: string }
-  | { op: "moveEntities"; ids: string[]; pack: string; sheet?: string };
+  | { op: "moveEntities"; ids: string[]; pack: string; sheet?: string }
+  | { op: "runWizard"; wizard: string; params: Record<string, JsonValue>; cursor?: WizardCursor };
+
+/** Where a wizard launched from a sheet inserts (`position: cursor`): the selected row, 1-based. */
+export interface WizardCursor {
+  sheet: string;
+  pack?: string;
+  row: number;
+}
+
+/** What a wizard's run made (DESIGN §9.3). */
+export interface WizardReport {
+  made: { id: string; type: string; sheet: string; cell: string }[];
+  /** Sheets and packs it made first. */
+  sheets: string[];
+  packs: string[];
+  /** Issues the run adds. */
+  issues: IssueJson[];
+}
 
 /**
  * Where a new entity goes (DESIGN §9.3). The pack is the root unless given. With no sheet:
@@ -476,6 +495,132 @@ export class Sapwood {
     return suggestMoves(this.project, opts.pack === undefined ? undefined : this.packId(opts.pack));
   }
 
+  /**
+   * Run a wizard (DESIGN §9.3) with these parameters: the packs and sheets its steps make (if
+   * they aren't there), then its rows, contiguous, on its sheet (made if it says `create`): at
+   * the end, after its last run there (`afterLastGroup`), or at the selected row (`cursor`, with
+   * `opts.cursor`), with `spacing` blank rows before them. One change. Refused, saying why, when
+   * a parameter doesn't do, or an ID it would make exists.
+   */
+  runWizard(name: string, params: Record<string, unknown>, opts: { cursor?: WizardCursor } = {}): Change & { report: WizardReport } {
+    const before = this.validate().issues;
+    let made: { sheet: SheetId; row: RowId; id: string; type: string }[] = [];
+    let sheets: string[] = [];
+    let packs: string[] = [];
+    const change = this.write(() => {
+      const r = this.wizardOps(name, params, opts.cursor);
+      ({ made, sheets, packs } = r);
+      return { ops: r.ops, formulas: [] };
+    });
+    const report: WizardReport = {
+      made: made.map((m) => ({ id: m.id, type: m.type, sheet: this.project.wb.sheet(m.sheet).name, cell: this.address(m.sheet, m.row, this.colAt(m.sheet, 1)).cell })),
+      sheets,
+      packs,
+      issues: newIssues(before, this.validate().issues),
+    };
+    return { ...change, report };
+  }
+
+  /** What runWizard would make, without making it. */
+  previewWizard(name: string, params: Record<string, unknown>, opts: { cursor?: WizardCursor } = {}): WizardReport {
+    const copy = Sapwood.fromDoc(cloneDoc(this.project.doc));
+    copy.project.wb.idSalt = this.project.wb.idSalt;
+    return copy.runWizard(name, params, opts).report;
+  }
+
+  private wizardOps(name: string, params: Record<string, unknown>, cursor: WizardCursor | undefined) {
+    const wb = this.project.wb;
+    const w = this.schema.schema.wizards.find((x) => x.name === name);
+    if (!w) throw new ApiError("not-found", `No wizard called ${name}`);
+    const { plan, problems } = planWizard(w, params);
+    if (!plan) throw new ApiError("bad-value", `${w.title ?? name} can't run: ${problems.join("; ")}`);
+    const packs: string[] = [];
+    const sheets: string[] = [];
+    // The steps: packs, then sheets, each only if it isn't there.
+    for (const p of plan.packs) {
+      if ([...wb.packs.values()].some((x) => x.name === p.name)) continue;
+      if (p.name === "" || p.name.includes("/")) throw new ApiError("bad-value", `A pack's name is non-empty text without a / (got "${p.name}")`);
+      let id = p.name;
+      for (let i = 1; this.project.doc.packs.has(id); i++) id = `p${wb.idSalt}${i}`;
+      this.stage({ kind: "createPack", pack: id, name: p.name, parent: this.packId(p.parent) });
+      packs.push(p.name);
+    }
+    for (const s of plan.sheets) {
+      const pack = this.packId(s.pack);
+      if (wb.findSheet(pack, s.name)) continue;
+      this.stage({ kind: "createSheet", sheet: wb.freshSheetId(), name: s.name, pack, sheetKind: "data" });
+      sheets.push(s.name);
+    }
+    // Where the rows go.
+    let sheet: SheetId;
+    let after: RowId | null;
+    let spacing = w.spacing ?? 0;
+    if (w.position === "cursor" && cursor) {
+      sheet = this.dataSheet(cursor.sheet, cursor.pack);
+      const live = wb.sheet(sheet).rows.liveIds();
+      if (!Number.isInteger(cursor.row) || cursor.row < 1) throw new ApiError("bad-value", "The cursor is a row number, from 1");
+      after = cursor.row > 1 ? (live[Math.min(cursor.row, live.length + 1) - 2] ?? null) : null;
+      if (cursor.row > live.length + 1) this.growRows(sheet, cursor.row - 1);
+      spacing = 0;
+    } else {
+      const pack = this.packId(plan.sheet.pack);
+      const found = wb.findSheet(pack, plan.sheet.name);
+      if (!found) {
+        if (!plan.sheet.create) throw new ApiError("not-found", `No sheet called ${plan.sheet.name} in pack ${plan.sheet.pack}: the wizard doesn't make it`);
+        sheet = this.newSheet(plan.sheet.name, pack);
+        sheets.push(plan.sheet.name);
+      } else {
+        if (found.kind !== "data") throw new ApiError("bad-value", `${plan.sheet.name} is a scratch sheet: entities live on data sheets`);
+        sheet = found.id;
+      }
+      after = this.lastUsedRow(sheet);
+      if (w.position === "afterLastGroup") {
+        const flags = this.project.doc.sheets.get(sheet)!.rowFlags;
+        const last = [...wb.sheet(sheet).rows.liveIds()].reverse().find((r) => flags.get(r)?.has(`wizard:${name}`));
+        if (last !== undefined) after = last;
+      }
+    }
+    if (after === null) spacing = 0;
+    this.growColumns(sheet, 2);
+    const ids = wb.sheet(sheet).rows.freshIds(spacing + plan.rows.length);
+    if (ids.length) this.stage({ kind: "insert", sheet, axis: "row", after, ids });
+    const ops: Op[] = [];
+    const made: { sheet: SheetId; row: RowId; id: string; type: string }[] = [];
+    plan.rows.forEach((pr, i) => {
+      const row = ids[spacing + i]!;
+      const t = this.schema.types.get(pr.type);
+      if (!t || t.def.singleton) throw new ApiError("unknown-type", `No entity type called ${pr.type}`);
+      const id = this.newId(pr.id);
+      ops.push(
+        this.cellOp(sheet, row, this.colAt(sheet, 1), { v: pr.type }),
+        this.cellOp(sheet, row, this.colAt(sheet, 2), { v: id }),
+        { kind: "setRowFlag", sheet, row, flag: `wizard:${name}`, on: true },
+      );
+      const e: Entity = { type: pr.type, id, pack: wb.sheet(sheet).pack, at: { sheet, row }, active: true, fields: new Map() };
+      for (const [k, v] of Object.entries(pr.fields)) {
+        // Text for a field that isn't text is read as it would be typed: JSON, a number, TRUE.
+        const kind = t.fieldByName.get(k)?.def.type.kind;
+        let value: JsonValue = v;
+        if (typeof v === "string" && kind && ["list", "struct", "union", "json", "int", "float", "bool"].includes(kind))
+          try {
+            value = JSON.parse(kind === "bool" ? v.toLowerCase() : v) as JsonValue;
+          } catch {
+            // left as text: the field says what's wrong
+          }
+        ops.push(...this.fieldOps(e, k, value, false));
+      }
+      made.push({ sheet, row, id, type: pr.type });
+    });
+    return { ops, made, sheets, packs };
+  }
+
+  /** Rows up to `count`, made now if the sheet is shorter, as growColumns does columns. */
+  private growRows(sheet: SheetId, count: number): void {
+    const rows = this.project.wb.sheet(sheet).rows;
+    if (rows.length >= count) return;
+    this.stage({ kind: "insert", sheet, axis: "row", after: this.project.doc.sheets.get(sheet)!.rows.order.at(-1) ?? null, ids: rows.freshIds(count - rows.length) });
+  }
+
   /** What moveEntities would do, without doing it. */
   previewMove(ids: readonly string[], pack: string, opts: { sheet?: string } = {}): MoveReport {
     const copy = Sapwood.fromDoc(cloneDoc(this.project.doc));
@@ -667,6 +812,8 @@ export class Sapwood {
         return this.createPack(p.name, p.parent);
       case "renamePack":
         return this.renamePack(p.name, p.to);
+      case "runWizard":
+        return this.runWizard(p.wizard, p.params ?? {}, p.cursor === undefined ? {} : { cursor: p.cursor });
       case "moveEntities":
         return this.moveEntities(p.ids, p.pack, p.sheet === undefined ? {} : { sheet: p.sheet });
       case "movePack":

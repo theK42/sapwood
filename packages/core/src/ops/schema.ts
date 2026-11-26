@@ -19,7 +19,7 @@ import { stableJson } from "../formula/content.ts";
 import type { FieldType, Id, Schema } from "../schema/model.ts";
 import { OpError } from "./doc.ts";
 
-export const SECTIONS = ["enums", "traits", "structs", "unions", "types", "rules"] as const;
+export const SECTIONS = ["enums", "traits", "structs", "unions", "types", "rules", "wizards"] as const;
 export type Section = (typeof SECTIONS)[number];
 
 /** A definition or a field, as it is in the schema. */
@@ -186,6 +186,8 @@ export function mapDefNames(parent: SchemaParent, key: string | null, value: unk
   if (key !== null) {
     if (key === "type" && field && value && typeof value === "object") return mapTypeNames(value as FieldType, f);
     if (key === "type" && parent === "rules" && typeof value === "string") return f(value);
+    // A wizard's rows name types.
+    if (key === "rows" && parent === "wizards" && Array.isArray(value)) return value.map((r) => (r && typeof r === "object" && typeof (r as { type?: unknown }).type === "string" ? { ...r, type: f((r as { type: string }).type) } : r));
     if ((key === "traits" && (parent === "types" || parent === "traits")) || (key === "variants" && parent === "unions")) return names(value);
     return value;
   }

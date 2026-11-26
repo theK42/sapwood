@@ -5,6 +5,7 @@ export * from "./api/sapwood.ts";
 export * from "./api/where.ts";
 export * from "./api/move.ts";
 export * from "./api/suggest.ts";
+export * from "./api/wizard.ts";
 
 export * from "./schema/model.ts";
 export * from "./schema/yaml.ts";
