@@ -9,7 +9,7 @@ import { HeadView } from "./head.ts";
 import { ChangesPage, CommitPage, HistoryPage } from "./History.tsx";
 import { routeFromPath, routePath, TABS, tabOf, tabTarget, type Route, type Tab } from "./routes.ts";
 import { SearchBox } from "./SearchBox.tsx";
-import type { Hit } from "./search.ts";
+import type { CellHit, Hit } from "./search.ts";
 import { IssuePanel } from "./IssuePanel.tsx";
 import { refList } from "./refs.ts";
 import { RefsPanel } from "./RefsPanel.tsx";
@@ -269,8 +269,12 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
     setJump((j) => ({ sheet: sh, row, col, n: (j?.n ?? 0) + 1 }));
   };
   const findRefs = (id: string) => setSide({ kind: "refs", id });
-  /** A search hit: an entity or a type on the entity page, a sheet; or the other way (`other`). */
-  const openHit = (h: Hit, other: boolean) => {
+  /** A search hit: an entity or a type on the entity page, a sheet, a cell on its sheet; or the other way (`other`). */
+  const openHit = (h: Hit | CellHit, other: boolean) => {
+    if (h.kind === "cell") {
+      if (other && h.entity?.id) return go(branch, { kind: "entities", type: h.entity.type, id: h.entity.id });
+      return goTo(h.sheet, h.rowPos, h.colPos);
+    }
     if (h.kind === "sheet") return go(branch, { kind: "sheet", id: h.id });
     if (h.kind === "type") return go(branch, other ? { kind: "type", name: h.name } : { kind: "entities", type: h.name, id: null });
     const pos = source?.project.wb.sheet(h.at.sheet).rows.posOf(h.at.row);

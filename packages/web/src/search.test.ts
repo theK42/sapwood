@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { loadProject, Sapwood } from "@thek42/sapwood-core";
-import { rank, score, search } from "./search.ts";
+import { cellIndex, rank, score, search, searchCells } from "./search.ts";
 
 const fixture = (f: string) => readFileSync(new URL(`../../core/fixtures/krbsg/${f}`, import.meta.url), "utf8");
 const krbsg = () => loadProject(fixture("schema.yaml"), fixture("project.yaml")).project;
@@ -45,5 +45,35 @@ describe("search", () => {
     s.commentOut("tex_star1");
     const after = names(search(p, "tex_star").hits).filter((x) => x.startsWith("entity"));
     expect(after.at(-1)).toBe("entity tex_star1");
+  });
+
+  it("inside cells: part of a string, a token's uses, formulas, and what each cell holds", () => {
+    const p = krbsg();
+    const idx = cellIndex(p);
+    const lua = searchCells(p, idx, ".lua");
+    expect(lua.hits.map((h) => h.text).sort()).toEqual(["Flyoff.lua", "blaster.lua", "blaster_bolt.lua", "enemyShip.lua"]);
+    expect(lua.hits[0]).toMatchObject({ kind: "cell", text: "enemyShip.lua", entity: { id: "basic_enemy", type: "Enemy", field: "script" } });
+    // Sheets in the pack tree's order: the root's first.
+    const level1 = new Sapwood(p);
+    level1.apply([{ op: "createPack", name: "level1" }, { op: "createSheet", name: "Extra", pack: "level1" }, { op: "create", type: "Enemy", sheet: "Extra", pack: "level1", fields: { $id: "e_late", sprite: "spr_ship", script: "late.lua", collider: "house" } }]);
+    const tree = searchCells(p, cellIndex(p), ".lua").hits.map((h) => h.address);
+    expect(tree.at(-1)).toBe("level1 / Extra!D1");
+    // A token: the cells that are exactly it first (its uses, and its own ID), then those that contain it.
+    const tex = searchCells(p, idx, "Textured");
+    expect(tex.hits[0]!.text).toBe("Textured");
+    expect(tex.hits.every((h) => /textured/i.test(h.text))).toBe(true);
+    expect(tex.hits.some((h) => h.entity?.field === "shader")).toBe(true);
+    expect(tex.hits.some((h) => h.entity?.field === "$id" && h.entity.type === "Shader")).toBe(true);
+    // Every word must be there; the limit cuts the list and counts the rest.
+    expect(searchCells(p, idx, "blaster lua").hits.map((h) => h.text)).toEqual(["blaster.lua", "blaster_bolt.lua"]);
+    const few = searchCells(p, idx, "spr_", 2);
+    expect([few.hits.length, few.more > 0]).toEqual([2, true]);
+  });
+
+  it("finds a formula by its text, and its value by what it shows", () => {
+    const p = loadProject("types:\n  T: { fields: { n: float } }\n", { sheets: [{ name: "S", rows: [["T", "a", 4], ["T", "b", "=C1*2.5"]] }] }).project;
+    const idx = cellIndex(p);
+    expect(searchCells(p, idx, "C1*2").hits).toMatchObject([{ text: "10", formula: "=C1*2.5", entity: { id: "b", field: "n" } }]);
+    expect(searchCells(p, idx, "10").hits.map((h) => h.address)).toEqual(["S!C2"]);
   });
 });
