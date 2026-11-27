@@ -57,3 +57,79 @@ export function packTree(doc: Doc, issues: readonly Issue[]): Tree {
   };
   return { root: node(rootPack(doc)), project };
 }
+
+// ------------------------------------------------------------ dragging in the tree
+
+/** What's being dragged: a sheet (in its pack) or a pack. */
+export type Dragged = { kind: "sheet"; id: string; pack: string } | { kind: "pack"; id: string };
+
+/** Where it's dropped: before or after a sheet, or before, after or into a pack. */
+export type DropAt = { on: "sheet"; id: string; where: "before" | "after" } | { on: "pack"; id: string; where: "before" | "after" | "into" };
+
+/**
+ * The patches a drop makes, as one change: reordering among siblings, or moving into another
+ * pack and placing it there. Empty when it changes nothing; null when it can't be dropped
+ * there (a pack into itself or its own packs, a sheet before or after a pack, the root moved).
+ */
+export function dropPatches(root: PackNode, d: Dragged, at: DropAt): Record<string, unknown>[] | null {
+  const packs = new Map<string, { node: PackNode; parent: PackNode | null }>();
+  const walk = (n: PackNode, parent: PackNode | null) => {
+    packs.set(n.id, { node: n, parent });
+    for (const q of n.packs) walk(q, n);
+  };
+  walk(root, null);
+  /** The one to go after, so as to land just before or after `target` among `list` (without the one moving). */
+  const afterOf = (list: string[], me: string, target: string, where: "before" | "after"): string | null => {
+    const rest = list.filter((x) => x !== me);
+    const i = rest.indexOf(target);
+    return where === "after" ? target : i > 0 ? rest[i - 1]! : null;
+  };
+
+  if (d.kind === "sheet") {
+    const from = packs.get(d.pack)?.node;
+    const me = from?.sheets.find((s) => s.id === d.id);
+    if (!from || !me) return null;
+    let to: PackNode;
+    let after: string | null | undefined; // undefined: wherever a move puts it (last)
+    if (at.on === "sheet") {
+      const owner = [...packs.values()].find((p) => p.node.sheets.some((s) => s.id === at.id))?.node;
+      if (!owner) return null;
+      if (at.id === d.id) return [];
+      to = owner;
+      const names = owner.sheets.map((s) => s.name);
+      after = afterOf(names, me.name, owner.sheets.find((s) => s.id === at.id)!.name, at.where);
+    } else {
+      if (at.where !== "into") return null;
+      to = packs.get(at.id)!.node;
+      if (to.id === from.id) return [];
+    }
+    const out: Record<string, unknown>[] = [];
+    if (to.id !== from.id) out.push({ op: "moveSheet", name: me.name, to: to.name, pack: from.name });
+    if (after !== undefined) {
+      const was = from.sheets.map((s) => s.name);
+      const before = was.indexOf(me.name) > 0 ? was[was.indexOf(me.name) - 1]! : null;
+      if (to.id !== from.id || before !== after) out.push({ op: "orderSheet", name: me.name, after, pack: to.name });
+    }
+    return out;
+  }
+
+  const me = packs.get(d.id);
+  if (!me || me.parent === null || at.on !== "pack") return null;
+  const target = packs.get(at.id);
+  if (!target) return null;
+  // Not into itself, nor anything inside it.
+  for (let p: { node: PackNode; parent: PackNode | null } | undefined = target; p; p = p.parent ? packs.get(p.parent.id) : undefined) if (p.node.id === d.id) return at.id === d.id ? [] : null;
+  const out: Record<string, unknown>[] = [];
+  if (at.where === "into") {
+    if (me.parent.id !== target.node.id) out.push({ op: "movePack", name: me.node.name, parent: target.node.name });
+    return out;
+  }
+  if (target.parent === null) return null; // beside the root: nowhere
+  if (me.parent.id !== target.parent.id) out.push({ op: "movePack", name: me.node.name, parent: target.parent.name });
+  const siblings = target.parent.packs.map((q) => q.name);
+  const after = afterOf(siblings, me.node.name, target.node.name, at.where);
+  const was = me.parent.packs.map((q) => q.name);
+  const before = was.indexOf(me.node.name) > 0 ? was[was.indexOf(me.node.name) - 1]! : null;
+  if (me.parent.id !== target.parent.id || before !== after) out.push({ op: "orderPack", name: me.node.name, after });
+  return out;
+}

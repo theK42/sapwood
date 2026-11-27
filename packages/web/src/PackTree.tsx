@@ -3,10 +3,15 @@
 // it, rename, move to another pack, move up or down among its siblings, or delete (asked
 // first; undo brings it back). Sheets are an Editor's to make, rename, move, order and delete;
 // packs a Developer's (§11.2). Names are typed in place: Enter to keep, Escape to leave it.
+//
+// Sheets and packs can be dragged: a sheet above or below another (of its pack, or of another,
+// which moves it there), or onto a pack's name to go last in it; a pack above or below another,
+// or onto the middle of a pack's name to go inside it. A line shows where it would land; each
+// drop is one change.
 
-import { useEffect, useRef, useState } from "react";
-import type { Change, Sapwood } from "@thek42/sapwood-core";
-import type { Counts, PackNode, SheetNode } from "./home.ts";
+import { useEffect, useRef, useState, type DragEvent } from "react";
+import type { Change, Patch, Sapwood } from "@thek42/sapwood-core";
+import { dropPatches, type Counts, type DropAt, type Dragged, type PackNode, type SheetNode } from "./home.ts";
 import { plural } from "./hooks.ts";
 
 export interface TreeActions {
@@ -42,8 +47,63 @@ export function PackTree(p: Props) {
   };
   walk(p.root, 0, []);
   const name = (id: string) => all.find((x) => x.id === id)?.name ?? id;
-  return <Pack node={p.root} parent={null} depth={0} tree={{ ...p, typing, setTyping, all, name }} />;
+  // Dragging: what, and where it would land now.
+  const [drag, setDrag] = useState<Dragged | null>(null);
+  const [over, setOver] = useState<DropAt | null>(null);
+  const dnd: Dnd = {
+    drag,
+    over,
+    start: (d, e, label) => {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", label);
+      setTyping(null);
+      setDrag(d);
+    },
+    end: () => (setDrag(null), setOver(null)),
+    hover: (at, e) => {
+      if (!drag || dropPatches(p.root, drag, at) === null) return false;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      if (over?.on !== at.on || over.id !== at.id || over.where !== at.where) setOver(at);
+      return true;
+    },
+    drop: (at, e) => {
+      e.preventDefault();
+      const ps = drag ? dropPatches(p.root, drag, at) : null;
+      setDrag(null);
+      setOver(null);
+      if (ps && ps.length) p.actions.act((s) => s.apply(ps as Patch[]));
+    },
+  };
+  return (
+    <div className={drag ? "tree-dragging" : undefined} onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setOver(null)}>
+      <Pack node={p.root} parent={null} depth={0} tree={{ ...p, typing, setTyping, all, name, dnd }} />
+    </div>
+  );
 }
+
+interface Dnd {
+  drag: Dragged | null;
+  over: DropAt | null;
+  start(d: Dragged, e: DragEvent, label: string): void;
+  end(): void;
+  /** Over a place: true (and the drop allowed) if it can land there. */
+  hover(at: DropAt, e: DragEvent): boolean;
+  drop(at: DropAt, e: DragEvent): void;
+}
+
+/** The upper or lower half of what's under the pointer. */
+const half = (e: DragEvent): "before" | "after" => {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  return e.clientY < r.top + r.height / 2 ? "before" : "after";
+};
+/** On a pack's name: its top quarter is before it, the bottom quarter after, the rest into it. */
+const third = (e: DragEvent): "before" | "after" | "into" => {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  const y = (e.clientY - r.top) / r.height;
+  return y < 0.25 ? "before" : y > 0.75 ? "after" : "into";
+};
+const overClass = (over: DropAt | null, on: DropAt["on"], id: string) => (over && over.on === on && over.id === id ? ` drop-${over.where}` : "");
 
 /** Up or down among siblings: the one to go after (null: first), or undefined if it can't go that way. */
 function neighbour(names: string[], i: number, up: boolean): string | null | undefined {
@@ -64,6 +124,7 @@ function contentsOf(n: PackNode): { sheets: number; packs: number; rows: number 
 }
 
 interface Tree extends Props {
+  dnd: Dnd;
   typing: Typing;
   setTyping(t: Typing): void;
   all: { id: string; name: string; depth: number; inside: Set<string> }[];
@@ -97,9 +158,24 @@ function Pack({ node, parent, depth, tree, siblings = [] }: { node: PackNode; pa
         ]
       : []),
   ];
+  const { dnd } = tree;
+  const onPack = (e: DragEvent) => {
+    // A pack can go before, after or into; a sheet only into (last).
+    const where = dnd.drag?.kind === "pack" ? third(e) : "into";
+    if (!dnd.hover({ on: "pack", id: node.id, where }, e) && where !== "into") dnd.hover({ on: "pack", id: node.id, where: "into" }, e);
+  };
+  const draggable = a.packs && !isRoot && !mine;
   return (
     <div className="pack" style={{ marginLeft: isRoot ? 0 : 14 }}>
-      <div className="tree-row">
+      <div
+        className={`tree-row${overClass(dnd.over, "pack", node.id)}${dnd.drag?.kind === "pack" && dnd.drag.id === node.id ? " dragging" : ""}`}
+        draggable={draggable}
+        onDragStart={draggable ? (e) => dnd.start({ kind: "pack", id: node.id }, e, node.name) : undefined}
+        onDragEnd={dnd.end}
+        onDragOver={onPack}
+        onDrop={(e) => dnd.over && dnd.over.on === "pack" && dnd.over.id === node.id && dnd.drop(dnd.over, e)}
+        title={draggable ? "Drag to reorder, or onto another pack to move it there" : undefined}
+      >
         {mine === "renamePack" ? (
           <NameBox start={node.name} label="Pack name" done={(n) => (setTyping(null), n !== null && a.act((s) => s.renamePack(node.name, n)))} />
         ) : (
@@ -160,8 +236,18 @@ function SheetRow({ sheet: s, pack, tree }: { sheet: SheetNode; pack: PackNode; 
         },
       ]
     : [];
+  const { dnd } = tree;
+  const draggable = a.sheets && !mine;
   return (
-    <li className="tree-row">
+    <li
+      className={`tree-row${overClass(dnd.over, "sheet", s.id)}${dnd.drag?.kind === "sheet" && dnd.drag.id === s.id ? " dragging" : ""}`}
+      draggable={draggable}
+      onDragStart={draggable ? (e) => dnd.start({ kind: "sheet", id: s.id, pack: pack.id }, e, s.name) : undefined}
+      onDragEnd={dnd.end}
+      onDragOver={(e) => dnd.hover({ on: "sheet", id: s.id, where: half(e) }, e)}
+      onDrop={(e) => dnd.over && dnd.over.on === "sheet" && dnd.over.id === s.id && dnd.drop(dnd.over, e)}
+      title={draggable ? "Drag to reorder, or into another pack" : undefined}
+    >
       {mine === "renameSheet" ? (
         <NameBox start={s.name} label="Sheet name" done={(n) => (setTyping(null), n !== null && a.act((x) => x.renameSheet(s.name, n, { pack: pack.name })))} />
       ) : (
