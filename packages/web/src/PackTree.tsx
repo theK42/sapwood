@@ -1,7 +1,8 @@
 // The pack tree on the home page (DESIGN §7.1, §9.1): packs with their sheets and sub-packs,
 // each with its validation badges. Each pack and sheet has a ⋯ menu: a new sheet or pack in
-// it, rename, or move to another pack. Sheets are an Editor's to make, rename and move; packs
-// a Developer's (§11.2). Names are typed in place: Enter to keep, Escape to leave it.
+// it, rename, move to another pack, move up or down among its siblings, or delete (asked
+// first; undo brings it back). Sheets are an Editor's to make, rename, move, order and delete;
+// packs a Developer's (§11.2). Names are typed in place: Enter to keep, Escape to leave it.
 
 import { useEffect, useRef, useState } from "react";
 import type { Change, Sapwood } from "@thek42/sapwood-core";
@@ -44,6 +45,24 @@ export function PackTree(p: Props) {
   return <Pack node={p.root} parent={null} depth={0} tree={{ ...p, typing, setTyping, all, name }} />;
 }
 
+/** Up or down among siblings: the one to go after (null: first), or undefined if it can't go that way. */
+function neighbour(names: string[], i: number, up: boolean): string | null | undefined {
+  if (up) return i <= 0 ? undefined : i >= 2 ? names[i - 2]! : null;
+  return i < 0 || i >= names.length - 1 ? undefined : names[i + 1]!;
+}
+
+/** Everything in a pack, counted: its sheets, packs and rows, its own and its packs'. */
+function contentsOf(n: PackNode): { sheets: number; packs: number; rows: number } {
+  const out = { sheets: n.sheets.length, packs: n.packs.length, rows: n.sheets.reduce((k, s) => k + s.rows, 0) };
+  for (const q of n.packs) {
+    const c = contentsOf(q);
+    out.sheets += c.sheets;
+    out.packs += c.packs;
+    out.rows += c.rows;
+  }
+  return out;
+}
+
 interface Tree extends Props {
   typing: Typing;
   setTyping(t: Typing): void;
@@ -51,7 +70,7 @@ interface Tree extends Props {
   name(id: string): string;
 }
 
-function Pack({ node, parent, depth, tree }: { node: PackNode; parent: string | null; depth: number; tree: Tree }) {
+function Pack({ node, parent, depth, tree, siblings = [] }: { node: PackNode; parent: string | null; depth: number; tree: Tree; siblings?: PackNode[] }) {
   const [open, setOpen] = useState(true);
   const empty = node.sheets.length === 0 && node.packs.length === 0;
   const { actions: a, typing: t, setTyping } = tree;
@@ -63,6 +82,20 @@ function Pack({ node, parent, depth, tree }: { node: PackNode; parent: string | 
     ...(a.packs ? [{ label: "Rename…", run: () => setTyping({ kind: "renamePack", pack: node.id }) }] : []),
     ...(a.suggest && node.packs.length > 0 ? [{ label: "Suggest moves down…", run: () => a.suggest!(node.name) }] : []),
     ...(a.packs && !isRoot && tree.all.length > 2 ? [{ label: "Move to another pack…", run: () => setTyping({ kind: "movePack", pack: node.id }) }] : []),
+    ...(a.packs && !isRoot ? order(siblings.map((q) => q.name), node.name, (after) => a.act((s) => s.orderPack(node.name, after))) : []),
+    ...(a.packs && !isRoot
+      ? [
+          {
+            label: "Delete…",
+            danger: true,
+            run: () => {
+              const c = contentsOf(node);
+              const what = c.sheets || c.packs ? `, with ${[c.sheets && plural(c.sheets, "sheet"), c.packs && plural(c.packs, "pack")].filter(Boolean).join(" and ")}${c.rows ? ` (${plural(c.rows, "row")})` : ""}` : "";
+              if (confirm(`Delete the pack ${node.name}${what}? Undo brings it back.`)) a.act((s) => s.deletePack(node.name));
+            },
+          },
+        ]
+      : []),
   ];
   return (
     <div className="pack" style={{ marginLeft: isRoot ? 0 : 14 }}>
@@ -96,7 +129,7 @@ function Pack({ node, parent, depth, tree }: { node: PackNode; parent: string | 
           {empty && mine !== "newSheet" && mine !== "newPack" && <li className="muted small">Empty</li>}
           {node.packs.map((q) => (
             <li key={q.id} className="sub">
-              <Pack node={q} parent={node.id} depth={depth + 1} tree={tree} />
+              <Pack node={q} parent={node.id} depth={depth + 1} tree={tree} siblings={node.packs} />
             </li>
           ))}
           {mine === "newPack" && (
@@ -117,6 +150,14 @@ function SheetRow({ sheet: s, pack, tree }: { sheet: SheetNode; pack: PackNode; 
     ? [
         { label: "Rename…", run: () => setTyping({ kind: "renameSheet", sheet: s.id, pack: pack.id }) },
         ...(tree.all.length > 1 ? [{ label: "Move to another pack…", run: () => setTyping({ kind: "moveSheet", sheet: s.id, pack: pack.id }) }] : []),
+        ...order(pack.sheets.map((x) => x.name), s.name, (after) => a.act((x) => x.orderSheet(s.name, after, { pack: pack.name }))),
+        {
+          label: "Delete…",
+          danger: true,
+          run: () => {
+            if (confirm(`Delete the sheet ${s.name}${s.rows ? `, with its ${plural(s.rows, "row")}` : ""}? Undo brings it back.`)) a.act((x) => x.deleteSheet(s.name, { pack: pack.name }));
+          },
+        },
       ]
     : [];
   return (
@@ -195,8 +236,25 @@ function MoveBox(p: { label: string; options: { id: string; name: string; depth:
   );
 }
 
+/** "Move up" and "Move down" among siblings, where it can go that way. */
+function order(names: string[], me: string, go: (after: string | null) => void): MenuItem[] {
+  const i = names.indexOf(me);
+  const out: MenuItem[] = [];
+  const up = neighbour(names, i, true);
+  const down = neighbour(names, i, false);
+  if (up !== undefined) out.push({ label: "Move up", run: () => go(up) });
+  if (down !== undefined) out.push({ label: "Move down", run: () => go(down) });
+  return out;
+}
+
+interface MenuItem {
+  label: string;
+  run(): void;
+  danger?: boolean;
+}
+
 /** A ⋯ button with a short menu under it. */
-function RowMenu(p: { label: string; items: { label: string; run(): void }[] }) {
+function RowMenu(p: { label: string; items: MenuItem[] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
   useEffect(() => {
@@ -218,7 +276,7 @@ function RowMenu(p: { label: string; items: { label: string; run(): void }[] }) 
       {open && (
         <span className="menu-list row-menu-list" role="menu">
           {p.items.map((x) => (
-            <button key={x.label} role="menuitem" onClick={() => (setOpen(false), x.run())}>
+            <button key={x.label} role="menuitem" className={x.danger ? "danger" : undefined} onClick={() => (setOpen(false), x.run())}>
               {x.label}
             </button>
           ))}

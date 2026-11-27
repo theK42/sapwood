@@ -12,7 +12,8 @@ import type { ColId, PackId, RowId, SheetId, SheetKind } from "../formula/model.
 import { numberToCol } from "../formula/parse.ts";
 import { exportJson, valueJson, type ExportFile, type ExportOptions, type JsonOut } from "../export/json.ts";
 import type { Doc } from "../ops/doc.ts";
-import { cellKey, cloneDoc, OpError, splitCellKey } from "../ops/doc.ts";
+import { cellKey, cloneDoc, isLive, OpError, siblingBefore, splitCellKey } from "../ops/doc.ts";
+import type { Expr } from "../formula/bind.ts";
 import { followMove, moveReach, type Moved, type ReachBreak } from "./move.ts";
 import { suggestMoves, type MoveSuggestion } from "./suggest.ts";
 import { planWizard } from "./wizard.ts";
@@ -72,7 +73,8 @@ export type ApiErrorCode =
   | "bad-value"
   | "no-sheet" // a new entity's sheet can't be decided: say which
   | "bad-schema" // schema text that doesn't parse or resolve
-  | "confirm"; // the change turns cells holding data into scratch; pass force
+  | "confirm" // the change turns cells holding data into scratch; pass force
+  | "in-use"; // formulas elsewhere read what would be deleted: change them first
 
 export class ApiError extends Error {
   readonly code: ApiErrorCode;
@@ -94,6 +96,10 @@ export type Patch =
   | { op: "movePack"; name: string; parent: string }
   | { op: "renameSheet"; name: string; to: string; pack?: string }
   | { op: "moveSheet"; name: string; to: string; pack?: string }
+  | { op: "deleteSheet"; name: string; pack?: string }
+  | { op: "deletePack"; name: string }
+  | { op: "orderSheet"; name: string; after: string | null; pack?: string }
+  | { op: "orderPack"; name: string; after: string | null }
   | { op: "moveEntities"; ids: string[]; pack: string; sheet?: string }
   | { op: "runWizard"; wizard: string; params: Record<string, JsonValue>; cursor?: WizardCursor };
 
@@ -439,6 +445,111 @@ export class Sapwood {
       if (s.pack === pack) return { ops: [] };
       if (this.project.wb.findSheet(pack, s.name)) throw new ApiError("exists", `Pack ${to} has a sheet called ${s.name} already: rename one first`);
       return { ops: [{ kind: "setSheetPack", sheet, pack }] };
+    });
+  }
+
+  /**
+   * Delete a sheet and everything on it, as one change (undo brings it all back). Refused while
+   * formulas on other sheets read it: those would have nothing to read, so change them first.
+   * Refs to its entities from elsewhere show as issues.
+   */
+  deleteSheet(name: string, where: { pack?: string } = {}): Change {
+    return this.write(() => {
+      const sheet = this.anySheet(name, where.pack);
+      this.refuseReaders(new Set([sheet]), `${name} is read by formulas elsewhere`);
+      return { ops: [{ kind: "removeSheet", sheet }] };
+    });
+  }
+
+  /**
+   * Delete a pack with its sheets and its packs, as one change (undo brings them back). Not
+   * the root. Refused while formulas outside it read its sheets.
+   */
+  deletePack(name: string): Change {
+    return this.write(() => {
+      const wb = this.project.wb;
+      const id = this.packId(name);
+      if (id === wb.root) throw new ApiError("bad-value", "The root pack can't be deleted");
+      // The pack and those inside it, deepest last, so they're removed deepest first.
+      const packs: PackId[] = [id];
+      for (let i = 0; i < packs.length; i++) for (const p of wb.packs.values()) if (p.parent === packs[i]) packs.push(p.id);
+      const inside = new Set(packs);
+      const sheets = [...wb.sheets.values()].filter((s) => inside.has(s.pack)).map((s) => s.id);
+      this.refuseReaders(new Set(sheets), `Sheets in ${name} are read by formulas outside it`);
+      return { ops: [...sheets.map((sheet): Op => ({ kind: "removeSheet", sheet })), ...packs.reverse().map((pack): Op => ({ kind: "removePack", pack }))] };
+    });
+  }
+
+  /** Formulas on other sheets that read these: a refusal naming them, if there are any. */
+  private refuseReaders(sheets: Set<SheetId>, what: string): void {
+    const readers = this.formulasReading(sheets);
+    if (!readers.length) return;
+    const shown = readers.slice(0, 5).map((a) => `${a.sheet}!${a.cell}`);
+    throw new ApiError("in-use", `${what}: ${shown.join(", ")}${readers.length > 5 ? ` and ${readers.length - 5} more` : ""}. Change those formulas first.`);
+  }
+
+  /** Cells outside `sheets` whose formulas read a cell or range on one of them. */
+  formulasReading(sheets: Set<SheetId>): CellAddress[] {
+    const out: CellAddress[] = [];
+    const reads = (e: Expr): boolean => {
+      switch (e.k) {
+        case "ref":
+        case "range":
+          return sheets.has(e.sheet);
+        case "call":
+          return e.args.some(reads);
+        case "bin":
+          return reads(e.l) || reads(e.r);
+        case "neg":
+        case "pct":
+        case "field":
+          return reads(e.e);
+        default:
+          return false;
+      }
+    };
+    for (const s of this.project.doc.sheets.values()) {
+      if (sheets.has(s.id)) continue;
+      for (const [k, c] of s.cells) {
+        if (c === null || !("f" in c) || !reads(c.f)) continue;
+        const [row, col] = splitCellKey(k);
+        if (isLive(s.rows, row) && isLive(s.cols, col)) out.push(this.address(s.id, row, col));
+      }
+    }
+    return out;
+  }
+
+  /** Put a sheet right after another of its pack (by name), or first with `after: null`. */
+  orderSheet(name: string, after: string | null, where: { pack?: string } = {}): Change {
+    return this.write(() => {
+      const sheet = this.anySheet(name, where.pack);
+      const pack = this.project.wb.sheet(sheet).pack;
+      let a: SheetId | null = null;
+      if (after !== null) {
+        const found = this.project.wb.findSheet(pack, after);
+        if (!found) throw new ApiError("not-found", `Pack ${this.project.wb.packName(pack)} has no sheet called ${after}`);
+        if (found.id === sheet) return { ops: [] };
+        a = found.id;
+      }
+      if (siblingBefore(this.project.doc.sheets, sheet, (x) => x.pack === pack) === a) return { ops: [] };
+      return { ops: [{ kind: "orderSheet", sheet, after: a }] };
+    });
+  }
+
+  /** Put a pack right after another with the same parent (by name), or first with `after: null`. */
+  orderPack(name: string, after: string | null): Change {
+    return this.write(() => {
+      const id = this.packId(name);
+      const p = this.project.wb.packs.get(id)!;
+      if (p.parent === null) throw new ApiError("bad-value", "The root pack has no place to change");
+      let a: PackId | null = null;
+      if (after !== null) {
+        a = this.packId(after);
+        if (a === id) return { ops: [] };
+        if (this.project.wb.packs.get(a)!.parent !== p.parent) throw new ApiError("bad-value", `${after} isn't in the same pack as ${name}`);
+      }
+      if (siblingBefore(this.project.doc.packs, id, (x) => x.parent === p.parent) === a) return { ops: [] };
+      return { ops: [{ kind: "orderPack", pack: id, after: a }] };
     });
   }
 
@@ -832,6 +943,14 @@ export class Sapwood {
         return this.renameSheet(p.name, p.to, p.pack === undefined ? {} : { pack: p.pack });
       case "moveSheet":
         return this.moveSheet(p.name, p.to, p.pack === undefined ? {} : { pack: p.pack });
+      case "deleteSheet":
+        return this.deleteSheet(p.name, p.pack === undefined ? {} : { pack: p.pack });
+      case "deletePack":
+        return this.deletePack(p.name);
+      case "orderSheet":
+        return this.orderSheet(p.name, p.after ?? null, p.pack === undefined ? {} : { pack: p.pack });
+      case "orderPack":
+        return this.orderPack(p.name, p.after ?? null);
       case "createSheet": {
         const opts: { pack?: string; kind?: SheetKind } = {};
         if (p.pack !== undefined) opts.pack = p.pack;

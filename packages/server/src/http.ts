@@ -47,6 +47,7 @@ const API_STATUS: Record<ApiErrorCode, number> = {
   "no-sheet": 409,
   "bad-schema": 400,
   confirm: 409,
+  "in-use": 409,
 };
 
 const REPO_STATUS = { "not-found": 404, exists: 409, conflict: 409, invalid: 422, state: 409, "bad-request": 400, forbidden: 403, upstream: 502, stale: 409 } as const;
@@ -450,8 +451,8 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     const b = await body(c);
     const list = Array.isArray(b) ? b : b.patches;
     if (!Array.isArray(list)) throw new RepoError("bad-request", "Send a list of patches, or { patches: [...] }");
-    // Making, renaming and moving packs is a Developer's (DESIGN §11.2); sheets are an Editor's.
-    if (list.some((x) => ["createPack", "renamePack", "movePack"].includes(String((x as { op?: unknown } | null)?.op)))) may(c, "developer", "write", repo.task(id).branch);
+    // Making, renaming, moving, ordering and deleting packs is a Developer's (DESIGN §11.2); sheets are an Editor's.
+    if (list.some((x) => ["createPack", "renamePack", "movePack", "orderPack", "deletePack"].includes(String((x as { op?: unknown } | null)?.op)))) may(c, "developer", "write", repo.task(id).branch);
     // A wizard that makes packs is a Developer's to run, unless its step allows Editors (DESIGN §9.3).
     const wizards = repo.view(id).project.schema.schema.wizards;
     for (const x of list as { op?: unknown; wizard?: unknown }[])

@@ -1,12 +1,13 @@
 // The ops that take one document to another with the same schema shape, packs and sheets:
 // schema properties (names, types, enum members), rows and columns (added, removed, moved,
-// deleted), cells, formats, layouts, row flags, sheet names and packs. The difference, said plainly:
+// deleted), cells, formats, layouts, row flags, sheet names and packs, and the order of sheets
+// and packs. The difference, said plainly:
 // for when two ways of getting to one state disagree a little (a rebase in each direction
 // around a move or a rename), and for restoring an earlier state without undoing every
 // change since, one by one.
 
 import { contentKey, stableJson } from "../formula/content.ts";
-import { axisOf, cloneDoc, isLive, splitCellKey, type Doc } from "./doc.ts";
+import { axisOf, cloneDoc, isLive, siblingBefore, splitCellKey, type Doc } from "./doc.ts";
 import { applyOp, OpError, type Op } from "./ops.ts";
 import { propsOf, schemaNodes, siblings, type SchemaParent } from "./schema.ts";
 
@@ -19,9 +20,10 @@ export function reconcile(from: Doc, to: Doc): Op[] | null {
   const shape = (d: Doc, nodes: Map<string, { parent: SchemaParent }>) =>
     JSON.stringify([...nodes.values()].map((n) => [n.parent, siblings(d.schema, n.parent).map((x) => x.id)]).sort());
   if (fromNodes.size !== toNodes.size || shape(from, fromNodes) !== shape(to, toNodes)) return null;
+  // In any order: the order is set below.
   const packs = (d: Doc) => stableJson([...d.packs].sort(([a], [b]) => (a < b ? -1 : 1)));
   if (packs(from) !== packs(to)) return null;
-  const ids = (d: Doc) => [...d.sheets.values()].map((s) => `${s.id}:${s.kind}`).join(",");
+  const ids = (d: Doc) => [...d.sheets.values()].map((s) => `${s.id}:${s.kind}`).sort().join(",");
   if (ids(from) !== ids(to)) return null;
 
   const doc = cloneDoc(from);
@@ -39,6 +41,12 @@ export function reconcile(from: Doc, to: Doc): Op[] | null {
           emit(want[key] === undefined ? { kind: "setSchema", id, key } : { kind: "setSchema", id, key, value: want[key] });
     }
     if (stableJson(doc.schema) !== stableJson(to.schema)) return null;
+    // Packs, then sheets, in `to`'s order, each after the sibling it follows there.
+    for (const p of to.packs.values()) {
+      if (p.parent === null) continue;
+      const want = siblingBefore(to.packs, p.id, (x) => x.parent === p.parent);
+      if (siblingBefore(doc.packs, p.id, (x) => x.parent === p.parent) !== want) emit({ kind: "orderPack", pack: p.id, after: want });
+    }
     for (const t of to.sheets.values()) {
       const sh = t.id;
       const s = () => doc.sheets.get(sh)!;
@@ -101,6 +109,11 @@ export function reconcile(from: Doc, to: Doc): Op[] | null {
           if ((s().rowFlags.get(row)?.has(flag) ?? false) !== want) emit({ kind: "setRowFlag", sheet: sh, row, flag, on: want });
         }
       for (const axis of ["row", "col"] as const) if (extra[axis].size) emit({ kind: "purge", sheet: sh, axis, ids: [...extra[axis]] });
+    }
+    // Sheets in `to`'s order, now each is in its pack.
+    for (const t of to.sheets.values()) {
+      const want = siblingBefore(to.sheets, t.id, (x) => x.pack === t.pack);
+      if (siblingBefore(doc.sheets, t.id, (x) => x.pack === t.pack) !== want) emit({ kind: "orderSheet", sheet: t.id, after: want });
     }
   } catch (e) {
     if (e instanceof OpError) return null; // a move the sheet doesn't allow, say

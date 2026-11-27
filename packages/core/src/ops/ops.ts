@@ -8,7 +8,7 @@
 import { sameContent, type Content } from "../formula/content.ts";
 import { anchorIndex, insertAfter, type ColId, type PackId, type RowId, type SheetId, type SheetKind } from "../formula/model.ts";
 import type { Layout } from "../project/layout.ts";
-import { axisOf, cellKey, OpError, hasId, isLive, own, splitCellKey, type Axis, type Doc, type Format, type RowFlag, type SheetDoc } from "./doc.ts";
+import { axisOf, cellKey, OpError, hasId, isLive, own, placeInMap, sheetContents, siblingBefore, splitCellKey, type Axis, type Doc, type Format, type RowFlag, type SheetContents, type SheetDoc } from "./doc.ts";
 import type { Id } from "../schema/model.ts";
 import { renameEnumMemberOps, renameFieldOps, renameIdWrites, renameTypeOps } from "./rename.ts";
 import { addNode, removeNode, setNodeProp, type SchemaDef, type SchemaParent } from "./schema.ts";
@@ -28,17 +28,26 @@ export type Op =
   /** Undo a delete. */
   | { kind: "restore"; sheet: SheetId; axis: Axis; ids: string[] }
   // sheets and packs
-  | { kind: "createSheet"; sheet: SheetId; name: string; pack: PackId; sheetKind: SheetKind }
-  /** Undo a createSheet: the sheet must be empty. */
+  /**
+   * A new sheet, last of all or right after `after` in the document's order (null: first),
+   * holding `contents` if given: how undoing a removal brings a sheet back as it was, where it was.
+   */
+  | { kind: "createSheet"; sheet: SheetId; name: string; pack: PackId; sheetKind: SheetKind; after?: SheetId | null; contents?: SheetContents }
+  /** Remove a sheet and everything on it; the inverse brings it all back. */
   | { kind: "removeSheet"; sheet: SheetId }
+  /** Put a sheet right after another of its pack's sheets (null: first of them). */
+  | { kind: "orderSheet"; sheet: SheetId; after: SheetId | null }
   | { kind: "renameSheet"; sheet: SheetId; name: string }
   | { kind: "setSheetPack"; sheet: SheetId; pack: PackId }
   | { kind: "setLayout"; sheet: SheetId; type: string; layout: Layout | null }
   /** Set or clear a flag on a row (§7.4: `keepHere` is "don't suggest moving"). */
   | { kind: "setRowFlag"; sheet: SheetId; row: RowId; flag: RowFlag; on: boolean }
-  | { kind: "createPack"; pack: PackId; name: string; parent: PackId }
-  /** Undo a createPack: the pack must have no sheets or sub-packs. */
+  /** A new pack, last of its parent's packs or after `after` (one of them; null: first). */
+  | { kind: "createPack"; pack: PackId; name: string; parent: PackId; after?: PackId | null }
+  /** Remove a pack: it must have no sheets or sub-packs (remove those first). */
   | { kind: "removePack"; pack: PackId }
+  /** Put a pack right after another with the same parent (null: first of them). */
+  | { kind: "orderPack"; pack: PackId; after: PackId | null }
   | { kind: "renamePack"; pack: PackId; name: string }
   /** Move a pack under another (not the root, and not under itself or its own sub-packs). */
   | { kind: "setPackParent"; pack: PackId; parent: PackId }
@@ -221,18 +230,42 @@ export function applyPlain(doc: Doc, op: Op): Op[] {
       if (doc.sheets.has(op.sheet)) throw new OpError(`createSheet: ${op.sheet} exists`);
       if (!doc.packs.has(op.pack)) throw new OpError(`createSheet: no pack ${op.pack}`);
       checkSheetName(doc, op.pack, op.name, null);
+      if (op.after != null && !doc.sheets.has(op.after)) throw new OpError(`createSheet: no sheet ${op.after} to go after`);
+      const c = op.contents;
+      if (c) {
+        const ids = (a: { order: string[]; dead: string[] }) => new Set(a.order);
+        const rows = ids(c.rows);
+        const cols = ids(c.cols);
+        if (rows.size !== c.rows.order.length || cols.size !== c.cols.order.length) throw new OpError("createSheet: a row or column is listed twice");
+        for (const [k] of [...c.cells, ...c.formats]) {
+          const [r, col] = splitCellKey(k);
+          if (!rows.has(r) || !cols.has(col)) throw new OpError(`createSheet: cell ${k} is on no row or column`);
+        }
+      }
       doc.sheets.set(op.sheet, {
         id: op.sheet, name: op.name, pack: op.pack, kind: op.sheetKind,
-        rows: { order: [], dead: new Set() }, cols: { order: [], dead: new Set() },
-        cells: new Map(), formats: new Map(), layouts: new Map(), rowFlags: new Map(),
+        rows: { order: c ? [...c.rows.order] : [], dead: new Set(c?.rows.dead) }, cols: { order: c ? [...c.cols.order] : [], dead: new Set(c?.cols.dead) },
+        cells: new Map(c?.cells), formats: new Map(c?.formats.map(([k, f]) => [k, { ...f }])), layouts: new Map(c?.layouts), rowFlags: new Map(c?.rowFlags.map(([r, f]) => [r, new Set(f)])),
       });
+      if (op.after !== undefined) placeInMap(doc.sheets, op.sheet, op.after, () => true);
       return [{ kind: "removeSheet", sheet: op.sheet }];
     }
     case "removeSheet": {
       const s = sheetOf(doc, op.sheet);
-      if (s.rows.order.length || s.cols.order.length || s.layouts.size) throw new OpError(`removeSheet: ${s.name} is not empty`);
+      const contents = sheetContents(s);
+      const after = siblingBefore(doc.sheets, op.sheet, () => true);
       doc.sheets.delete(op.sheet);
-      return [{ kind: "createSheet", sheet: s.id, name: s.name, pack: s.pack, sheetKind: s.kind }];
+      return [{ kind: "createSheet", sheet: s.id, name: s.name, pack: s.pack, sheetKind: s.kind, after, ...(contents ? { contents } : {}) }];
+    }
+    case "orderSheet": {
+      const s = doc.sheets.get(op.sheet);
+      if (!s) throw new OpError(`orderSheet: no sheet ${op.sheet}`);
+      if (op.after === op.sheet) throw new OpError("orderSheet: a sheet can't go after itself");
+      const inPack = (x: SheetDoc) => x.pack === s.pack;
+      if (op.after !== null && doc.sheets.get(op.after)?.pack !== s.pack) throw new OpError(`orderSheet: ${op.after} is not a sheet of the same pack`);
+      const prev = siblingBefore(doc.sheets, op.sheet, inPack);
+      placeInMap(doc.sheets, op.sheet, op.after, inPack);
+      return [{ ...op, after: prev }];
     }
     case "renameSheet": {
       const s = sheetOf(doc, op.sheet);
@@ -276,7 +309,9 @@ export function applyPlain(doc: Doc, op: Op): Op[] {
       if (doc.packs.has(op.pack)) throw new OpError(`createPack: ${op.pack} exists`);
       if (!doc.packs.has(op.parent)) throw new OpError(`createPack: no parent ${op.parent}`);
       checkPackName(doc, op.name);
+      if (op.after != null && doc.packs.get(op.after)?.parent !== op.parent) throw new OpError(`createPack: ${op.after} is not a pack of that parent`);
       doc.packs.set(op.pack, { id: op.pack, name: op.name, parent: op.parent });
+      if (op.after !== undefined) placeInMap(doc.packs, op.pack, op.after, (x) => x.parent === op.parent);
       return [{ kind: "removePack", pack: op.pack }];
     }
     case "removePack": {
@@ -285,8 +320,20 @@ export function applyPlain(doc: Doc, op: Op): Op[] {
       if (p.parent === null) throw new OpError("removePack: the root pack stays");
       for (const s of doc.sheets.values()) if (s.pack === op.pack) throw new OpError(`removePack: ${p.name} still has sheets`);
       for (const q of doc.packs.values()) if (q.parent === op.pack) throw new OpError(`removePack: ${p.name} still has packs`);
+      const after = siblingBefore(doc.packs, op.pack, (x) => x.parent === p.parent);
       doc.packs.delete(op.pack);
-      return [{ kind: "createPack", pack: p.id, name: p.name, parent: p.parent }];
+      return [{ kind: "createPack", pack: p.id, name: p.name, parent: p.parent, after }];
+    }
+    case "orderPack": {
+      const p = doc.packs.get(op.pack);
+      if (!p) throw new OpError(`orderPack: no pack ${op.pack}`);
+      if (p.parent === null) throw new OpError("orderPack: the root pack has no siblings");
+      if (op.after === op.pack) throw new OpError("orderPack: a pack can't go after itself");
+      if (op.after !== null && doc.packs.get(op.after)?.parent !== p.parent) throw new OpError(`orderPack: ${op.after} is not a pack with the same parent`);
+      const sib = (x: { parent: PackId | null }) => x.parent === p.parent;
+      const prev = siblingBefore(doc.packs, op.pack, sib);
+      placeInMap(doc.packs, op.pack, op.after, sib);
+      return [{ ...op, after: prev }];
     }
     case "renamePack": {
       const p = doc.packs.get(op.pack);

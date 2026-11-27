@@ -109,6 +109,62 @@ export function own(s: SheetDoc): SheetDoc {
   return s;
 }
 
+/**
+ * What a sheet holds, as plain data an op can carry: a removed sheet's contents, so undoing
+ * the removal (a createSheet with them) brings it all back at once.
+ */
+export interface SheetContents {
+  rows: { order: string[]; dead: string[] };
+  cols: { order: string[]; dead: string[] };
+  cells: [string, Content][];
+  formats: [string, Format][];
+  layouts: [string, Layout][];
+  rowFlags: [RowId, RowFlag[]][];
+}
+
+/** A sheet's contents, or null when it has none (no rows, columns or layouts). */
+export function sheetContents(s: SheetDoc): SheetContents | null {
+  if (!s.rows.order.length && !s.cols.order.length && !s.layouts.size) return null;
+  const axis = (a: AxisDoc) => ({ order: [...a.order], dead: a.order.filter((id) => a.dead.has(id)) });
+  return {
+    rows: axis(s.rows),
+    cols: axis(s.cols),
+    cells: [...s.cells].filter(([, c]) => c !== null),
+    formats: [...s.formats],
+    layouts: [...s.layouts],
+    rowFlags: [...s.rowFlags].filter(([, f]) => f.size).map(([r, f]) => [r, [...f]]),
+  };
+}
+
+/**
+ * Put `key` right after `after` in a map's order (null: just before the first entry `group`
+ * says is its sibling), keeping the rest as they are. The map is reordered in place.
+ */
+export function placeInMap<K, V>(map: Map<K, V>, key: K, after: K | null, group: (v: V) => boolean): void {
+  const v = map.get(key);
+  if (v === undefined) return;
+  const rest = [...map].filter(([k]) => k !== key);
+  let i: number;
+  if (after !== null) i = rest.findIndex(([k]) => k === after) + 1;
+  else {
+    i = rest.findIndex(([, x]) => group(x));
+    if (i < 0) i = rest.length;
+  }
+  rest.splice(i, 0, [key, v]);
+  map.clear();
+  for (const [k, x] of rest) map.set(k, x);
+}
+
+/** The entry before `key` among those `group` says are its siblings, in map order; null if first. */
+export function siblingBefore<K, V>(map: Map<K, V>, key: K, group: (v: V) => boolean): K | null {
+  let prev: K | null = null;
+  for (const [k, v] of map) {
+    if (k === key) return prev;
+    if (group(v)) prev = k;
+  }
+  return null;
+}
+
 /** Position in the full order, or -1. */
 export const posIn = (a: AxisDoc, id: string): number => indexOf(a).get(id) ?? -1;
 export const hasId = (a: AxisDoc, id: string): boolean => indexOf(a).has(id);
@@ -131,13 +187,25 @@ export function cloneDoc(doc: Doc): Doc {
   return { schema: doc.schema, packs, sheets };
 }
 
+/** Each pack's place among its parent's packs (their order is part of the document; packs under different parents don't compare). */
+function packPlaces(doc: Doc): Map<PackId, number> {
+  const n = new Map<PackId | null, number>();
+  const out = new Map<PackId, number>();
+  for (const p of doc.packs.values()) {
+    const i = n.get(p.parent) ?? 0;
+    out.set(p.id, i);
+    n.set(p.parent, i + 1);
+  }
+  return out;
+}
+
 /** A plain, ordered form of the document, for comparing and printing. */
 export function canonDoc(doc: Doc): unknown {
   const sorted = <V>(m: Map<string, V>, f: (v: V) => unknown) =>
     [...m].sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)).map(([k, v]) => [k, f(v)]);
   return {
     schema: stableJson(doc.schema),
-    packs: sorted(doc.packs, (p) => [p.name, p.parent]),
+    packs: sorted(doc.packs, (p) => [p.name, p.parent, packPlaces(doc).get(p.id)]),
     sheets: [...doc.sheets.values()].map((s) => ({
       id: s.id,
       name: s.name,
@@ -162,9 +230,10 @@ export function docsEqual(a: Doc, b: Doc): boolean {
   if (a === b) return true;
   if (a.schema !== b.schema && stableJson(a.schema) !== stableJson(b.schema)) return false;
   if (a.packs.size !== b.packs.size) return false;
+  const pa = packPlaces(a), pb = packPlaces(b);
   for (const [id, p] of a.packs) {
     const q = b.packs.get(id);
-    if (!q || q.name !== p.name || q.parent !== p.parent) return false;
+    if (!q || q.name !== p.name || q.parent !== p.parent || pa.get(id) !== pb.get(id)) return false;
   }
   if (a.sheets.size !== b.sheets.size) return false;
   const others = b.sheets.values();

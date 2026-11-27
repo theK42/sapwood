@@ -221,6 +221,8 @@ export function describe(c: ConflictJson, project?: Project): string {
       return `A schema definition was removed ${k.deletedBy === "mine" ? "by you" : "on the branch"} and changed on the other side`;
     case "enumRename":
       return `${k.from} was renamed to ${k.mine} by you and to ${k.theirs} on the branch`;
+    case "sheetDeleted":
+      return k.deletedBy === "mine" ? `You deleted the sheet ${k.name}, which was changed on the branch` : `The sheet ${k.name} was deleted on the branch, and you changed it`;
     case "op":
       return k.message;
   }

@@ -426,7 +426,19 @@ export class Engine {
     this.structureChanged(sheet, axis === "col", [], { ids, order: true });
   }
 
-  /** Forget a sheet's layouts (the sheet is being removed; it must be empty). */
+  /**
+   * Empty a sheet that's being removed, cell by cell, so formulas elsewhere that read it are
+   * told (they read #REF! once it's gone).
+   */
+  clearSheet(sheet: SheetId): void {
+    const g = this.grid.get(sheet);
+    if (!g) return;
+    this.batch(() => {
+      for (const [col, rows] of [...g]) for (const row of [...rows.keys()]) this.setContent(sheet, row, col, null);
+    });
+  }
+
+  /** Forget a sheet's layouts (the sheet is being removed; emptied first by clearSheet). */
   dropSheet(sheet: SheetId): void {
     // Its entity rows go from the type index too: left there, sorting a type's rows would look the sheet up.
     for (const [row, rec] of this.rowEnt)
@@ -978,6 +990,7 @@ export class Engine {
   private readCell(sheet: SheetId, row: RowId, col: ColId): Scalar {
     const k = keyOf(sheet, row, col);
     this.scope.collect?.deps.add(k); // even when dead, so a restore reaches us
+    if (!this.wb.sheets.has(sheet)) return err("#REF!"); // its sheet was removed
     const s = this.wb.sheet(sheet);
     if (s.rows.isDead(row) || s.cols.isDead(col)) return err("#REF!");
     return this.cellValue(this.cells.get(k));
@@ -995,6 +1008,7 @@ export class Engine {
   private checkReach(sheet: SheetId): FError | null {
     const from = this.scope.reachFrom;
     if (from === null) return null;
+    if (!this.wb.sheets.has(sheet)) return new FError("#REF!", "Its sheet was deleted");
     const to = this.wb.sheet(sheet).pack;
     return this.wb.canReach(from, to) ? null : new FError("#REACH!", `Pack '${this.wb.packName(from)}' cannot read pack '${this.wb.packName(to)}'`);
   }
@@ -1023,6 +1037,7 @@ export class Engine {
   }
 
   private buildRange(e: Extract<Expr, { k: "range" }>): ArrayValue | FError {
+    if (!this.wb.sheets.has(e.sheet)) return err("#REF!"); // its sheet was removed
     const s = this.wb.sheet(e.sheet);
     const rows = e.a.row === null || e.b.row === null ? { from: 1, to: s.rows.length } : s.rows.span(e.a.row, e.b.row);
     const cols = e.a.col === null || e.b.col === null ? { from: 1, to: s.cols.length } : s.cols.span(e.a.col, e.b.col);
@@ -1095,6 +1110,7 @@ export class Engine {
         sheet = e.sheet;
         ({ row, col } = p);
       } else return new FError("#VALUE!", "ROW() and COLUMN() take a reference");
+      if (!this.wb.sheets.has(sheet)) return err("#REF!");
       const s = this.wb.sheet(sheet);
       const r = row === null ? 1 : s.rows.posOf(row);
       const cc = col === null ? 1 : s.cols.posOf(col);

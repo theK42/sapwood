@@ -225,14 +225,35 @@ export class Project {
       case "move":
         e.moveIds(op.sheet, op.axis, op.after, op.ids);
         break;
-      case "createSheet":
+      case "createSheet": {
         this.wb.addSheet(op.name, op.pack, op.sheetKind, op.sheet);
+        if (op.after !== undefined) this.syncOrder();
+        const c = op.contents;
+        if (c) {
+          // Back as it was: rows and columns, layouts, every cell (as edits, so formulas that
+          // read it are told), then what was deleted on it.
+          if (c.rows.order.length) e.insertIds(op.sheet, "row", null, [...c.rows.order]);
+          if (c.cols.order.length) e.insertIds(op.sheet, "col", null, [...c.cols.order]);
+          this.syncLayouts(op.sheet);
+          for (const [k, content] of c.cells) {
+            const bar = k.indexOf("|");
+            e.setContent(op.sheet, k.slice(0, bar), k.slice(bar + 1), content);
+          }
+          if (c.rows.dead.length) e.killIds(op.sheet, "row", [...c.rows.dead]);
+          if (c.cols.dead.length) e.killIds(op.sheet, "col", [...c.cols.dead]);
+          return;
+        }
         return this.syncLayouts(op.sheet);
+      }
       case "removeSheet":
+        e.clearSheet(op.sheet);
         e.dropSheet(op.sheet);
         this.wb.sheets.delete(op.sheet);
         this.reads.delete(op.sheet);
         return;
+      case "orderSheet":
+      case "orderPack":
+        return this.syncOrder();
       case "renameSheet":
         this.wb.sheet(op.sheet).name = op.name;
         return;
@@ -245,6 +266,7 @@ export class Project {
         return; // read from the document
       case "createPack":
         this.wb.addPack(op.name, op.parent, op.pack);
+        if (op.after !== undefined) this.syncOrder();
         return;
       case "removePack":
         this.wb.packs.delete(op.pack);
@@ -268,6 +290,19 @@ export class Project {
     if (op.axis === "col") this.syncLayouts(op.sheet);
     // A row whose cells were all empty has nothing to report; one brought back is read again.
     else if (op.kind === "restore") for (const row of op.ids) this.reads.get(op.sheet)?.delete(row);
+  }
+
+  /** The workbook's sheets and packs in the document's order (which orderSheet and orderPack set). */
+  private syncOrder(): void {
+    for (const [map, order] of [
+      [this.wb.sheets, [...this.doc.sheets.keys()]],
+      [this.wb.packs, [...this.doc.packs.keys()]],
+    ] as const) {
+      const m = map as Map<string, unknown>;
+      const entries = order.filter((k) => m.has(k)).map((k) => [k, m.get(k)] as const);
+      m.clear();
+      for (const [k, v] of entries) m.set(k, v);
+    }
   }
 
   /**

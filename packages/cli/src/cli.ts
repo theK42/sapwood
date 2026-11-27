@@ -74,10 +74,15 @@ Packs and sheets
   pack create <name> [--parent <p>]   A pack, under root unless --parent (a Developer's)
   pack rename <name> <new name>       (a Developer's)
   pack move <name> <parent>           Into another pack, with its sheets (a Developer's)
+  pack order <name> (--after <p> | --first)   Among its parent's packs (a Developer's)
+  pack delete <name>                  With its sheets and packs; undo brings them back (a Developer's)
   sheet create <name> [--pack <p>] [--scratch]
                                   An empty data sheet, or a scratch one, in root unless --pack
   sheet rename <name> <new name> [--pack <p>]
   sheet move <name> <pack> [--pack <p>]   Into another pack; --pack says which it's in now
+  sheet order <name> (--after <s> | --first) [--pack <p>]   Among its pack's sheets
+  sheet delete <name> [--pack <p>]    With everything on it; undo brings it back. Refused
+                                      while formulas on other sheets read it
 Schema
   schema get                      The schema as YAML
   schema apply <file> [--force]   Apply an edited schema file
@@ -380,7 +385,23 @@ async function command(argv: string[], io: Io): Promise<number> {
         const what = cmd === "pack" ? `pack ${name}` : `sheet ${name}`;
         return wrote(await backend(p, io).b.patch([patch]), sub === "rename" ? `Renamed ${what} to ${to}.` : `Moved ${what} into ${to}.`);
       }
-      if (sub !== "create") throw new UsageError(`Try sapwood ${cmd} create, rename or move`);
+      if (sub === "delete") {
+        const p = parse(rest, cmd === "pack" ? { task: { type: "string" } } : { task: { type: "string" }, pack: { type: "string" } });
+        const [name] = positionals(p, ["name"]);
+        const pack = p.values.pack as string | undefined;
+        const patch: Patch = cmd === "pack" ? { op: "deletePack", name: name! } : { op: "deleteSheet", name: name!, ...(pack === undefined ? {} : { pack }) };
+        return wrote(await backend(p, io).b.patch([patch]), `Deleted ${cmd} ${name}${cmd === "pack" ? ", with its sheets and packs" : ""} (sapwood undo brings it back).`);
+      }
+      if (sub === "order") {
+        const p = parse(rest, { task: { type: "string" }, after: { type: "string" }, first: { type: "boolean" }, ...(cmd === "sheet" ? { pack: { type: "string" } } : {}) });
+        const [name] = positionals(p, ["name"]);
+        const after = p.values.after as string | undefined;
+        if ((after === undefined) === (p.values.first !== true)) throw new UsageError(`Say where: sapwood ${cmd} order <name> --after <${cmd}> or --first`);
+        const pack = p.values.pack as string | undefined;
+        const patch: Patch = cmd === "pack" ? { op: "orderPack", name: name!, after: after ?? null } : { op: "orderSheet", name: name!, after: after ?? null, ...(pack === undefined ? {} : { pack }) };
+        return wrote(await backend(p, io).b.patch([patch]), after === undefined ? `Put ${cmd} ${name} first.` : `Put ${cmd} ${name} after ${after}.`);
+      }
+      if (sub !== "create") throw new UsageError(`Try sapwood ${cmd} create, rename, move, order or delete`);
       const p = parse(rest, cmd === "pack" ? { task: { type: "string" }, parent: { type: "string" } } : { task: { type: "string" }, pack: { type: "string" }, scratch: { type: "boolean" } });
       const [name] = positionals(p, ["name"]);
       const b = backend(p, io).b;

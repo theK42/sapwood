@@ -92,6 +92,15 @@ describe("the sapwood command", () => {
     expect(again.code).toBe(1);
     expect(again.err).toContain("There's a pack called dlc already");
     expect((await sw("pack", "list")).code).toBe(2);
+    // Ordered among their siblings, and deleted, with what's in them.
+    await sw("sheet", "create", "Extra", "--pack", "dlc");
+    expect((await sw("sheet", "order", "Extra", "--first", "--pack", "dlc")).out).toBe("Put sheet Extra first.");
+    expect((await sw("sheet", "order", "Extra", "--pack", "dlc")).code).toBe(2); // where?
+    expect((await sw("pack", "order", "dlc2", "--first")).code).toBe(0);
+    expect((await sw("sheet", "delete", "DLC Ammo", "--pack", "dlc")).out).toBe("Deleted sheet DLC Ammo (sapwood undo brings it back).");
+    expect((await sw("get", "a9")).code).toBe(1);
+    expect((await sw("pack", "delete", "dlc")).out).toBe("Deleted pack dlc, with its sheets and packs (sapwood undo brings it back).");
+    expect((await sw("pack", "delete", "root")).code).toBe(1);
   });
 
   it("moves entities to another pack, saying first what that breaks", async () => {

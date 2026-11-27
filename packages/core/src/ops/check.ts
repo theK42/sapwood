@@ -10,13 +10,13 @@ import type { Content } from "../formula/content.ts";
 import type { BoundPoint, Expr } from "../formula/bind.ts";
 import { ERROR_CODES, type BinOp, type ErrorCode } from "../formula/parse.ts";
 import type { Layout, LayoutColumn } from "../project/layout.ts";
-import { isRowFlag, OpError, type Format } from "./doc.ts";
+import { isRowFlag, OpError, type Format, type SheetContents } from "./doc.ts";
 import type { Op } from "./ops.ts";
 
 /** Op kinds that change the schema. */
 export const SCHEMA_OP_KINDS: ReadonlySet<Op["kind"]> = new Set(["addSchema", "removeSchema", "setSchema", "renameType", "renameField", "renameEnumMember"]);
 /** Op kinds that make, remove or rename packs: a Developer's (DESIGN §11.2). */
-export const PACK_OP_KINDS: ReadonlySet<Op["kind"]> = new Set(["createPack", "removePack", "renamePack", "setPackParent"]);
+export const PACK_OP_KINDS: ReadonlySet<Op["kind"]> = new Set(["createPack", "removePack", "renamePack", "setPackParent", "orderPack"]);
 
 const MAX_DEPTH = 200;
 const BIN_OPS: ReadonlySet<string> = new Set<BinOp>(["+", "-", "*", "/", "^", "&", "=", "<>", "<", ">", "<=", ">="]);
@@ -60,9 +60,9 @@ function oneOf<T extends string>(o: Obj, k: string, xs: readonly T[], at: At): T
   if (!xs.includes(v as T)) fail(at.in(k), `expected one of ${xs.join(", ")}`);
   return v as T;
 }
-function ids(o: Obj, k: string, at: At): string[] {
+function ids(o: Obj, k: string, at: At, mayBeEmpty = false): string[] {
   const v = o[k];
-  if (!Array.isArray(v) || v.length === 0) fail(at.in(k), "expected a non-empty list of IDs");
+  if (!Array.isArray(v) || (v.length === 0 && !mayBeEmpty)) fail(at.in(k), mayBeEmpty ? "expected a list of IDs" : "expected a non-empty list of IDs");
   return v.map((x, i) => {
     if (typeof x !== "string" || x === "") fail(at.in(k).in(i), "expected an ID");
     return x;
@@ -160,6 +160,38 @@ function layout(x: unknown, at: At): Layout | null {
   });
 }
 
+/** A removed sheet's contents, as an undo brings them back (doc.ts, SheetContents). */
+function contents(x: unknown, at: At): SheetContents {
+  const o = obj(x, at);
+  const axis = (k: string) => {
+    const a = obj(o[k], at.in(k));
+    const order = ids(a, "order", at.in(k), true);
+    const dead = ids(a, "dead", at.in(k), true);
+    const known = new Set(order);
+    for (const id of dead) if (!known.has(id)) fail(at.in(k).in("dead"), `${id} isn't in the order`);
+    return { order, dead };
+  };
+  const pairs = (k: string): [string, unknown][] => {
+    const v = o[k];
+    if (!Array.isArray(v)) return fail(at.in(k), "expected a list of [key, value] pairs");
+    return v.map((p, i) => {
+      if (!Array.isArray(p) || p.length !== 2 || typeof p[0] !== "string") return fail(at.in(k).in(i), "expected [key, value]");
+      return [p[0], p[1]];
+    });
+  };
+  return {
+    rows: axis("rows"),
+    cols: axis("cols"),
+    cells: pairs("cells").map(([k, v], i) => [k, content(v, at.in("cells").in(i).in(1))]),
+    formats: pairs("formats").map(([k, v], i) => [k, format(v, at.in("formats").in(i).in(1)) ?? {}]),
+    layouts: pairs("layouts").map(([k, v], i) => [k, layout(v, at.in("layouts").in(i).in(1)) ?? []]),
+    rowFlags: pairs("rowFlags").map(([k, v], i) => {
+      if (!Array.isArray(v) || !v.every(isRowFlag)) return fail(at.in("rowFlags").in(i).in(1), "expected a list of row flags");
+      return [k, [...v]];
+    }),
+  };
+}
+
 function op(x: unknown, at: At): Op {
   const o = obj(x, at);
   const kind = o.kind;
@@ -183,9 +215,15 @@ function op(x: unknown, at: At): Op {
     case "restore":
       return { kind, sheet: sheet(), axis: axis(), ids: ids(o, "ids", at) };
     case "createSheet":
-      return { kind, sheet: sheet(), name: str(o, "name", at), pack: str(o, "pack", at), sheetKind: oneOf(o, "sheetKind", ["data", "scratch"] as const, at) };
+      return {
+        kind, sheet: sheet(), name: str(o, "name", at), pack: str(o, "pack", at), sheetKind: oneOf(o, "sheetKind", ["data", "scratch"] as const, at),
+        ...(o.after !== undefined ? { after: strOrNull(o, "after", at) } : {}),
+        ...(o.contents !== undefined ? { contents: contents(o.contents, at.in("contents")) } : {}),
+      };
     case "removeSheet":
       return { kind, sheet: sheet() };
+    case "orderSheet":
+      return { kind, sheet: sheet(), after: strOrNull(o, "after", at) };
     case "renameSheet":
       return { kind, sheet: sheet(), name: str(o, "name", at) };
     case "setSheetPack":
@@ -199,7 +237,9 @@ function op(x: unknown, at: At): Op {
       return { kind, sheet: sheet(), row: str(o, "row", at), flag: o.flag, on };
     }
     case "createPack":
-      return { kind, pack: str(o, "pack", at), name: str(o, "name", at), parent: str(o, "parent", at) };
+      return { kind, pack: str(o, "pack", at), name: str(o, "name", at), parent: str(o, "parent", at), ...(o.after !== undefined ? { after: strOrNull(o, "after", at) } : {}) };
+    case "orderPack":
+      return { kind, pack: str(o, "pack", at), after: strOrNull(o, "after", at) };
     case "removePack":
       return { kind, pack: str(o, "pack", at) };
     case "renamePack":

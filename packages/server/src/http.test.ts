@@ -382,5 +382,15 @@ wizards:
     expect((await bob("POST /api/branches/main/patches", [{ op: "movePack", name: "dlc", parent: "root" }])).status).toBe(403);
     expect((await bob(`POST /api/tasks/${w.json.task.id}/ops`, { ops: [{ kind: "setPackParent", pack: "dlc", parent: "root" }] })).status).toBe(403);
     expect((await ada("POST /api/branches/main/patches", [{ op: "renamePack", name: "dlc", to: "season1" }])).status).toBe(200);
+    // Ordering and deleting likewise; a sheet read by formulas elsewhere isn't deleted.
+    expect((await bob("POST /api/branches/main/patches", [{ op: "orderSheet", name: "Extra", after: null }])).status).toBe(200);
+    expect((await bob("POST /api/branches/main/patches", [{ op: "orderPack", name: "season1", after: null }])).status).toBe(403);
+    expect((await bob(`POST /api/tasks/${w.json.task.id}/ops`, { ops: [{ kind: "orderPack", pack: "dlc", after: null }] })).status).toBe(403);
+    expect((await bob("POST /api/branches/main/patches", [{ op: "deletePack", name: "season1" }])).status).toBe(403);
+    await bob("POST /api/branches/main/patches", [{ op: "set", id: "a3", fields: { speed: { $formula: "=Ammo!C1" } } }]);
+    const used = await bob("POST /api/branches/main/patches", [{ op: "deleteSheet", name: "Ammo" }]);
+    expect([used.status, used.json.error.code]).toEqual([409, "in-use"]);
+    expect((await bob("POST /api/branches/main/patches", [{ op: "deleteSheet", name: "Extra" }])).status).toBe(200);
+    expect((await ada("POST /api/branches/main/patches", [{ op: "deletePack", name: "season1" }])).status).toBe(200);
   });
 });

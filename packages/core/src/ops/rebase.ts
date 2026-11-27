@@ -24,9 +24,9 @@
 //    renameField and renameEnumMember are intent ops, re-run on the head.
 
 import { contentKey, stableJson, type Content } from "../formula/content.ts";
-import type { SheetId } from "../formula/model.ts";
+import type { PackId, SheetId } from "../formula/model.ts";
 import {
-  axisOf, cellKey, cloneDoc, hasId, isLive, splitCellKey,
+  axisOf, cellKey, cloneDoc, hasId, isLive, sheetContents, siblingBefore, splitCellKey,
   type Axis, type Doc, type Format, type SheetDoc,
 } from "./doc.ts";
 import { differingKeys } from "./cowmap.ts";
@@ -47,6 +47,8 @@ export type Conflict =
   | { kind: "schemaDeleted"; id: Id; deletedBy: Side }
   /** Both sides renamed the same enum member to different names. */
   | { kind: "enumRename"; enum: Id; from: string; mine: string; theirs: string }
+  /** One side removed a sheet that the other changed. `name` is the sheet's name in the base. */
+  | { kind: "sheetDeleted"; sheet: SheetId; name: string; deletedBy: Side }
   /** One of mine's ops no longer applies on the head. It is dropped. */
   | { kind: "op"; op: Op; message: string };
 
@@ -78,6 +80,10 @@ export interface Analysis {
   schemaPlaced: Map<Id, Id | null>;
   /** `${enum}/${base member}` -> what it was finally renamed to. */
   enumRenames: Map<string, string>;
+  /** Base sheets that are gone. */
+  sheetsDeleted: Set<SheetId>;
+  /** Base sheets still there with a change to what they hold: cells, formats, rows or columns, layouts or row flags. */
+  sheetsEdited: Set<SheetId>;
 }
 
 const axisKey = (sheet: SheetId, axis: Axis, id: string) => `${sheet}/${axis}/${id}`;
@@ -158,6 +164,21 @@ export function analyze(base: Doc, ops: readonly Op[]): Analysis {
     }
   }
   for (const k of moved.keys()) edited.add(k);
+  const sheetsDeleted = new Set<SheetId>();
+  const sheetsEdited = new Set<SheetId>();
+  for (const k of [...cells.keys(), ...formats.keys(), ...deleted, ...placed.keys()]) sheetsEdited.add(splitAt(k)[0]);
+  for (const [id, b] of base.sheets) {
+    const f = final.sheets.get(id);
+    if (!f) {
+      sheetsDeleted.add(id);
+      sheetsEdited.delete(id);
+      continue;
+    }
+    const flags = (s: SheetDoc) => stableJson([...s.rowFlags].filter(([, x]) => x.size).map(([r, x]) => [r, [...x].sort()]).sort(([x], [y]) => (x! < y! ? -1 : x! > y! ? 1 : 0)));
+    const layouts = (s: SheetDoc) => stableJson([...s.layouts].sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
+    if (b.layouts !== f.layouts && layouts(b) !== layouts(f)) sheetsEdited.add(id);
+    if (b.rowFlags !== f.rowFlags && flags(b) !== flags(f)) sheetsEdited.add(id);
+  }
   const finalRenames = new Map<string, string>();
   for (const [to, from] of renames) if (to !== from) finalRenames.set(from, to);
   const finalEnumRenames = new Map<string, string>();
@@ -165,7 +186,7 @@ export function analyze(base: Doc, ops: readonly Op[]): Analysis {
     const [e, to] = splitAt(k);
     if (to !== from) finalEnumRenames.set(`${e}/${from}`, to);
   }
-  return { final, cells, formats, deleted, edited, moved, placed, renames: finalRenames, ...schemaDiff(base, final), schemaPlaced, enumRenames: finalEnumRenames };
+  return { final, cells, formats, deleted, edited, moved, placed, renames: finalRenames, ...schemaDiff(base, final), schemaPlaced, enumRenames: finalEnumRenames, sheetsDeleted, sheetsEdited };
 }
 
 /** What changed in the schema between two documents, node by node. */
@@ -215,6 +236,11 @@ export function detect(mine: Analysis, theirs: Analysis, base: Doc): Conflict[] 
       if (other.deleted.has(k) || !other.edited.has(k)) continue;
       const [sh, axis, id] = k.split("/") as [string, Axis, string];
       out.push({ kind: "deleted", sheet: sh, axis, id, deletedBy: side });
+    }
+  for (const [by, other, side] of [[theirs, mine, "theirs"], [mine, theirs, "mine"]] as const)
+    for (const sheet of by.sheetsDeleted) {
+      if (other.sheetsDeleted.has(sheet) || !other.sheetsEdited.has(sheet)) continue;
+      out.push({ kind: "sheetDeleted", sheet, name: base.sheets.get(sheet)!.name, deletedBy: side });
     }
   for (const [k, m] of mine.moved) {
     if (!theirs.moved.has(k) || goneEither(k)) continue;
@@ -268,6 +294,8 @@ export function conflictId(c: Conflict, swap = false): string {
       return `move ${c.sheet}/${c.axis}/${c.id}`;
     case "rename":
       return `rename ${c.from}`;
+    case "sheetDeleted":
+      return `sheetDeleted ${c.sheet} by ${side(c.deletedBy)}`;
     case "schema":
       return `schema ${c.id}#${c.key}`;
     case "schemaDeleted":
@@ -334,8 +362,17 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
   const schemaKeep = new Set<Id>(); // schema nodes mine must not remove
   const schemaRestore: Id[] = []; // ... or must bring back
   const enumSwap = new Map<string, Op | null>();
+  // Sheets theirs removed: mine's ops on them are dropped, unless mine keeps the sheet (it
+  // comes back as it was in the base, and mine's ops replay on it). Sheets mine removed that
+  // theirs changed, and theirs keeps: mine's removal is dropped.
+  const sheetBack: SheetId[] = [];
+  const sheetKeep = new Set<SheetId>();
   for (const c of conflicts) {
     const side = resolve(c);
+    if (c.kind === "sheetDeleted") {
+      if (c.deletedBy === "theirs" && side === "mine") sheetBack.push(c.sheet);
+      if (c.deletedBy === "mine" && side === "theirs") sheetKeep.add(c.sheet);
+    }
     if (c.kind === "schema") {
       schemaFixups.push(side === "mine" ? c : { ...c, mine: c.theirs });
       schemaSide.set(`${c.id}#${c.key}`, side);
@@ -354,6 +391,31 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
   }
   // Both moved it to the same place: nothing left for mine to do.
   for (const [k, m] of M.moved) if (T.moved.has(k) && T.moved.get(k) === m) noMove.add(k);
+
+  const tryEmit = (op: Op) => {
+    try {
+      emit(op);
+    } catch (e) {
+      if (!(e instanceof OpError)) throw e;
+      conflicts.push({ kind: "op", op, message: e.message });
+    }
+  };
+  const sheetDrop = new Set([...T.sheetsDeleted].filter((id) => !sheetBack.includes(id)));
+  // Sheets theirs removed that mine keeps come back first, as they were in the base, in their
+  // old place (their packs too, if theirs removed those).
+  for (const id of sheetBack) {
+    const b = base.sheets.get(id)!;
+    const chain: PackId[] = [];
+    for (let p: PackId | null = b.pack; p !== null && !cur.packs.has(p); p = base.packs.get(p)?.parent ?? null) chain.unshift(p);
+    for (const p of chain) {
+      const bp = base.packs.get(p)!;
+      tryEmit({ kind: "createPack", pack: p, name: bp.name, parent: bp.parent! });
+    }
+    // After the sheet before it in the base, if that's still there; else at the end.
+    const was = siblingBefore(base.sheets, id, () => true);
+    const contents = sheetContents(b);
+    tryEmit({ kind: "createSheet", sheet: id, name: b.name, pack: b.pack, sheetKind: b.kind, ...(was === null || cur.sheets.has(was) ? { after: was } : {}), ...(contents ? { contents } : {}) });
+  }
 
   // Rows theirs deleted that mine resolved to keep come back first, with their cells.
   for (const r of restore) {
@@ -387,14 +449,6 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
       return typeof now === "string" ? now : name;
     });
   };
-  const tryEmit = (op: Op) => {
-    try {
-      emit(op);
-    } catch (e) {
-      if (!(e instanceof OpError)) throw e;
-      conflicts.push({ kind: "op", op, message: e.message });
-    }
-  };
 
   const live = (sheet: SheetId, row: string, col: string) => {
     const s = sheetOf(sheet);
@@ -410,6 +464,13 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
   };
   for (const [i, op] of mine.entries()) {
     origin = i;
+    // On a sheet theirs removed (and mine let go), or mine's removal of one theirs keeps (or
+    // removed too): nothing to replay.
+    const onSheet = "sheet" in op && typeof op.sheet === "string" && op.kind !== "createSheet" ? op.sheet : null;
+    if ((onSheet !== null && sheetDrop.has(onSheet)) || (op.kind === "removeSheet" && (sheetKeep.has(op.sheet) || !cur.sheets.has(op.sheet)))) {
+      applyOp(ctx, op);
+      continue;
+    }
     switch (op.kind) {
       case "setCell": {
         // Cells theirs changed are settled by the fix-ups, unless theirs deleted the row or
@@ -618,6 +679,16 @@ function theirsSet(base: Doc, final: Doc, op: Op): boolean {
       return base.packs.has(op.pack) && base.packs.get(op.pack)!.name !== final.packs.get(op.pack)?.name;
     case "setPackParent":
       return base.packs.has(op.pack) && base.packs.get(op.pack)!.parent !== final.packs.get(op.pack)?.parent;
+    case "orderSheet": {
+      const b = base.sheets.get(op.sheet);
+      const f = final.sheets.get(op.sheet);
+      return !!b && !!f && siblingBefore(base.sheets, op.sheet, (x) => x.pack === b.pack) !== siblingBefore(final.sheets, op.sheet, (x) => x.pack === f.pack);
+    }
+    case "orderPack": {
+      const b = base.packs.get(op.pack);
+      const f = final.packs.get(op.pack);
+      return !!b && !!f && siblingBefore(base.packs, op.pack, (x) => x.parent === b.parent) !== siblingBefore(final.packs, op.pack, (x) => x.parent === f.parent);
+    }
     case "setRowFlag":
       return (base.sheets.get(op.sheet)?.rowFlags.get(op.row)?.has(op.flag) ?? false) !== (final.sheets.get(op.sheet)?.rowFlags.get(op.row)?.has(op.flag) ?? false);
     default:

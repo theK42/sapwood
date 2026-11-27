@@ -122,6 +122,7 @@ function renderExpr(e: Expr, host: Host, outer: number): string {
       return p === null ? "#REF!" : sheetPrefix(host, e.sheet, e.explicit) + p;
     }
     case "range": {
+      if (!host.wb.sheets.has(e.sheet)) return "#REF!"; // its sheet was removed
       const s = host.wb.sheet(e.sheet);
       // A deleted corner is drawn at the edge of the surviving span.
       const rows = e.a.row === null || e.b.row === null ? null : s.rows.span(e.a.row, e.b.row);
@@ -155,6 +156,7 @@ function renderExpr(e: Expr, host: Host, outer: number): string {
 }
 
 function renderPoint(host: Host, sheet: SheetId, p: BoundPoint): string | null {
+  if (!host.wb.sheets.has(sheet)) return null; // its sheet was removed
   const s = host.wb.sheet(sheet);
   const row = p.row === null ? null : s.rows.posOf(p.row);
   const col = p.col === null ? null : s.cols.posOf(p.col);

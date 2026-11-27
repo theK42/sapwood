@@ -124,6 +124,12 @@ const PATCH = z.discriminatedUnion("op", [
     pack: z.string().optional().describe("Its pack (default: root)"),
     kind: z.enum(["data", "scratch"]).optional().describe("data (the default) holds entities; scratch holds notes and working"),
   }),
+  z.object({ op: z.literal("deleteSheet"), name: z.string(), pack: z.string().optional().describe("The pack it's in, if several have a sheet of that name") }).describe(
+    "Delete a sheet with everything on it (undo brings it back). Refused while formulas on other sheets read it.",
+  ),
+  z.object({ op: z.literal("deletePack"), name: z.string() }).describe("Delete a pack with its sheets and packs (undo brings them back). Needs a Developer's token."),
+  z.object({ op: z.literal("orderSheet"), name: z.string(), after: z.string().nullable().describe("The sheet of the same pack it goes after; null: first"), pack: z.string().optional() }),
+  z.object({ op: z.literal("orderPack"), name: z.string(), after: z.string().nullable().describe("The pack with the same parent it goes after; null: first") }),
   z.object({
     op: z.literal("runWizard"),
     wizard: z.string().describe("The wizard's name, from the schema's wizards section"),
