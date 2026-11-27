@@ -6,7 +6,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { ago, auditSaid, ROLE_LABEL, ROLE_SAYS, ROLES, scopesFrom, scopesSaid, tokenState } from "./admin.ts";
-import { ApiError, type Api, type AuditEntry, type BranchInfo, type Me, type Role, type TokenInfo, type User } from "./api.ts";
+import { ApiError, type AccessRequest, type Api, type AuditEntry, type BranchInfo, type Me, type Role, type TokenInfo, type User } from "./api.ts";
 import { plural } from "./hooks.ts";
 import type { AdminSection } from "./routes.ts";
 
@@ -66,6 +66,8 @@ interface AdminProps {
   me: Me;
   branch: string;
   section: AdminSection;
+  /** People were added or requests dismissed: the tab's count changes. */
+  changed?: () => void;
   go(section: AdminSection): void;
   href(section: AdminSection): string;
   back(): void;
@@ -100,7 +102,7 @@ export function AdminPage(p: AdminProps) {
       {p.me.role !== "admin" ? (
         <p className="muted">This page is an Admin's.</p>
       ) : p.section === "people" ? (
-        <People api={p.api} me={p.me} />
+        <People api={p.api} me={p.me} {...(p.changed ? { changed: p.changed } : {})} />
       ) : p.section === "tokens" ? (
         <AllTokens api={p.api} me={p.me} />
       ) : p.section === "branches" ? (
@@ -112,15 +114,27 @@ export function AdminPage(p: AdminProps) {
   );
 }
 
-function People(p: { api: Api; me: Me }) {
+function People(p: { api: Api; me: Me; changed?: () => void }) {
   const users = useLoad(() => p.api.users(), []);
   const tokens = useLoad(() => p.api.tokens(true), []);
-  const { busy, refused, act } = useAct(() => (users.again(), tokens.again()));
+  const requests = useLoad(() => p.api.accessRequests(), []);
+  const { busy, refused, act } = useAct(() => (users.again(), tokens.again(), requests.again(), p.changed?.()));
   const [login, setLogin] = useState("");
   const [role, setRole] = useState<Role>("editor");
   const live = (u: string) => (tokens.data ?? []).filter((t) => t.user === u && tokenState(t) === "live").length;
   return (
     <>
+      {(requests.data ?? []).length > 0 && (
+        <section className="panel admin-asking">
+          <h2>Asking for access</h2>
+          <p className="muted small">They signed in with GitHub but aren't users here yet. Add them with a role, or turn them down (they can ask again).</p>
+          <ul className="log">
+            {requests.data!.map((r: AccessRequest) => (
+              <AskingRow key={r.login} r={r} busy={busy} add={(role) => void act(() => p.api.addUser(r.login, role))} dismiss={() => void act(() => p.api.dismissRequest(r.login))} />
+            ))}
+          </ul>
+        </section>
+      )}
       <section className="panel">
         <h2>Add someone</h2>
         <form
@@ -187,6 +201,27 @@ function People(p: { api: Api; me: Me }) {
         )}
       </section>
     </>
+  );
+}
+
+function AskingRow(p: { r: AccessRequest; busy: boolean; add(role: Role): void; dismiss(): void }) {
+  const [role, setRole] = useState<Role>("editor");
+  return (
+    <li>
+      <code>{p.r.login}</code>
+      <span className="muted small">
+        asked {ago(p.r.lastAt)}
+        {p.r.tries > 1 ? `, ${p.r.tries} times` : ""}
+      </span>
+      <span className="spacer" />
+      <RolePicker value={role} set={setRole} label={`${p.r.login}'s role`} disabled={p.busy} />
+      <button className="button small" disabled={p.busy} onClick={() => p.add(role)}>
+        Add
+      </button>
+      <button className="button quiet small" disabled={p.busy} onClick={p.dismiss}>
+        Dismiss
+      </button>
+    </li>
   );
 }
 

@@ -462,3 +462,9 @@ button.link.muted:hover { text-decoration: underline; }
 .top .me { color: var(--muted); text-decoration: none; }
 .top .me:hover, .top .me.on { color: var(--text); text-decoration: underline; }
 @media (max-width: 720px) { .admin-table th:nth-child(n+4), .admin-table td:nth-child(n+4):not(.admin-actions) { display: none; } }
+
+/* Asking for access */
+.signin-said { margin: 0 0 4px; padding: 8px 10px; border: 1px solid var(--warn); border-radius: 8px; font-size: 14px; }
+.admin-asking { border-color: var(--warn); }
+.admin-asking li { align-items: center; }
+.tabs-main a .badge { margin-left: 6px; }

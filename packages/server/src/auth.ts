@@ -38,6 +38,14 @@ export interface TokenInfo {
   lastUsed: string | null;
 }
 
+/** Someone who signed in with GitHub but isn't a user here: asking for access, for an Admin to grant. */
+export interface AccessRequest {
+  login: string;
+  firstAt: string;
+  lastAt: string;
+  tries: number;
+}
+
 /** One line of the audit log: who did what, when. */
 export interface AuditEntry {
   id: number;
@@ -74,8 +82,15 @@ const hash = (token: string): string => createHash("sha256").update(token).diges
 
 export class Auth {
   readonly db: Db;
-  constructor(db: Db) {
+  /**
+   * Open sign-up: anyone signing in with GitHub who isn't a user becomes one, with this role
+   * (never Admin). Unset, they're refused, and their request for access is kept for Admins.
+   */
+  signupRole: Role | null = null;
+  constructor(db: Db, opts: { signupRole?: Role | null } = {}) {
     this.db = db;
+    if (opts.signupRole === "admin") throw new RepoError("bad-request", "Sign-up can't make Admins");
+    this.signupRole = opts.signupRole ?? null;
   }
 
   users(): User[] {
@@ -94,6 +109,7 @@ export class Auth {
     if (this.db.one("SELECT 1 FROM users WHERE login = ?", key)) throw new RepoError("exists", `There is already a user ${key}`);
     this.db.tx(() => {
       this.db.run("INSERT INTO users (login, role, created_at) VALUES (?, ?, ?)", key, role, now());
+      this.db.run("DELETE FROM access_requests WHERE login = ?", key); // asked, and now granted
       this.db.audit(actor, "user.add", { login: key, role });
     });
     return this.user(key);
@@ -156,6 +172,23 @@ export class Auth {
     return u;
   }
 
+  /** Who's asking for access, latest first. */
+  accessRequests(): AccessRequest[] {
+    return this.db
+      .all<{ login: string; first_at: string; last_at: string; tries: number }>("SELECT * FROM access_requests ORDER BY last_at DESC")
+      .map((r) => ({ login: r.login, firstAt: r.first_at, lastAt: r.last_at, tries: r.tries }));
+  }
+
+  /** Turn a request down (they can ask again by signing in again). */
+  dismissRequest(login: string, actor: string): void {
+    const key = loginKey(login);
+    if (!this.db.one("SELECT 1 FROM access_requests WHERE login = ?", key)) throw new RepoError("not-found", `${key} isn't asking for access`);
+    this.db.tx(() => {
+      this.db.run("DELETE FROM access_requests WHERE login = ?", key);
+      this.db.audit(actor, "request.dismiss", { login: key });
+    });
+  }
+
   /** The audit log, newest first: `limit` lines, before the line `before` if given. */
   auditLog(limit = 100, before?: number): AuditEntry[] {
     const rows =
@@ -185,10 +218,31 @@ export class Auth {
     if (byId) login = byId.login;
     else {
       const key = loginKey(gh.login);
-      const u = this.db.one<{ login: string; github_id: number | null }>("SELECT login, github_id FROM users WHERE login = ?", key);
-      if (!u || u.github_id !== null) {
+      let u = this.db.one<{ login: string; github_id: number | null }>("SELECT login, github_id FROM users WHERE login = ?", key);
+      if (!u && this.signupRole) {
+        // Open sign-up: in, with the server's sign-up role.
+        this.db.tx(() => {
+          this.db.run("INSERT INTO users (login, role, created_at) VALUES (?, ?, ?)", key, this.signupRole, now());
+          this.db.run("DELETE FROM access_requests WHERE login = ?", key);
+          this.db.audit(key, "user.signup", { login: key, role: this.signupRole, github: gh });
+        });
+        u = { login: key, github_id: null };
+      }
+      if (!u) {
+        // Not a user: their request is kept for an Admin to grant.
+        this.db.tx(() => {
+          const t = now();
+          this.db.run(
+            "INSERT INTO access_requests (login, first_at, last_at, tries) VALUES (?, ?, ?, 1) ON CONFLICT(login) DO UPDATE SET last_at = excluded.last_at, tries = tries + 1",
+            key, t, t,
+          );
+          this.db.audit(key, "signin.refused", { github: gh, how });
+        });
+        throw new RepoError("forbidden", `${key} isn't a user of this server yet. Your request for access has gone to its Admins: sign in again once they've added you.`);
+      }
+      if (u.github_id !== null) {
         this.db.audit(gh.login.toLowerCase(), "signin.refused", { github: gh, how });
-        throw new RepoError("forbidden", u ? `${key} here belongs to another GitHub account` : `${key} isn't a user of this server: an Admin can add you`);
+        throw new RepoError("forbidden", `${key} here belongs to another GitHub account`);
       }
       this.db.run("UPDATE users SET github_id = ? WHERE login = ?", gh.id, key);
       login = key;

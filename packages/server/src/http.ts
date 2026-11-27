@@ -136,7 +136,14 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
       throw new RepoError("forbidden", "This sign-in didn't start here, or took too long: try again");
     const code = c.req.query("code");
     if (!code) throw new RepoError("forbidden", "GitHub didn't sign you in");
-    const u = auth.signIn(await gh.user(await gh.exchangeCode(code, callback(c))), "web");
+    let u: ReturnType<typeof auth.signIn>;
+    try {
+      u = auth.signIn(await gh.user(await gh.exchangeCode(code, callback(c))), "web");
+    } catch (e) {
+      // Back to the sign-in page, which says why (not a user yet: their request has gone in).
+      if (e instanceof RepoError && e.code === "forbidden") return c.redirect(`/?signin=${encodeURIComponent(e.message)}`);
+      throw e;
+    }
     const expires = new Date(Date.now() + SESSION_DAYS * 86_400_000).toISOString();
     const { token } = auth.createToken(u.login, { name: "Web sign-in", expires }, u.login);
     setCookie(c, SESSION, token, { httpOnly: true, secure: secure(c), sameSite: "Lax", path: "/", maxAge: SESSION_DAYS * 86_400 });
@@ -243,6 +250,16 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
   app.delete("/api/users/:login", (c) => {
     demand(me(c), "admin", "write");
     return c.json(auth.removeUser(c.req.param("login"), me(c).login));
+  });
+  /** Who signed in with GitHub but isn't a user: asking for access (an Admin's). */
+  app.get("/api/access-requests", (c) => {
+    demand(me(c), "admin");
+    return c.json(auth.accessRequests());
+  });
+  app.delete("/api/access-requests/:login", (c) => {
+    demand(me(c), "admin", "write");
+    auth.dismissRequest(c.req.param("login"), me(c).login);
+    return c.json({ dismissed: true });
   });
   /** The audit log, newest first (an Admin's): `?limit=` (at most 500) and `?before=` an entry's id. */
   app.get("/api/audit", (c) => {

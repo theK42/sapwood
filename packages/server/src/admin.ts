@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { docFromJson, Sapwood } from "@thek42/sapwood-core";
-import { Auth, isRole, type Scopes } from "./auth.ts";
+import { Auth, isRole, type Role, type Scopes } from "./auth.ts";
 import { Db } from "./db.ts";
 import { GitHub, type GitHubConfig } from "./github.ts";
 import { Events } from "./events.ts";
@@ -37,6 +37,9 @@ const HELP = `Usage: sapwood-server <command> [options]
 Every command takes --db <file> (default: $SAPWOOD_DB, else ./sapwood.sqlite).
 
 GitHub sign-in needs a GitHub OAuth app, with its device flow enabled. serve reads:
+  $SAPWOOD_SIGNUP_ROLE           viewer, editor or developer: anyone signing in with GitHub
+                                 becomes a user with that role. Unset, they're refused, and
+                                 their request for access waits on the Admin page
   $SAPWOOD_GITHUB_CLIENT_ID      the app's client ID: enough for sapwood login
   $SAPWOOD_GITHUB_CLIENT_SECRET  its secret, for signing in on the web
   $SAPWOOD_PUBLIC_URL (or --url) where browsers reach the server; the app's callback
@@ -200,7 +203,12 @@ function admin(argv: string[], io: AdminIo): number | { close(): void } {
         db.close();
         throw new RepoError("state", "This database has no project: run sapwood-server init first, or set $SAPWOOD_INIT_ADMIN for the server to start one");
       }
-      const auth = new Auth(db);
+      const signup = io.env.SAPWOOD_SIGNUP_ROLE;
+      if (signup !== undefined && signup !== "" && !(isRole(signup) && signup !== "admin")) {
+        db.close();
+        throw new Usage(`$SAPWOOD_SIGNUP_ROLE is viewer, editor or developer (got ${signup})`);
+      }
+      const auth = new Auth(db, { signupRole: signup ? (signup as Role) : null });
       const events = new Events(repo, auth);
       const server = listen(createApp(repo, auth, { ...options, events }), { port, hostname });
       io.out(`Serving the Sapwood API on http://${hostname}:${port}/api`);
@@ -210,6 +218,7 @@ function admin(argv: string[], io: AdminIo): number | { close(): void } {
           ? "GitHub sign-in is off ($SAPWOOD_GITHUB_CLIENT_ID isn't set): people need tokens from sapwood-server token."
           : `GitHub sign-in is on: sapwood login${options.github!.clientSecret ? ", and the web" : " (the web needs $SAPWOOD_GITHUB_CLIENT_SECRET too)"}.`,
       );
+      if (clientId && auth.signupRole) io.out(`Sign-up is open: anyone signing in with GitHub becomes a ${auth.signupRole}.`);
       return {
         close() {
           events.stop();

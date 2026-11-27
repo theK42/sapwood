@@ -99,7 +99,7 @@ describe("the sapwood command, on a server", () => {
     atGitHub(() => gh.approve("WXYZ-0003", { login: "eve", id: 8 }));
     const refused = await eve.sw("login", "--server", URL);
     expect(refused.code).toBe(1);
-    expect(refused.err).toContain("eve isn't a user of this server: an Admin can add you");
+    expect(refused.err).toContain("eve isn't a user of this server yet. Your request for access has gone to its Admins");
     expect(existsSync(eve.env.SAPWOOD_CONFIG)).toBe(false);
   });
 

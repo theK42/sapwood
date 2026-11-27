@@ -59,6 +59,11 @@ function Centered({ children }: { children: React.ReactNode }) {
 function SignIn({ health, signedIn }: { health: Health; signedIn(): void }) {
   const [token, setToken] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Sent back from a GitHub sign-in that was refused, with why (and that access was asked for).
+  const [said] = useState(() => new URLSearchParams(location.search).get("signin"));
+  useEffect(() => {
+    if (said !== null) history.replaceState(null, "", location.pathname);
+  }, [said]);
   const [busy, setBusy] = useState(false);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,6 +83,11 @@ function SignIn({ health, signedIn }: { health: Health; signedIn(): void }) {
     <Centered>
       <div className="card signin">
         <h1>Sapwood</h1>
+        {said && (
+          <p className="signin-said" role="status">
+            {said}
+          </p>
+        )}
         {health.github && (
           <a className="button primary wide" href="/auth/github">
             Sign in with GitHub
@@ -263,6 +273,17 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
   const mine = tasks.filter((t) => t.owner === me.login);
   const others = tasks.filter((t) => t.owner !== me.login);
   const source = session ?? head;
+  // For Admins: how many are asking for access, on the Admin tab; looked at every minute.
+  const [asking, setAsking] = useState(0);
+  const countAsking = () => {
+    if (me.role !== "admin") return;
+    api.accessRequests().then((r) => setAsking(r.length), () => {});
+  };
+  useEffect(() => {
+    countAsking();
+    const t = setInterval(countAsking, 60_000);
+    return () => clearInterval(t);
+  }, [me.role]);
 
   /** Open a sheet at a cell (0-based; col null: the row). */
   const goTo = (sh: string, row: number, col: number | null) => {
@@ -369,6 +390,11 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
                 }}
               >
                 {t.label}
+                {t.tab === "admin" && asking > 0 && (
+                  <span className="badge warn" title={`${asking} asking for access`}>
+                    {asking}
+                  </span>
+                )}
               </a>
             );
           })}
@@ -495,7 +521,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           }}
         />
       ) : route.kind === "admin" ? (
-        <AdminPage api={api} me={me} branch={branch} section={route.section} go={(section) => go(branch, { kind: "admin", section })} href={(section) => routePath(branch, { kind: "admin", section })} back={() => go(branch)} />
+        <AdminPage api={api} me={me} branch={branch} changed={countAsking} section={route.section} go={(section) => go(branch, { kind: "admin", section })} href={(section) => routePath(branch, { kind: "admin", section })} back={() => go(branch)} />
       ) : route.kind === "account" ? (
         <AccountPage api={api} me={me} back={() => go(branch)} origin={location.origin} />
       ) : route.kind === "history" ? (

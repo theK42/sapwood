@@ -66,7 +66,11 @@ export function auditSaid(e: AuditEntry): string {
     case "signin":
       return `signed in${d.how ? ` (${s("how")})` : ""}`;
     case "signin.refused":
-      return "was refused sign-in (not a user here)";
+      return "was refused sign-in";
+    case "user.signup":
+      return `signed up, as ${ROLE_LABEL[d.role as Role] ?? s("role")}`;
+    case "request.dismiss":
+      return `turned down ${s("login")}'s request for access`;
     case "branch.discard":
       return `discarded the branch ${s("name")}`;
     case "branch.restore":

@@ -27,6 +27,7 @@ The image runs `sapwood-server serve` and is configured by environment variables
 | `SAPWOOD_PUBLIC_URL` | The address people use, such as `https://sapwood-demo.fly.dev`. |
 | `SAPWOOD_GITHUB_CLIENT_ID` | The GitHub OAuth app's client ID: turns GitHub sign-in on. |
 | `SAPWOOD_GITHUB_CLIENT_SECRET` | Its secret, for signing in on the web. A secret: don't put it in a file in the repo. |
+| `SAPWOOD_SIGNUP_ROLE` | Open sign-up: `viewer`, `editor` or `developer`. Anyone signing in with GitHub becomes a user with that role. Unset, people not yet added are refused, and their request for access waits on the Admin page. |
 | `SAPWOOD_INIT_ADMIN` | First start only: the GitHub login of the first Admin. |
 | `SAPWOOD_INIT_PROJECT` | First start only: `krbsg` for the sample project, or `empty` (the default). |
 
@@ -72,9 +73,17 @@ Open `https://sapwood-demo.fly.dev` and sign in with GitHub as the Admin you nam
 
 ## 3. Inviting people
 
-On the **Admin** tab, under **People**, add each person by their GitHub login, with a role:
-Viewers read, Editors edit data and land, Developers also change the schema and packs. They
-then sign in with GitHub at the same address.
+Roles: Viewers read, Editors edit data and land, Developers also change the schema and packs,
+Admins also manage people and tokens.
+
+- **Ask for access** (always): send people the address. Signing in with GitHub, someone who
+  isn't a user yet is told their request has gone to the Admins. It shows on the **Admin**
+  tab (with a count on the tab), under **People**, **Asking for access**: pick a role and
+  **Add**, or **Dismiss**. Once added, they sign in again.
+- **Add them first:** on the same page, **Add someone** by GitHub login, with a role.
+- **Open sign-up:** with `SAPWOOD_SIGNUP_ROLE` set (`fly.toml` sets `editor` for the demo),
+  anyone signing in with GitHub gets that role at once. Anyone who has the address can get
+  in, so use it for demos. You can change a role, or remove someone, on the Admin tab.
 
 ## Updating
 

@@ -16,6 +16,9 @@ primary_region = 'iad'
   SAPWOOD_INIT_ADMIN = 'thek42'
   SAPWOOD_INIT_PROJECT = 'krbsg'
   SAPWOOD_PUBLIC_URL = 'https://sapwood-demo.fly.dev'
+  # A demo: anyone signing in with GitHub becomes an Editor. Remove it (or set 'viewer')
+  # to have people ask for access instead, granted on the Admin page.
+  SAPWOOD_SIGNUP_ROLE = 'editor'
 
 [[mounts]]
   source = 'sapwood_data'

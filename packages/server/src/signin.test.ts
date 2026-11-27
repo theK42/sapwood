@@ -10,10 +10,10 @@ import { Repo } from "./repo.ts";
 const ADA = { login: "Ada", id: 101 };
 const BOB = { login: "bob", id: 202 };
 
-function setup(opts: { github?: boolean; publicUrl?: string } = {}) {
+function setup(opts: { github?: boolean; publicUrl?: string; signupRole?: "viewer" | "editor" } = {}) {
   const db = new Db(":memory:");
   const repo = new Repo(db);
-  const auth = new Auth(db);
+  const auth = new Auth(db, { signupRole: opts.signupRole ?? null });
   auth.addUser("ada", "admin", "test");
   auth.addUser("bob", "editor", "test");
   repo.init(Sapwood.load(SCHEMA, PROJECT).doc, "ada");
@@ -60,7 +60,7 @@ describe("signing in with GitHub, by the device flow", () => {
     let start = await post("/auth/device");
     gh.approve(start.json.userCode, { login: "mallory", id: 666 });
     const r = await post("/auth/device/token", { device: start.json.device });
-    expect([r.status, r.json.error.message]).toEqual([403, "mallory isn't a user of this server: an Admin can add you"]);
+    expect([r.status, r.json.error.message]).toEqual([403, "mallory isn't a user of this server yet. Your request for access has gone to its Admins: sign in again once they've added you."]);
     start = await post("/auth/device");
     gh.deny(start.json.userCode);
     expect((await post("/auth/device/token", { device: start.json.device })).status).toBe(403);
@@ -87,6 +87,61 @@ describe("signing in with GitHub, by the device flow", () => {
     const { post } = setup({ github: false });
     const r = await post("/auth/device");
     expect([r.status, r.json.error.code]).toEqual([409, "state"]);
+  });
+});
+
+describe("asking for access, and open sign-up", () => {
+  const deviceSignIn = async (s: ReturnType<typeof setup>, who: { login: string; id: number }) => {
+    const start = await s.post("/auth/device");
+    s.gh.approve(start.json.userCode, who);
+    return s.post("/auth/device/token", { device: start.json.device });
+  };
+
+  it("someone not yet a user asks for access by signing in; an Admin adds them or turns them down", async () => {
+    const s = setup();
+    const ada = s.auth.createToken("ada", { name: "t" }, "test").token;
+    const bob = s.auth.createToken("bob", { name: "t" }, "test").token;
+    const as = (t: string) => async (method: string, path: string) => {
+      const res = await s.app.request(path, { method, headers: { authorization: `Bearer ${t}` } });
+      return { status: res.status, json: (await res.json()) as any };
+    };
+    expect((await deviceSignIn(s, { login: "Cy", id: 303 })).status).toBe(403);
+    await deviceSignIn(s, { login: "cy", id: 303 });
+    await deviceSignIn(s, { login: "dee", id: 404 });
+    expect((await as(bob)("GET", "/api/access-requests")).status).toBe(403);
+    const asked = (await as(ada)("GET", "/api/access-requests")).json as { login: string; tries: number }[];
+    expect(asked.map((r) => [r.login, r.tries]).sort()).toEqual([["cy", 2], ["dee", 1]]);
+    // Adding them grants it: their next sign-in works, and the request is gone.
+    s.auth.addUser("cy", "editor", "ada");
+    expect((await deviceSignIn(s, { login: "cy", id: 303 })).json).toMatchObject({ login: "cy", role: "editor" });
+    expect(((await as(ada)("GET", "/api/access-requests")).json as { login: string }[]).map((r) => r.login)).toEqual(["dee"]);
+    expect((await as(ada)("DELETE", "/api/access-requests/dee")).json).toEqual({ dismissed: true });
+    expect((await as(ada)("GET", "/api/access-requests")).json).toEqual([]);
+    expect((await as(ada)("DELETE", "/api/access-requests/dee")).status).toBe(404);
+  });
+
+  it("with open sign-up, signing in makes you a user with the sign-up role", async () => {
+    const s = setup({ signupRole: "editor" });
+    expect((await deviceSignIn(s, { login: "Cy", id: 303 })).json).toMatchObject({ login: "cy", role: "editor" });
+    expect(s.auth.user("cy").role).toBe("editor");
+    expect(s.auth.accessRequests()).toEqual([]);
+    expect(s.db.all<{ action: string }>("SELECT action FROM audit WHERE action = 'user.signup'")).toHaveLength(1);
+    // Still bound to the account: someone else taking the login later isn't them.
+    expect((await deviceSignIn(s, { login: "cy", id: 999 })).status).toBe(403);
+    expect(() => new Auth(s.db, { signupRole: "admin" })).toThrow(/can't make Admins/);
+  });
+
+  it("on the web, a refusal goes back to the sign-in page, saying why", async () => {
+    const { gh, app } = setup();
+    const go = await app.request("/auth/github");
+    const to = new URL(go.headers.get("location")!);
+    const back = await app.request(`/auth/github/callback?code=${gh.codeFor({ login: "mallory", id: 666 })}&state=${to.searchParams.get("state")}`, {
+      headers: { cookie: `sapwood_oauth_state=${value(cookies(go).sapwood_oauth_state!)}` },
+    });
+    expect(back.status).toBe(302);
+    const where = new URL(back.headers.get("location")!, "http://x");
+    expect(where.pathname).toBe("/");
+    expect(where.searchParams.get("signin")).toMatch(/^mallory isn't a user of this server yet/);
   });
 });
 

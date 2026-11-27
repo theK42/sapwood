@@ -41,6 +41,14 @@ export interface TokenInfo {
   lastUsed: string | null;
 }
 
+/** Someone who signed in with GitHub but isn't a user: asking for access. */
+export interface AccessRequest {
+  login: string;
+  firstAt: string;
+  lastAt: string;
+  tries: number;
+}
+
 export interface AuditEntry {
   id: number;
   at: string;
@@ -193,6 +201,8 @@ export class Api {
   addUser = (login: string, role: Role) => this.call<User>("POST", "/api/users", { login, role });
   setRole = (login: string, role: Role) => this.call<User>("PATCH", `/api/users/${seg(login)}`, { role });
   removeUser = (login: string) => this.call<User>("DELETE", `/api/users/${seg(login)}`);
+  accessRequests = () => this.call<AccessRequest[]>("GET", "/api/access-requests");
+  dismissRequest = (login: string) => this.call<{ dismissed: boolean }>("DELETE", `/api/access-requests/${seg(login)}`);
   /** Your tokens; everyone's with `all` (an Admin's). */
   tokens = (all = false) => this.call<TokenInfo[]>("GET", `/api/tokens${all ? "?all=1" : ""}`);
   /** A new token for yourself: the token is in the answer, and only there. */
