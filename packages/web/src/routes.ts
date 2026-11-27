@@ -11,7 +11,14 @@ export type Route =
   /** The schema editor. */
   | { kind: "schema" }
   | { kind: "commit"; id: string }
-  | { kind: "changes"; task: number };
+  | { kind: "changes"; task: number }
+  /** People, tokens, branches and activity: an Admin's. */
+  | { kind: "admin"; section: AdminSection }
+  /** Your own tokens. */
+  | { kind: "account" };
+
+export type AdminSection = "people" | "tokens" | "branches" | "activity";
+export const ADMIN_SECTIONS: AdminSection[] = ["people", "tokens", "branches", "activity"];
 
 export function routeFromPath(path = location.pathname): Route {
   const m = /^\/branches\/[^/]+\/([^/]+)(?:\/([^/]+)(?:\/([^/]+))?)?/.exec(path);
@@ -25,24 +32,30 @@ export function routeFromPath(path = location.pathname): Route {
   if (a === "schema" && !x) return { kind: "schema" };
   if (a === "commits" && x) return { kind: "commit", id: x };
   if (a === "tasks" && /^\d+$/.test(x) && c === "changes") return { kind: "changes", task: Number(x) };
+  if (a === "admin") return { kind: "admin", section: (ADMIN_SECTIONS as string[]).includes(x) ? (x as AdminSection) : "people" };
+  if (a === "account" && !x) return { kind: "account" };
   return { kind: "home" };
 }
 
 export function routePath(branch: string, r: Route): string {
   const e = encodeURIComponent;
+  if (r.kind === "admin") return `/branches/${e(branch)}/admin${r.section === "people" ? "" : `/${r.section}`}`;
+  if (r.kind === "account") return `/branches/${e(branch)}/account`;
   if (r.kind === "entities") return `/branches/${e(branch)}/entities${r.type === null ? "" : `/${e(r.type)}${r.id === null ? "" : `/${e(r.id)}`}`}`;
   const rest = { home: "", sheet: `/sheets/${e((r as { id: string }).id)}`, type: `/types/${e((r as { name: string }).name)}`, history: "/history", schema: "/schema", commit: `/commits/${e((r as { id: string }).id)}`, changes: `/tasks/${(r as { task: number }).task}/changes` }[r.kind];
   return `/branches/${e(branch)}${rest}`;
 }
 
 /** The app's tabs (top bar): each page belongs to one. */
-export type Tab = "sheets" | "entities" | "schema" | "history";
+export type Tab = "sheets" | "entities" | "schema" | "history" | "admin" | "account";
 
 export const TABS: { tab: Tab; label: string; home: Route }[] = [
   { tab: "sheets", label: "Sheets", home: { kind: "home" } },
   { tab: "entities", label: "Entities", home: { kind: "entities", type: null, id: null } },
   { tab: "schema", label: "Schema", home: { kind: "schema" } },
   { tab: "history", label: "History", home: { kind: "history" } },
+  /** Shown to Admins only. */
+  { tab: "admin", label: "Admin", home: { kind: "admin", section: "people" } },
 ];
 
 export function tabOf(r: Route): Tab {
@@ -55,6 +68,10 @@ export function tabOf(r: Route): Tab {
     case "commit":
     case "changes":
       return "history";
+    case "admin":
+      return "admin";
+    case "account":
+      return "account";
     default:
       return "sheets"; // the packs page, a sheet, a type's grid
   }
@@ -65,7 +82,7 @@ export function tabOf(r: Route): Tab {
  * page (the packs page, the entity page's types, …); a tab not visited yet, to its first page.
  */
 export function tabTarget(tab: Tab, now: Route, last: Partial<Record<Tab, Route>>): Route {
-  const home = TABS.find((t) => t.tab === tab)!.home;
+  const home = TABS.find((t) => t.tab === tab)?.home ?? { kind: "account" };
   if (tabOf(now) === tab) return home;
   return last[tab] ?? home;
 }

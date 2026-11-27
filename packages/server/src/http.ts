@@ -224,7 +224,7 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
 
   // ------------------------------------------------------------ who, users, tokens
 
-  app.get("/api/me", (c) => c.json({ login: me(c).login, role: me(c).role, scopes: me(c).scopes }));
+  app.get("/api/me", (c) => c.json({ login: me(c).login, role: me(c).role, scopes: me(c).scopes, token: me(c).token }));
 
   app.get("/api/users", (c) => {
     demand(me(c), "admin");
@@ -240,8 +240,26 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     const b = await body(c);
     return c.json(auth.setRole(c.req.param("login"), role(b.role), me(c).login));
   });
+  app.delete("/api/users/:login", (c) => {
+    demand(me(c), "admin", "write");
+    return c.json(auth.removeUser(c.req.param("login"), me(c).login));
+  });
+  /** The audit log, newest first (an Admin's): `?limit=` (at most 500) and `?before=` an entry's id. */
+  app.get("/api/audit", (c) => {
+    demand(me(c), "admin");
+    const limit = Math.min(500, Math.max(1, Number(c.req.query("limit") ?? 100) || 100));
+    const before = c.req.query("before");
+    return c.json(auth.auditLog(limit, before === undefined ? undefined : Number(before)));
+  });
 
-  app.get("/api/tokens", (c) => c.json(auth.tokens(me(c).login)));
+  /** Your tokens; everyone's with `?all=1`, for an Admin. */
+  app.get("/api/tokens", (c) => {
+    if (c.req.query("all") === "1") {
+      demand(me(c), "admin");
+      return c.json(auth.allTokens());
+    }
+    return c.json(auth.tokens(me(c).login));
+  });
   /** A new token for yourself, at most as able as the token asking for it. */
   app.post("/api/tokens", async (c) => {
     const p = me(c);
@@ -281,6 +299,12 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     const b = c.req.param("b");
     may(c, "viewer", "read", b);
     return c.json(repo.branch(b));
+  });
+  /** Bring a discarded branch back. */
+  app.post("/api/branches/:b/undiscard", (c) => {
+    const b = c.req.param("b");
+    may(c, "editor", "write", b);
+    return c.json(repo.restoreBranch(b, me(c).login));
   });
   app.delete("/api/branches/:b", (c) => {
     const b = c.req.param("b");

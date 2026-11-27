@@ -11,7 +11,42 @@ export type TaskState = "open" | "landed" | "abandoned";
 export interface Me {
   login: string;
   role: Role;
-  scopes: Record<string, unknown>;
+  scopes: Scopes;
+  /** The token this session signed in with. */
+  token?: number;
+}
+
+/** What a token may do, beyond its user's role (DESIGN §11.3). */
+export interface Scopes {
+  role?: Role;
+  readOnly?: boolean;
+  noLand?: boolean;
+  branches?: string[];
+}
+
+export interface User {
+  login: string;
+  role: Role;
+  createdAt: string;
+}
+
+export interface TokenInfo {
+  id: number;
+  user: string;
+  name: string;
+  scopes: Scopes;
+  expires: string | null;
+  revoked: boolean;
+  createdAt: string;
+  lastUsed: string | null;
+}
+
+export interface AuditEntry {
+  id: number;
+  at: string;
+  actor: string;
+  action: string;
+  detail: Record<string, unknown>;
 }
 
 export interface BranchInfo {
@@ -150,7 +185,20 @@ export class Api {
   signInWithToken = (token: string) => this.call<{ login: string; role: Role }>("POST", "/auth/token", { token });
   signOut = () => this.call<{ signedOut: boolean }>("POST", "/auth/logout");
 
-  branches = () => this.call<BranchInfo[]>("GET", "/api/branches");
+  branches = (archived = false) => this.call<BranchInfo[]>("GET", `/api/branches${archived ? "?archived=1" : ""}`);
+  discardBranch = (b: string) => this.call<BranchInfo>("DELETE", `/api/branches/${seg(b)}`);
+  undiscardBranch = (b: string) => this.call<BranchInfo>("POST", `/api/branches/${seg(b)}/undiscard`);
+
+  users = () => this.call<User[]>("GET", "/api/users");
+  addUser = (login: string, role: Role) => this.call<User>("POST", "/api/users", { login, role });
+  setRole = (login: string, role: Role) => this.call<User>("PATCH", `/api/users/${seg(login)}`, { role });
+  removeUser = (login: string) => this.call<User>("DELETE", `/api/users/${seg(login)}`);
+  /** Your tokens; everyone's with `all` (an Admin's). */
+  tokens = (all = false) => this.call<TokenInfo[]>("GET", `/api/tokens${all ? "?all=1" : ""}`);
+  /** A new token for yourself: the token is in the answer, and only there. */
+  makeToken = (name: string, scopes: Scopes, expires: string | null) => this.call<{ token: string; info: TokenInfo }>("POST", "/api/tokens", { name, scopes, expires });
+  revokeToken = (id: number) => this.call<TokenInfo>("DELETE", `/api/tokens/${id}`);
+  auditLog = (limit = 100, before?: number) => this.call<AuditEntry[]>("GET", `/api/audit?limit=${limit}${before === undefined ? "" : `&before=${before}`}`);
   branch = (b: string) => this.call<BranchInfo>("GET", `/api/branches/${seg(b)}`);
   commits = (b: string, limit = 50) => this.call<CommitInfo[]>("GET", `/api/branches/${seg(b)}/commits?limit=${limit}`);
   commit = (id: string) => this.call<CommitInfo>("GET", `/api/commits/${seg(id)}`);

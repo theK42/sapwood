@@ -49,7 +49,7 @@ describe("the HTTP API", () => {
 
   it("reads at a branch head", async () => {
     const { vic } = setup();
-    expect((await vic("GET /api/me")).json).toEqual({ login: "vic", role: "viewer", scopes: {} });
+    expect((await vic("GET /api/me")).json).toEqual({ login: "vic", role: "viewer", scopes: {}, token: expect.any(Number) });
     expect((await vic("GET /api/branches")).json.map((b: { name: string }) => b.name)).toEqual(["main"]);
     expect((await vic("GET /api/branches/main/entities/w1")).json).toMatchObject({ $type: "Weapon", damage: 10, shots: ["a1"] });
     expect((await vic("GET /api/branches/main/entities/nope")).json.error.code).toBe("not-found");
@@ -177,6 +177,35 @@ describe("the HTTP API", () => {
     expect((await as(token)("GET /api/me")).status).toBe(200);
     expect((await ada(`DELETE /api/tokens/${info.id}`)).json.revoked).toBe(true);
     expect((await as(token)("GET /api/me")).status).toBe(401);
+  });
+
+  it("the admin page: everyone's tokens with when last used, removing users, the audit log, discarded branches back", async () => {
+    const { ada, bob, as, auth } = setup();
+    const cy = auth.createToken("bob", { name: "laptop" }, "test");
+    await as(cy.token)("GET /api/me");
+    expect((await bob("GET /api/tokens?all=1")).status).toBe(403);
+    const all = (await ada("GET /api/tokens?all=1")).json as { user: string; name: string; lastUsed: string | null }[];
+    expect(all.find((t) => t.user === "bob" && t.name === "laptop")!.lastUsed).not.toBeNull();
+    expect(new Set(all.map((t) => t.user))).toEqual(new Set(["ada", "bob", "vic"]));
+    expect((await ada("GET /api/me")).json.token).toEqual(expect.any(Number));
+    // Removing: not yourself, nor by a non-Admin; the removed user's tokens stop working.
+    expect((await ada("DELETE /api/users/ada")).status).toBe(409);
+    expect((await bob("DELETE /api/users/vic")).status).toBe(403);
+    expect((await ada("DELETE /api/users/bob")).json).toMatchObject({ login: "bob" });
+    expect((await as(cy.token)("GET /api/me")).status).toBe(401);
+    expect((await ada("GET /api/users")).json.map((u: { login: string }) => u.login)).toEqual(["ada", "vic"]);
+    expect(((await ada("GET /api/tokens?all=1")).json as { user: string; revoked: boolean }[]).filter((t) => t.user === "bob").every((t) => t.revoked)).toBe(true);
+    // The audit log, newest first, and paged.
+    const log = (await ada("GET /api/audit?limit=2")).json as { id: number; action: string; actor: string }[];
+    expect(log[0]).toMatchObject({ action: "user.remove", actor: "ada" });
+    expect(log).toHaveLength(2);
+    expect(((await ada(`GET /api/audit?limit=1&before=${log[1]!.id}`)).json as { id: number }[])[0]!.id).toBeLessThan(log[1]!.id);
+    expect((await bob("GET /api/audit")).status).toBe(401); // bob's gone
+    // A discarded branch comes back.
+    await ada("POST /api/branches", { name: "old", from: "main" });
+    await ada("DELETE /api/branches/old");
+    expect((await ada("POST /api/branches/old/undiscard")).json).toMatchObject({ name: "old", archived: false });
+    expect((await ada("POST /api/branches/old/undiscard")).status).toBe(409);
   });
 
   it("merge and sync", async () => {

@@ -436,3 +436,29 @@ button.link.muted:hover { text-decoration: underline; }
 /* Inside something draggable, text boxes still take the text cursor (pressing there selects, not drags). */
 [draggable="true"] input:not([type="checkbox"]):not([type="radio"]), [draggable="true"] textarea { cursor: text; }
 [draggable="true"] select { cursor: default; }
+
+/* The admin page and your tokens */
+.admin { display: grid; gap: 14px; align-content: start; max-width: 1080px; }
+.tabs-sub { display: flex; gap: 2px; margin-left: 12px; flex-wrap: wrap; }
+.tabs-sub a { color: var(--muted); text-decoration: none; padding: 3px 10px; border-radius: 6px; font-size: 14px; }
+.tabs-sub a:hover { color: var(--text); background: color-mix(in srgb, var(--line) 50%, transparent); }
+.tabs-sub a.on { color: var(--text); background: var(--line); }
+.admin-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.admin-table th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.admin-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.admin-table tr.muted td { color: var(--muted); }
+.admin-table .tag { margin-left: 6px; }
+.admin-actions { text-align: right; white-space: nowrap; }
+.admin-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.admin-add .vf-input { flex: 1 1 200px; max-width: 320px; }
+.admin-toggle { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; display: inline-flex; gap: 4px; align-items: center; }
+.panel h2:has(.admin-toggle) { display: flex; align-items: baseline; gap: 8px; }
+.admin-form { display: grid; gap: 6px; max-width: 640px; }
+.admin-form .vf-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.admin-form .vf-name { width: 90px; }
+.admin-made { border-color: var(--accent); }
+.admin-token { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.admin-token code { padding: 6px 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; overflow-wrap: anywhere; user-select: all; }
+.top .me { color: var(--muted); text-decoration: none; }
+.top .me:hover, .top .me.on { color: var(--text); text-decoration: underline; }
+@media (max-width: 720px) { .admin-table th:nth-child(n+4), .admin-table td:nth-child(n+4):not(.admin-actions) { display: none; } }

@@ -434,10 +434,26 @@ export class Repo {
   }
 
   /** Archive a branch: it is kept, but can't be changed. */
+  /** Bring a discarded branch back: it can be read and changed again. */
+  restoreBranch(name: string, actor: string | null = null): BranchInfo {
+    const b = this.branch(name);
+    if (!b.archived) throw new RepoError("state", `Branch ${name} isn't discarded`);
+    this.db.tx(() => {
+      this.db.run("UPDATE branches SET archived = 0 WHERE name = ?", name);
+      if (actor) this.db.audit(actor, "branch.restore", { name });
+    });
+    // To those watching branches, it's as if made again.
+    this.emit(() => ({ type: "branch", branch: this.branch(name), change: "created", by: actor }));
+    return this.branch(name);
+  }
+
   discardBranch(name: string, actor: string | null = null): BranchInfo {
     if (name === "main") throw new RepoError("bad-request", "main can't be discarded");
     this.liveBranch(name);
-    this.db.run("UPDATE branches SET archived = 1 WHERE name = ?", name);
+    this.db.tx(() => {
+      this.db.run("UPDATE branches SET archived = 1 WHERE name = ?", name);
+      if (actor) this.db.audit(actor, "branch.discard", { name });
+    });
     this.heads.delete(name);
     this.emit(() => ({ type: "branch", branch: this.branch(name), change: "discarded", by: actor }));
     return this.branch(name);

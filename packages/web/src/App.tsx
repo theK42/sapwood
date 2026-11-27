@@ -9,6 +9,7 @@ import { HeadView } from "./head.ts";
 import { ChangesPage, CommitPage, HistoryPage } from "./History.tsx";
 import { routeFromPath, routePath, TABS, tabOf, tabTarget, type Route, type Tab } from "./routes.ts";
 import { SearchBox } from "./SearchBox.tsx";
+import { AccountPage, AdminPage } from "./Admin.tsx";
 import type { CellHit, Hit } from "./search.ts";
 import { IssuePanel } from "./IssuePanel.tsx";
 import { refList } from "./refs.ts";
@@ -351,7 +352,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
           </select>
         </label>
         <nav className="tabs-main" aria-label="Pages">
-          {TABS.map((t) => {
+          {TABS.filter((t) => t.tab !== "admin" || me.role === "admin").map((t) => {
             const to = tabTarget(t.tab, route, lastInTab.current);
             const on = tabOf(route) === t.tab;
             return (
@@ -374,9 +375,18 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
         </nav>
         {source && <SearchBox source={source} open={openHit} />}
         <span className="spacer" />
-        <span className="muted">
+        <a
+          className={route.kind === "account" ? "me on" : "me"}
+          href={routePath(branch, { kind: "account" })}
+          title="Your tokens: for the sapwood command, scripts and MCP"
+          onClick={(e) => {
+            if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+            e.preventDefault();
+            go(branch, { kind: "account" });
+          }}
+        >
           {me.login} · {me.role}
-        </span>
+        </a>
         <button className="button quiet" onClick={signOut}>
           Sign out
         </button>
@@ -484,6 +494,10 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
             if (s && m) goTo(s.id, Number(m[2]) - 1, colToNumber(m[1]!) - 1);
           }}
         />
+      ) : route.kind === "admin" ? (
+        <AdminPage api={api} me={me} branch={branch} section={route.section} go={(section) => go(branch, { kind: "admin", section })} href={(section) => routePath(branch, { kind: "admin", section })} back={() => go(branch)} />
+      ) : route.kind === "account" ? (
+        <AccountPage api={api} me={me} back={() => go(branch)} origin={location.origin} />
       ) : route.kind === "history" ? (
         <HistoryPage api={api} branch={branch} tick={headTick} open={(id) => go(branch, { kind: "commit", id })} href={(id) => routePath(branch, { kind: "commit", id })} back={() => go(branch)} />
       ) : route.kind === "commit" ? (

@@ -103,6 +103,8 @@ export class Db {
       this.sql.exec("ALTER TABLE branches ADD COLUMN base_commit TEXT; ALTER TABLE branches ADD COLUMN base_point TEXT; ALTER TABLE branches ADD COLUMN net TEXT NOT NULL DEFAULT '[]'; UPDATE branches SET base_commit = fork_commit, base_point = fork_commit WHERE parent IS NOT NULL;");
     // A task's revision, which a browser's copy of the task is checked against (2026-11-22).
     if (!this.all<{ name: string }>("PRAGMA table_info(tasks)").some((c) => c.name === "rev")) this.sql.exec("ALTER TABLE tasks ADD COLUMN rev INTEGER NOT NULL DEFAULT 0;");
+    // When each token was last used (2026-11-26), for the admin page.
+    if (!this.all<{ name: string }>("PRAGMA table_info(tokens)").some((c) => c.name === "last_used")) this.sql.exec("ALTER TABLE tokens ADD COLUMN last_used TEXT;");
     // The GitHub account a user signed in with first, by its numeric ID (logins can be renamed).
     if (!this.all<{ name: string }>("PRAGMA table_info(users)").some((c) => c.name === "github_id"))
       this.sql.exec("ALTER TABLE users ADD COLUMN github_id INTEGER; CREATE UNIQUE INDEX users_github_id ON users (github_id);");

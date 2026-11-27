@@ -34,7 +34,21 @@ export interface TokenInfo {
   expires: string | null;
   revoked: boolean;
   createdAt: string;
+  /** When it last let someone in, to within LAST_USED_STEP; null if never. */
+  lastUsed: string | null;
 }
+
+/** One line of the audit log: who did what, when. */
+export interface AuditEntry {
+  id: number;
+  at: string;
+  actor: string;
+  action: string;
+  detail: unknown;
+}
+
+/** "Last used" is written at most this often per token, not on every request. */
+const LAST_USED_STEP = 15 * 60_000;
 
 /** Who is asking, and what their token allows. */
 export interface Principal {
@@ -121,6 +135,36 @@ export class Auth {
     return this.db.all<Record<string, string | number | null>>("SELECT * FROM tokens WHERE user = ? ORDER BY id", loginKey(login)).map(tokenInfo);
   }
 
+  /** Every token, everyone's (for Admins). */
+  allTokens(): TokenInfo[] {
+    return this.db.all<Record<string, string | number | null>>("SELECT * FROM tokens ORDER BY user, id").map(tokenInfo);
+  }
+
+  /**
+   * Remove a user: their tokens are revoked (web sign-ins too) and they can't sign in. What
+   * they did stays: their commits, tasks and the audit log. Not the last Admin, nor yourself.
+   */
+  removeUser(login: string, actor: string): User {
+    const u = this.user(login);
+    if (u.login === loginKey(actor)) throw new RepoError("state", "You can't remove yourself: another Admin can");
+    if (u.role === "admin" && this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'")!.n === 1) throw new RepoError("state", "That's the last Admin");
+    this.db.tx(() => {
+      this.db.run("UPDATE tokens SET revoked = 1 WHERE user = ?", u.login);
+      this.db.run("DELETE FROM users WHERE login = ?", u.login);
+      this.db.audit(actor, "user.remove", { login: u.login, role: u.role });
+    });
+    return u;
+  }
+
+  /** The audit log, newest first: `limit` lines, before the line `before` if given. */
+  auditLog(limit = 100, before?: number): AuditEntry[] {
+    const rows =
+      before === undefined
+        ? this.db.all<Record<string, string | number>>("SELECT * FROM audit ORDER BY id DESC LIMIT ?", limit)
+        : this.db.all<Record<string, string | number>>("SELECT * FROM audit WHERE id < ? ORDER BY id DESC LIMIT ?", before, limit);
+    return rows.map((r) => ({ id: r.id as number, at: r.at as string, actor: r.actor as string, action: r.action as string, detail: JSON.parse(r.detail as string) as unknown }));
+  }
+
   revokeToken(id: number, actor: string): TokenInfo {
     this.token(id);
     this.db.tx(() => {
@@ -163,6 +207,8 @@ export class Auth {
     if (!u) return null;
     const scopes = JSON.parse(r.scopes) as Scopes;
     const role = scopes.role !== undefined && rank(scopes.role) < rank(u.role) ? scopes.role : u.role;
+    const used = (r as { last_used?: string | null }).last_used ?? null;
+    if (used === null || Date.now() - Date.parse(used) > LAST_USED_STEP) this.db.run("UPDATE tokens SET last_used = ? WHERE id = ?", now(), r.id);
     return { login: r.user, role, scopes, token: r.id };
   }
 }
@@ -191,6 +237,7 @@ function tokenInfo(r: Record<string, string | number | null>): TokenInfo {
     expires: r.expires as string | null,
     revoked: r.revoked === 1,
     createdAt: r.created_at as string,
+    lastUsed: (r.last_used as string | null | undefined) ?? null,
   };
 }
 
