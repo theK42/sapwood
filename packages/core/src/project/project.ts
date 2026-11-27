@@ -279,6 +279,7 @@ export class Project {
       case "addSchema":
       case "removeSchema":
       case "setSchema":
+      case "moveSchema":
         return; // see schemaChanged, once per apply
       case "renameId":
       case "renameType":

@@ -11,7 +11,7 @@ import type { Layout } from "../project/layout.ts";
 import { axisOf, cellKey, OpError, hasId, isLive, own, placeInMap, sheetContents, siblingBefore, splitCellKey, type Axis, type Doc, type Format, type RowFlag, type SheetContents, type SheetDoc } from "./doc.ts";
 import type { Id } from "../schema/model.ts";
 import { renameEnumMemberOps, renameFieldOps, renameIdWrites, renameTypeOps } from "./rename.ts";
-import { addNode, removeNode, setNodeProp, type SchemaDef, type SchemaParent } from "./schema.ts";
+import { addNode, moveNode, removeNode, setNodeProp, type SchemaDef, type SchemaParent } from "./schema.ts";
 
 export type Op =
   // cells
@@ -58,6 +58,8 @@ export type Op =
   | { kind: "removeSchema"; id: Id }
   /** Set one property of a definition or field; without `value`, clear it. */
   | { kind: "setSchema"; id: Id; key: string; value?: unknown }
+  /** Put a definition or field right after one of its siblings (null: first). */
+  | { kind: "moveSchema"; id: Id; after: Id | null }
   // refactors with intent (§8.2): see rename.ts
   | { kind: "renameId"; from: string; to: string }
   /** Rename a type, trait, struct, union or enum, and rewrite what names it. */
@@ -361,6 +363,12 @@ export function applyPlain(doc: Doc, op: Op): Op[] {
       const r = removeNode(doc.schema, op.id);
       doc.schema = r.schema;
       return [{ kind: "addSchema", parent: r.parent, def: r.def, after: r.after }];
+    }
+    case "moveSchema": {
+      const r = moveNode(doc.schema, op.id, op.after);
+      if (r.schema === doc.schema) return [];
+      doc.schema = r.schema;
+      return [{ kind: "moveSchema", id: op.id, after: r.prev }];
     }
     case "setSchema": {
       const r = setNodeProp(doc.schema, op.id, op.key, op.value);

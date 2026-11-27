@@ -14,7 +14,7 @@ import { isRowFlag, OpError, type Format, type SheetContents } from "./doc.ts";
 import type { Op } from "./ops.ts";
 
 /** Op kinds that change the schema. */
-export const SCHEMA_OP_KINDS: ReadonlySet<Op["kind"]> = new Set(["addSchema", "removeSchema", "setSchema", "renameType", "renameField", "renameEnumMember"]);
+export const SCHEMA_OP_KINDS: ReadonlySet<Op["kind"]> = new Set(["addSchema", "removeSchema", "setSchema", "moveSchema", "renameType", "renameField", "renameEnumMember"]);
 /** Op kinds that make, remove or rename packs: a Developer's (DESIGN §11.2). */
 export const PACK_OP_KINDS: ReadonlySet<Op["kind"]> = new Set(["createPack", "removePack", "renamePack", "setPackParent", "orderPack"]);
 

@@ -213,3 +213,58 @@ describe("a sheet deleted on one side and changed on the other", () => {
     expect(names(r.s)).toEqual(["Guns", "Notes", "Ammo"]);
   });
 });
+
+describe("the schema's order", () => {
+  const base = () => load().project.doc;
+  const run = (doc: import("../ops/doc.ts").Doc, f: (s: Sapwood) => void) => {
+    const s = Sapwood.fromDoc(cloneDoc(doc));
+    const ops: import("../ops/ops.ts").Op[] = [];
+    const orig = s.project.apply.bind(s.project);
+    s.project.apply = (o) => (ops.push(...o), orig(o));
+    f(s);
+    return ops;
+  };
+  const typeNames = (d: import("../ops/doc.ts").Doc) => d.schema.types.map((t) => t.name);
+  /** The schema's YAML with the Gun type moved above Ammo. */
+  const gunFirst = (s: Sapwood) => {
+    const y = s.schemaYaml();
+    const i = y.indexOf("  Ammo:");
+    const j = y.indexOf("  Gun:");
+    return y.slice(0, i) + y.slice(j) + y.slice(i, j);
+  };
+
+  it("a reorder in the YAML is a moveSchema op; undo puts it back", () => {
+    const s = load();
+    const c = s.applySchema(gunFirst(s));
+    expect(c.ops.filter((o) => o.kind === "moveSchema")).toHaveLength(1);
+    expect(typeNames(s.project.doc)).toEqual(["Gun", "Ammo"]);
+    expect(s.get("g1")).toMatchObject({ ammo: "a1" });
+    s.undo();
+    expect(typeNames(s.project.doc)).toEqual(["Ammo", "Gun"]);
+  });
+
+  it("moved on one side, changed on the other: both kept; moved differently: the later one wins", () => {
+    const b = base();
+    const theirs = run(b, (s) => s.applySchema(s.schemaYaml().replace("dps: { id: f", "dps: { min: 0, id: f")));
+    const mine = run(b, (s) => s.applySchema(gunFirst(s)));
+    const r = rebase(b, theirs, mine, () => "theirs");
+    expect(r.conflicts).toEqual([]);
+    expect(typeNames(r.state)).toEqual(["Gun", "Ammo"]);
+    // Both moved it: mine lands later and wins.
+    const back = run(b, (s) => {
+      s.applySchema(gunFirst(s));
+      s.applySchema(s.schemaYaml().replace(/(  Gun:[\s\S]*?)(  Ammo:[\s\S]*?)(\n\n|$)/, "$2$1$3"));
+    });
+    expect(typeNames(rebase(b, mine, back, () => "theirs").state)).toEqual(["Ammo", "Gun"]);
+  });
+
+  it("reconcile puts two schemas' nodes in the same order", () => {
+    const a = load();
+    const b = Sapwood.fromDoc(cloneDoc(a.project.doc));
+    b.applySchema(gunFirst(b));
+    const ops = reconcile(a.project.doc, b.project.doc)!;
+    expect(ops.map((o) => o.kind)).toContain("moveSchema");
+    a.project.apply(ops);
+    expect(canonDoc(a.project.doc)).toEqual(canonDoc(b.project.doc));
+  });
+});

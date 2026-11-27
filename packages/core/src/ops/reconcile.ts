@@ -18,7 +18,7 @@ import { propsOf, schemaNodes, siblings, type SchemaParent } from "./schema.ts";
 export function reconcile(from: Doc, to: Doc): Op[] | null {
   const fromNodes = schemaNodes(from.schema), toNodes = schemaNodes(to.schema);
   const shape = (d: Doc, nodes: Map<string, { parent: SchemaParent }>) =>
-    JSON.stringify([...nodes.values()].map((n) => [n.parent, siblings(d.schema, n.parent).map((x) => x.id)]).sort());
+    JSON.stringify([...nodes.values()].map((n) => [n.parent, siblings(d.schema, n.parent).map((x) => x.id).sort()]).sort()); // order is set below
   if (fromNodes.size !== toNodes.size || shape(from, fromNodes) !== shape(to, toNodes)) return null;
   // In any order: the order is set below.
   const packs = (d: Doc) => stableJson([...d.packs].sort(([a], [b]) => (a < b ? -1 : 1)));
@@ -39,6 +39,15 @@ export function reconcile(from: Doc, to: Doc): Op[] | null {
       for (const key of new Set([...Object.keys(have), ...Object.keys(want)]))
         if (stableJson(have[key]) !== stableJson(want[key]))
           emit(want[key] === undefined ? { kind: "setSchema", id, key } : { kind: "setSchema", id, key, value: want[key] });
+    }
+    // Then each node after the sibling it follows in `to`, in `to`'s order.
+    for (const [id, n] of toNodes) {
+      const list = siblings(to.schema, n.parent);
+      const i = list.findIndex((x) => x.id === id);
+      const want = i > 0 ? list[i - 1]!.id : null;
+      const here = siblings(doc.schema, n.parent);
+      const j = here.findIndex((x) => x.id === id);
+      if ((j > 0 ? here[j - 1]!.id : null) !== want) emit({ kind: "moveSchema", id, after: want });
     }
     if (stableJson(doc.schema) !== stableJson(to.schema)) return null;
     // Packs, then sheets, in `to`'s order, each after the sibling it follows there.
@@ -123,7 +132,7 @@ export function reconcile(from: Doc, to: Doc): Op[] | null {
 }
 
 /** The values (not indices) of a longest strictly rising subsequence. */
-function longestRising(xs: number[]): number[] {
+export function longestRising(xs: number[]): number[] {
   const tails: number[] = []; // index into xs of the smallest tail of a run of each length
   const prev: number[] = new Array(xs.length).fill(-1);
   xs.forEach((x, i) => {

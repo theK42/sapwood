@@ -8,16 +8,22 @@
 //  2. renames, as the intent ops that rewrite cells (renameType, renameField,
 //     renameEnumMember). A rename's target name may be held by another node being renamed
 //     (a swap): that one goes through a temporary name first;
-//  3. additions and property changes, in schema order.
-//
-// Reordering has no op yet, so an order change is reported, not applied.
+//  3. additions and property changes, in schema order;
+//  4. moves, for nodes in a new order among their siblings: the fewest, keeping the longest
+//     run already in order.
 
 import { stableJson } from "../formula/content.ts";
 import type { EnumMember, Id, Schema } from "../schema/model.ts";
-import type { Op } from "./ops.ts";
-import { isSection, propsOf, schemaNodes, SECTIONS, type SchemaDef, type SchemaParent } from "./schema.ts";
+import { applyOps, type Op } from "./ops.ts";
+import { longestRising } from "./reconcile.ts";
+import { isSection, propsOf, schemaNodes, siblings, SECTIONS, type SchemaDef, type SchemaParent } from "./schema.ts";
 
 const WITH_FIELDS = new Set<SchemaParent>(["traits", "structs", "types"]);
+
+/** The section a definition is in, by its ID. */
+function sectionOf(schema: Schema, id: Id): (typeof SECTIONS)[number] {
+  return SECTIONS.find((s) => (schema[s] as unknown as SchemaDef[]).some((d) => d.id === id)) ?? "types";
+}
 
 /** Nodes of `cur` that `next` doesn't have in the same place. A definition's fields go with it. */
 export function schemaRemovals(cur: Schema, next: Schema): Op[] {
@@ -110,9 +116,9 @@ export function schemaRenames(cur: Schema, next: Schema): Op[] {
 }
 
 /**
- * Additions and property changes taking `cur` to `next`, where every node `next` shares
- * with `cur` is in the same place and has the same name (after removals and renames).
- * `notes` lists order changes, which aren't applied.
+ * Additions, property changes and moves taking `cur` to `next`, where every node `next`
+ * shares with `cur` is in the same place and has the same name (after removals and renames).
+ * `notes` stays for what can't be applied (none now).
  */
 export function schemaChanges(cur: Schema, next: Schema): { ops: Op[]; notes: string[] } {
   const a = schemaNodes(cur);
@@ -126,14 +132,6 @@ export function schemaChanges(cur: Schema, next: Schema): { ops: Op[]; notes: st
       ops.push(q[key] === undefined ? { kind: "setSchema", id: now.id, key } : { kind: "setSchema", id: now.id, key, value: structuredClone(q[key]) });
     }
   };
-  const order = (what: string, was: SchemaDef[], now: SchemaDef[]) => {
-    const kept = new Set(now.map((d) => d.id));
-    const before = was.filter((d) => kept.has(d.id)).map((d) => d.id);
-    const ids = new Set(before);
-    const after = now.filter((d) => ids.has(d.id)).map((d) => d.id);
-    if (before.join("\n") !== after.join("\n")) notes.push(`The order of ${what} changed; reordering isn't applied yet, so the old order stays`);
-  };
-  const label = (d: SchemaDef, section: string) => (section === "rules" ? `rule ${d.id}` : String(d.name));
   for (const section of SECTIONS) {
     const list = next[section] as unknown as SchemaDef[];
     list.forEach((d, i) => {
@@ -151,9 +149,25 @@ export function schemaChanges(cur: Schema, next: Schema): { ops: Op[]; notes: st
         if (!of) ops.push({ kind: "addSchema", parent: d.id, def: structuredClone(f), after: j ? fields[j - 1]!.id : null });
         else setOps(of.def, f);
       });
-      order(`${label(d, section)}'s fields`, o.def.fields as SchemaDef[], fields);
     });
-    order(section, cur[section] as unknown as SchemaDef[], list);
+  }
+  // Then the order: in each section and each owner's fields, the nodes not in the longest run
+  // already in order go, one by one in the new order, after the one before them there.
+  const doc = { schema: cur, packs: new Map(), sheets: new Map() };
+  applyOps(doc, ops);
+  const parents: SchemaParent[] = [...SECTIONS, ...SECTIONS.filter((s) => WITH_FIELDS.has(s)).flatMap((s) => (next[s] as unknown as SchemaDef[]).map((d) => d.id))];
+  for (const parent of parents) {
+    const want = isSection(parent) ? (next[parent] as unknown as SchemaDef[]).map((d) => d.id) : (((next[sectionOf(next, parent)] as unknown as SchemaDef[]).find((d) => d.id === parent)?.fields as SchemaDef[] | undefined) ?? []).map((f) => f.id);
+    const have = siblings(doc.schema, parent).map((d) => d.id);
+    if (have.join("\n") === want.join("\n")) continue;
+    const pos = new Map(want.map((id, i) => [id, i]));
+    const keep = new Set(longestRising(have.filter((id) => pos.has(id)).map((id) => pos.get(id)!)).map((i) => want[i]!));
+    want.forEach((id, i) => {
+      if (keep.has(id)) return;
+      const op: Op = { kind: "moveSchema", id, after: i ? want[i - 1]! : null };
+      applyOps(doc, [op]);
+      ops.push(op);
+    });
   }
   return { ops, notes };
 }

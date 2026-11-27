@@ -263,7 +263,7 @@ rules:
   - A name changed under the same ID is a rename (`renameType`, `renameField`), which rewrites cells (§8.2). Names can be swapped. Enum members have no IDs: with the same number of members, one renamed in place to a name the enum didn't have is a rename (`renameEnumMember`); any other change to the list is a plain change, matched by name.
   - The ops are removals, then renames, then additions and property changes. An item moved to another owner or section is removed and added again.
   - Removing a field whose cells hold data needs `--force`, and the cells that became scratch are listed. Formulas and rules a rename can't rewrite are listed too.
-  - Reordering has no op yet, so an order change is reported and not applied.
+  - Reordering is `moveSchema(id, after)`: a definition or field after one of its siblings (null: first). From the YAML, the fewest moves are made (the longest run already in order stays). Sheets with rows of a type keep each field in its column, as for an added field: their layout is pinned first. In a rebase the last move wins; a move whose sibling is gone on the head goes after the one before it. The Schema page's lists of definitions, rules, wizards and fields are dragged, or Alt+↑↓, into a new order, applied like any change (2026-11-26).
   - Text that doesn't parse or resolve is refused as a whole.
 
 Example, modeled on KRBSG:
@@ -498,7 +498,7 @@ Every change is an op against stable IDs. Every op has an exact inverse.
 | Packs | `createPack` · `renamePack` · `setPackParent` (move) · `removePack` (must be empty) |
 
 **As built (2026-11-26), deleting and ordering:** `removeSheet` takes a sheet with everything on it; its inverse is a `createSheet` carrying the sheet's contents (rows and columns with their tombstones, cells, formats, layouts, row flags) and the sheet it came after, so an undo brings it all back where it was in one op. `orderSheet(sheet, after)` puts a sheet after another of its pack (null: first); `orderPack(pack, after)` likewise among a parent's packs. The order of sheets and packs is part of the document. Deleting a pack is its sheets' `removeSheet`s, then its packs' `removePack`s, deepest first. The API refuses to delete a sheet that formulas on other sheets read (`in-use`, naming the cells); a formula whose sheet is gone anyway (another task added it) reads `#REF!`. In a rebase, a sheet one side deleted and the other changed is a conflict (`sheetDeleted`): keeping the deletion drops the other side's changes to it, keeping the sheet brings it back as it was in the base, with its changes. Ordering is last write wins. Ordering and deleting packs is a Developer's, sheets an Editor's.
-| Schema | `addSchema(parent, def, after)` · `removeSchema(id)` · `setSchema(id, key, value)`, over definitions and fields by stable ID (§5.9) · wizard and export config ops |
+| Schema | `addSchema(parent, def, after)` · `removeSchema(id)` · `setSchema(id, key, value)` · `moveSchema(id, after)`, over definitions and fields by stable ID (§5.9) · wizard and export config ops |
 
 ### 8.2 Refactor ops (compound with intent)
 

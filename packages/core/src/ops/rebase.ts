@@ -78,6 +78,8 @@ export interface Analysis {
   schemaEdited: Set<Id>;
   /** Schema nodes added -> the sibling they were added after. */
   schemaPlaced: Map<Id, Id | null>;
+  /** Schema nodes moved among their siblings. */
+  schemaMoved: Set<Id>;
   /** `${enum}/${base member}` -> what it was finally renamed to. */
   enumRenames: Map<string, string>;
   /** Base sheets that are gone. */
@@ -101,8 +103,10 @@ export function analyze(base: Doc, ops: readonly Op[]): Analysis {
   const renames = new Map<string, string>(); // current name -> base name
   const enumRenames = new Map<string, string>(); // `${enum}/${current}` -> base member
   const schemaPlaced = new Map<Id, Id | null>();
+  const schemaMoved = new Set<Id>();
   for (const op of ops) {
     if (op.kind === "addSchema") schemaPlaced.set(op.def.id, op.after);
+    if (op.kind === "moveSchema") schemaMoved.add(op.id);
     if (op.kind === "renameEnumMember") {
       const origin = enumRenames.get(`${op.enum}/${op.from}`) ?? op.from;
       enumRenames.delete(`${op.enum}/${op.from}`);
@@ -186,7 +190,7 @@ export function analyze(base: Doc, ops: readonly Op[]): Analysis {
     const [e, to] = splitAt(k);
     if (to !== from) finalEnumRenames.set(`${e}/${from}`, to);
   }
-  return { final, cells, formats, deleted, edited, moved, placed, renames: finalRenames, ...schemaDiff(base, final), schemaPlaced, enumRenames: finalEnumRenames, sheetsDeleted, sheetsEdited };
+  return { final, cells, formats, deleted, edited, moved, placed, renames: finalRenames, ...schemaDiff(base, final), schemaPlaced, schemaMoved, enumRenames: finalEnumRenames, sheetsDeleted, sheetsEdited };
 }
 
 /** What changed in the schema between two documents, node by node. */
@@ -570,6 +574,22 @@ export function rebase(base: Doc, theirs: readonly Op[], mine: readonly Op[], re
       case "removeSchema":
         if (curHas(op.id) && !schemaKeep.has(op.id)) emit(op);
         break;
+      case "moveSchema": {
+        // Last write wins the order (theirs, when mine counts as landed first). After the
+        // same sibling if it's still beside it, else the one before that as mine saw them.
+        const n = schemaNodes(cur.schema).get(op.id);
+        if (!n || (mineFirst && T.schemaMoved.has(op.id))) break;
+        const here = siblings(cur.schema, n.parent).map((d) => d.id);
+        const was = siblings(ctx.schema, n.parent).map((d) => d.id);
+        let a = op.after;
+        while (a !== null && !here.includes(a)) {
+          const i = was.indexOf(a);
+          a = i > 0 ? was[i - 1]! : null;
+        }
+        if (a === op.id) break;
+        tryEmit({ kind: "moveSchema", id: op.id, after: a });
+        break;
+      }
       case "renameType":
       case "renameField": {
         if (!curHas(op.id) || schemaKeep.has(op.id)) break;

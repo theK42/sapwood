@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { formatSchema, loadProject, parseSchema, type Schema } from "@thek42/sapwood-core";
 import { previewSchema } from "./schema.ts";
-import { addDef, addField, addRule, constraintsFor, defOf, removeField, removeRule, renameDef, renameMember, setDef, setField, setRule } from "./schemaEdit.ts";
+import { addDef, addField, addRule, constraintsFor, defOf, moveDef, moveField, removeField, removeRule, renameDef, renameMember, setDef, setField, setRule } from "./schemaEdit.ts";
 
 const fixture = (f: string) => readFileSync(new URL(`../../core/fixtures/krbsg/${f}`, import.meta.url), "utf8");
 const krbsg = () => loadProject(fixture("schema.yaml"), fixture("project.yaml")).project;
@@ -14,6 +14,25 @@ const through = (p: ReturnType<typeof krbsg>, s: Schema) => {
 };
 
 describe("the schema editor's forms", () => {
+  it("reorders definitions and fields, said plainly, without moving any data", () => {
+    const p = krbsg();
+    const s = p.doc.schema;
+    const sprite = s.types.find((x) => x.name === "Sprite")!;
+    const texture = s.types.find((x) => x.name === "Texture")!;
+    let r = through(p, moveDef(s, "types", sprite.id, texture.id, "before"));
+    expect(r.preview.problems).toEqual([]);
+    expect(r.preview.changes).toEqual(["type Sprite moved first"]);
+    expect(r.schema.types.slice(0, 2).map((t) => t.name)).toEqual(["Sprite", "Texture"]);
+    const [shader, , width] = sprite.fields;
+    r = through(p, moveField(s, "types", sprite.id, width!.id, shader!.id, "before"));
+    expect(r.preview.changes).toEqual(["field Sprite.width moved first"]);
+    expect(r.preview.issues).toEqual([]);
+    expect(r.preview.scratch).toEqual([]);
+    // A new one, without an ID yet, moves by its name.
+    const added = addDef(s, "types", "Boss");
+    expect(moveDef(added, "types", "new:Boss", texture.id, "before").types[0]!.name).toBe("Boss");
+  });
+
   it("renaming a struct renames the references to it", () => {
     const p = krbsg();
     const s = p.doc.schema;

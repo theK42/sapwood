@@ -427,3 +427,9 @@ button.link.muted:hover { text-decoration: underline; }
 .entities-types li.dragging { opacity: 0.45; }
 .entities-types li.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .entities-types li.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* Reordering on the Schema page */
+.schema-defs li[draggable="true"], .schema-rows > li[draggable="true"] { cursor: grab; }
+.schema-defs li.dragging, .schema-rows > li.dragging { opacity: 0.45; }
+.schema-defs li.drop-before, .schema-rows > li.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.schema-defs li.drop-after, .schema-rows > li.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }

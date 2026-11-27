@@ -2,13 +2,16 @@
 // form on the right. Every change edits the working copy (schemaEdit.ts); the page writes it
 // as YAML and previews it, and nothing reaches the task until it's applied. Names are typed
 // in place and kept on Enter or leaving the box; field types are picked, not typed (§13).
+// Definitions, rules, wizards and fields are put in a new order by dragging them, or with
+// Alt+↑↓ (reorder.tsx); like any change, it's applied with the rest.
 
 import { useEffect, useState } from "react";
 import { formatType, type EnumDef, type FieldDef, type FieldType, type Project, type Schema, type TraitDef, type TypeDef, type UnionDef } from "@thek42/sapwood-core";
 import { RuleForm } from "./RuleForm.tsx";
+import { useReorder } from "./reorder.tsx";
 import type { WizardDef } from "@thek42/sapwood-core";
 import {
-  addDef, addField, addRule, constraintsFor, defOf, NAME, removeDef, removeField, renameDef, renameMember, SECTIONS, setDef, setField,
+  addDef, addField, addRule, constraintsFor, defOf, keyOf, moveDef, moveField, NAME, removeDef, removeField, renameDef, renameMember, SECTIONS, setDef, setField,
   type Def, type Section, type WithFields,
 } from "./schemaEdit.ts";
 
@@ -46,6 +49,15 @@ export function SchemaForms(p: Props) {
   const rule = sel?.section === "rules" ? p.schema.rules.find((r) => r.id === sel.id)! : null;
   const [adding, setAdding] = useState<Section | null>(null);
   const isNew = (section: Section, id: string) => !defOf(p.applied, section, id);
+  // Items are `${section}|${keyOf(def)}`: dragged only within their own section.
+  const sectionOf = (k: string) => k.slice(0, k.indexOf("|"));
+  const keyIn = (k: string) => k.slice(k.indexOf("|") + 1);
+  const order = useReorder(
+    p.canEdit,
+    (k, target, where) => p.change(moveDef(p.schema, sectionOf(k) as Section, keyIn(k), keyIn(target), where)),
+    (a, b) => sectionOf(a) === sectionOf(b),
+  );
+  const listed = (section: string, defs: { id: string; name?: string }[]) => defs.map((d) => `${section}|${keyOf(d)}`);
   return (
     <div className="schema-forms">
       <nav className="schema-defs" aria-label="Definitions">
@@ -61,8 +73,8 @@ export function SchemaForms(p: Props) {
             </h3>
             <ul>
               {(p.schema[key] as Def[]).map((d) => (
-                <li key={d.id}>
-                  <button className={sel?.section === key && sel.id === d.id ? "on" : ""} onClick={() => p.select({ section: key, id: d.id })}>
+                <li key={keyOf(d)} {...order.item(`${key}|${keyOf(d)}`)}>
+                  <button className={sel?.section === key && sel.id === d.id ? "on" : ""} onClick={() => p.select({ section: key, id: d.id })} onKeyDown={order.keys(`${key}|${keyOf(d)}`, listed(key, p.schema[key] as Def[]))}>
                     {d.name}
                     {isNew(key, d.id) && <span className="tag">new</span>}
                     {key === "types" && (d as TypeDef).singleton && <span className="muted small"> singleton</span>}
@@ -88,8 +100,8 @@ export function SchemaForms(p: Props) {
           </h3>
           <ul>
             {p.schema.rules.map((r) => (
-              <li key={r.id}>
-                <button className={sel?.section === "rules" && sel.id === r.id ? "on" : ""} onClick={() => p.select({ section: "rules", id: r.id })} title={r.expr}>
+              <li key={r.id} {...order.item(`rules|${keyOf(r)}`)}>
+                <button className={sel?.section === "rules" && sel.id === r.id ? "on" : ""} onClick={() => p.select({ section: "rules", id: r.id })} onKeyDown={order.keys(`rules|${keyOf(r)}`, listed("rules", p.schema.rules))} title={r.expr}>
                   <span className="rule-name">{r.message}</span>
                   {!p.applied.rules.some((x) => x.id === r.id) && <span className="tag">new</span>}
                   <span className="muted small">{r.type ?? "global"}</span>
@@ -109,8 +121,8 @@ export function SchemaForms(p: Props) {
           </h3>
           <ul>
             {p.schema.wizards.map((w) => (
-              <li key={w.id}>
-                <button className={sel?.section === "wizards" && sel.id === w.id ? "on" : ""} onClick={() => p.select({ section: "wizards", id: w.id })}>
+              <li key={w.id} {...order.item(`wizards|${keyOf(w)}`)}>
+                <button className={sel?.section === "wizards" && sel.id === w.id ? "on" : ""} onClick={() => p.select({ section: "wizards", id: w.id })} onKeyDown={order.keys(`wizards|${keyOf(w)}`, listed("wizards", p.schema.wizards))}>
                   <span className="rule-name">{w.title ?? w.name}</span>
                   {!p.applied.wizards.some((x) => x.id === w.id) && <span className="tag">new</span>}
                 </button>
@@ -240,13 +252,16 @@ function Fields(p: Props & { sel: Selected; section: WithFields; def: TypeDef | 
   const [adding, setAdding] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const applied = (defOf(p.applied, p.section, p.def.id) as TypeDef | undefined)?.fields ?? [];
+  const order = useReorder(!ro, (k, target, where) => p.change(moveField(p.schema, p.section, p.def.id, k, target, where)));
+  const keys = p.def.fields.map(keyOf);
   return (
     <>
       <h3 className="vf-h">Fields</h3>
       {p.def.fields.length === 0 && <p className="muted small">None yet.</p>}
       <ul className="schema-rows">
         {p.def.fields.map((f) => (
-          <li key={f.id || f.name}>
+          // An open row (its boxes being typed in) isn't dragged, nor moved by Alt+arrows.
+          <li key={keyOf(f)} {...(open === f.id ? {} : { ...order.item(keyOf(f)), onKeyDown: order.keys(keyOf(f), keys) })}>
             <FieldRow
               {...p}
               f={f}

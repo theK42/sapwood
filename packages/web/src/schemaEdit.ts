@@ -4,6 +4,7 @@
 // trait lists, union variants, rules' types), as the YAML must still read; enum members
 // likewise in fields' defaults. A new item has no ID: reading the YAML gives it one.
 
+import { reordered, type Where } from "./reorder.tsx";
 import type { EnumDef, FieldDef, FieldType, Schema, StructDef, TraitDef, TypeDef, UnionDef } from "@thek42/sapwood-core";
 
 export type Section = "types" | "traits" | "structs" | "unions" | "enums";
@@ -188,5 +189,23 @@ export function setRule(s: Schema, id: string, patch: Partial<Record<"type" | "s
     if (v === undefined) delete r[k];
     else r[k] = v;
   }
+  return n;
+}
+
+/** How a definition or field is told apart in a list: its ID, or, new and still without one, its name. */
+export const keyOf = (d: { id: string; name?: string }): string => d.id || `new:${d.name ?? ""}`;
+
+/** Put a definition, rule or wizard (by keyOf) just before or after another of its section. */
+export function moveDef(s: Schema, section: Section | "rules" | "wizards", key: string, target: string, where: Where): Schema {
+  const n = copy(s);
+  (n[section] as unknown) = reordered(n[section] as { id: string; name?: string }[], keyOf, key, target, where);
+  return n;
+}
+
+/** Put a field (by keyOf) just before or after another of its definition's. */
+export function moveField(s: Schema, section: WithFields, id: string, key: string, target: string, where: Where): Schema {
+  const n = copy(s);
+  const d = defOf(n, section, id) as TypeDef | TraitDef | StructDef | undefined;
+  if (d) d.fields = reordered(d.fields, keyOf, key, target, where);
   return n;
 }

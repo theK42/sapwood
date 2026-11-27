@@ -96,6 +96,9 @@ export function describe(old: Schema, now: Schema, ops: readonly Op[]): string[]
         out.push(`${name(op.id, after)}: ${op.key} ${v}`);
         break;
       }
+      case "moveSchema":
+        out.push(`${kind(op.id)} ${name(op.id, after)} moved ${op.after === null ? "first" : `after ${name(op.after, after)}`}`);
+        break;
       case "setCell":
         cells++;
         break;

@@ -2,11 +2,12 @@
 //
 // The schema is a tree of nodes, each with a stable ID: the definitions in each section
 // (types, traits, structs, unions, enums, rules), and the fields of types, traits and
-// structs. Three plain ops cover every change:
+// structs. Four plain ops cover every change:
 //
 //  - addSchema: add a definition to a section, or a field to its owner, after a sibling;
 //  - removeSchema: remove one (a definition goes with its fields);
-//  - setSchema: set or clear one property of one node (`name`, `type`, `min`, `members`…).
+//  - setSchema: set or clear one property of one node (`name`, `type`, `min`, `members`…);
+//  - moveSchema: put one after another of its siblings (or first), in the same place.
 //
 // Schemas are values: an op builds a new schema and never changes the old one, so a
 // resolved schema can be cached per schema object.
@@ -124,6 +125,26 @@ export function removeNode(schema: Schema, id: Id): { schema: Schema; parent: Sc
     parent: node.parent,
     def: node.def,
     after: i > 0 ? list[i - 1]!.id : null,
+  };
+}
+
+/** Put a node right after a sibling (null: first). Returns the sibling it came after before. */
+export function moveNode(schema: Schema, id: Id, after: Id | null): { schema: Schema; prev: Id | null } {
+  const node = schemaNodes(schema).get(id);
+  if (!node) throw new OpError(`moveSchema: no ${id}`);
+  if (after === id) throw new OpError("moveSchema: a node can't go after itself");
+  const list = siblings(schema, node.parent);
+  if (after !== null && !list.some((x) => x.id === after)) throw new OpError(`moveSchema: ${after} isn't beside ${id}`);
+  const i = list.indexOf(node.def);
+  const prev = i > 0 ? list[i - 1]!.id : null;
+  if (prev === after) return { schema, prev };
+  return {
+    schema: replaceSiblings(schema, node.parent, (l) => {
+      const rest = l.filter((x) => x !== node.def);
+      const j = after === null ? 0 : rest.findIndex((x) => x.id === after) + 1;
+      return [...rest.slice(0, j), node.def, ...rest.slice(j)];
+    }),
+    prev,
   };
 }
 

@@ -119,7 +119,7 @@ describe("schema apply", () => {
     expect(canonDoc(s.doc)).toEqual(before);
   });
 
-  it("property changes, a moved field, and order changes reported", () => {
+  it("property changes, a moved field, and a new order, applied without moving the data", () => {
     const s = project();
     let t = s.schemaYaml();
     t = edit(t, /(speed: \{[^}]*type: float)/, "$1, min: 700");
@@ -130,9 +130,15 @@ describe("schema apply", () => {
     const u = s.schemaYaml();
     const swapped = u.replace(/(\n *damage: +\{[^}]*\})(\n *element: +\{[^}]*\})/, "$2$1");
     expect(swapped).not.toBe(u);
+    const before = s.query("Weapon");
     const r = s.applySchema(swapped);
-    expect(r.ops).toEqual([]);
-    expect(r.notes).toEqual(["The order of Weapon's fields changed; reordering isn't applied yet, so the old order stays"]);
+    expect(r.notes).toEqual([]);
+    expect(r.ops.filter((o) => o.kind === "moveSchema")).toHaveLength(1);
+    expect(s.schemaYaml()).toBe(swapped);
+    // The sheets keep each field in its column (their layouts are pinned first), so nothing reads differently.
+    expect(s.query("Weapon")).toEqual(before);
+    s.undo();
+    expect(s.schemaYaml()).toBe(u);
   });
 
   it("rows that become another type in the edit keep their columns, as one edit at a time does", () => {
