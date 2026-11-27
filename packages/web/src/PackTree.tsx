@@ -11,6 +11,7 @@
 
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import type { Change, Patch, Sapwood } from "@thek42/sapwood-core";
+import { armDrag, noDragFromFields } from "./reorder.tsx";
 import { dropPatches, type Counts, type DropAt, type Dragged, type PackNode, type SheetNode } from "./home.ts";
 import { plural } from "./hooks.ts";
 
@@ -170,7 +171,8 @@ function Pack({ node, parent, depth, tree, siblings = [] }: { node: PackNode; pa
       <div
         className={`tree-row${overClass(dnd.over, "pack", node.id)}${dnd.drag?.kind === "pack" && dnd.drag.id === node.id ? " dragging" : ""}`}
         draggable={draggable}
-        onDragStart={draggable ? (e) => dnd.start({ kind: "pack", id: node.id }, e, node.name) : undefined}
+        onMouseDownCapture={armDrag(draggable)}
+        onDragStart={draggable ? (e) => !noDragFromFields(e) && dnd.start({ kind: "pack", id: node.id }, e, node.name) : undefined}
         onDragEnd={dnd.end}
         onDragOver={onPack}
         onDrop={(e) => dnd.over && dnd.over.on === "pack" && dnd.over.id === node.id && dnd.drop(dnd.over, e)}
@@ -242,7 +244,8 @@ function SheetRow({ sheet: s, pack, tree }: { sheet: SheetNode; pack: PackNode; 
     <li
       className={`tree-row${overClass(dnd.over, "sheet", s.id)}${dnd.drag?.kind === "sheet" && dnd.drag.id === s.id ? " dragging" : ""}`}
       draggable={draggable}
-      onDragStart={draggable ? (e) => dnd.start({ kind: "sheet", id: s.id, pack: pack.id }, e, s.name) : undefined}
+      onMouseDownCapture={armDrag(draggable)}
+      onDragStart={draggable ? (e) => !noDragFromFields(e) && dnd.start({ kind: "sheet", id: s.id, pack: pack.id }, e, s.name) : undefined}
       onDragEnd={dnd.end}
       onDragOver={(e) => dnd.hover({ on: "sheet", id: s.id, where: half(e) }, e)}
       onDrop={(e) => dnd.over && dnd.over.on === "sheet" && dnd.over.id === s.id && dnd.drop(dnd.over, e)}

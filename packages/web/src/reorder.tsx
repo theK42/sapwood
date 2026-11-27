@@ -6,6 +6,27 @@ import { useState, type DragEvent, type KeyboardEvent } from "react";
 
 export type Where = "before" | "after";
 
+/** Something typed into or picked from: pressing in it is for the cursor and selecting, not dragging. */
+export const editableTarget = (t: EventTarget | null): boolean =>
+  t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT|OPTION)$/.test(t.tagName));
+
+/**
+ * For a draggable item that holds text boxes: on each press, it's draggable only if the press
+ * isn't in one of them, so pressing and dragging in a box moves the cursor and selects text
+ * (the browser decides at the press whether a drag can start). Use as onMouseDownCapture,
+ * with whether it may be dragged at all; and `noDragFromFields` as a fallback in onDragStart.
+ */
+export const armDrag = (can: boolean) => (e: { target: EventTarget | null; currentTarget: EventTarget }) => {
+  (e.currentTarget as HTMLElement).draggable = can && !editableTarget(e.target);
+};
+
+/** In onDragStart: a drag that began in a text box isn't one. True if it was stopped. */
+export const noDragFromFields = (e: DragEvent): boolean => {
+  if (!editableTarget(e.target)) return false;
+  e.preventDefault();
+  return true;
+};
+
 /** The order after moving `id` just before or after `target`. */
 export function reordered<T>(list: readonly T[], key: (x: T) => string, id: string, target: string, where: Where): T[] {
   const me = list.find((x) => key(x) === id);
@@ -31,7 +52,9 @@ export function useReorder(enabled: boolean, move: (id: string, target: string, 
       : {
           draggable: true,
           className: `${drag === id ? "dragging" : ""}${over?.id === id ? ` drop-${over.where}` : ""}`,
+          onMouseDownCapture: armDrag(true),
           onDragStart: (e: DragEvent) => {
+            if (noDragFromFields(e)) return;
             e.dataTransfer.effectAllowed = "move";
             e.dataTransfer.setData("text/plain", id);
             setDrag(id);

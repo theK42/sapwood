@@ -433,3 +433,6 @@ button.link.muted:hover { text-decoration: underline; }
 .schema-defs li.dragging, .schema-rows > li.dragging { opacity: 0.45; }
 .schema-defs li.drop-before, .schema-rows > li.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .schema-defs li.drop-after, .schema-rows > li.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+/* Inside something draggable, text boxes still take the text cursor (pressing there selects, not drags). */
+[draggable="true"] input:not([type="checkbox"]):not([type="radio"]), [draggable="true"] textarea { cursor: text; }
+[draggable="true"] select { cursor: default; }

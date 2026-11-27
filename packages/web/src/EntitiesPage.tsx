@@ -15,6 +15,7 @@ import { aOrAn, entityAt, entityList, type ListedEntity } from "./form.ts";
 import { FormPanel, NewEntityPanel, type FormRow } from "./FormPanel.tsx";
 import { MultiForm } from "./MultiForm.tsx";
 import { inOrder, moveIn, saveOrder, savedOrder } from "./typeOrder.ts";
+import { armDrag, noDragFromFields } from "./reorder.tsx";
 import type { Source } from "./head.ts";
 import { plural, useSource } from "./hooks.ts";
 
@@ -178,7 +179,9 @@ export function EntitiesPage(p: Props) {
               draggable
               className={`${dragType === t.id ? "dragging" : ""}${overType?.id === t.id ? ` drop-${overType.where}` : ""}`}
               title="Drag to put the types in your own order (kept in this browser)"
+              onMouseDownCapture={armDrag(true)}
               onDragStart={(e) => {
+                if (noDragFromFields(e)) return;
                 e.dataTransfer.effectAllowed = "move";
                 e.dataTransfer.setData("text/plain", t.name);
                 setDragType(t.id);
