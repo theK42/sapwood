@@ -39,6 +39,7 @@ export interface FieldDef {
   finite?: boolean;
   minLength?: number;
   maxLength?: number;
+  /** A regular expression, or a preset's name (PATTERNS: `identifier`). */
   pattern?: string;
   nonEmpty?: boolean;
   minItems?: number;
@@ -136,6 +137,7 @@ export interface WizardParam {
   required?: boolean;
   default?: unknown;
   description?: string;
+  /** A regular expression, or a preset's name (PATTERNS: `identifier`). */
   pattern?: string;
   minItems?: number;
   maxItems?: number;
@@ -174,6 +176,24 @@ export interface Schema {
 }
 
 export const emptySchema = (): Schema => ({ enums: [], traits: [], structs: [], unions: [], types: [], rules: [], wizards: [] });
+
+// ------------------------------------------------------------ patterns
+
+/**
+ * Patterns with names, for a string field's or a wizard parameter's `pattern`, so a schema
+ * says what it means rather than spelling a regex each time. `identifier` is a C-style name:
+ * a letter or _, then letters, digits and _ (camelCase, PascalCase, snake_case, SCREAMING_SNAKE).
+ */
+export const PATTERNS: Readonly<Record<string, { regex: string; says: string }>> = {
+  identifier: { regex: "^[A-Za-z_][A-Za-z0-9_]*$", says: "be an identifier: a letter or _, then letters, digits or _" },
+};
+
+/** A `pattern` as a test and what to say when a value fails it; throws if it isn't a valid regex. */
+export function readPattern(pattern: string): { re: RegExp; says: string } {
+  const preset = PATTERNS[pattern];
+  if (preset) return { re: new RegExp(preset.regex, "u"), says: preset.says };
+  return { re: new RegExp(pattern, "u"), says: `match ${pattern}` };
+}
 
 // ------------------------------------------------------------ type expressions
 

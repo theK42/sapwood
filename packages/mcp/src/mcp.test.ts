@@ -134,6 +134,7 @@ describe("the MCP server, on a local project file", () => {
   it("writes a wizard with apply_schema, previews it and runs it", async () => {
     const { call, json } = await local();
     expect((await call("wizard_guide")).text).toContain("forEach");
+    expect((await call("wizard_guide")).text).toContain("pattern: identifier");
     const wizard = `
 wizards:
   Loadout:

@@ -145,6 +145,8 @@ Type, trait and field names can't contain `.`, because `.` separates names in si
 | `union<U>` | Panel form editor: pick a variant, then fill its fields (§5.6) | JSON object with a discriminator field | Valid variant; that variant's field constraints |
 | *(later)* `lockey` | Key into a localization table | String | Key exists |
 
+A `pattern` is a regular expression or a preset's name. The one preset, `identifier`, is a C-style name: a letter or `_`, then letters, digits or `_` (so camelCase, PascalCase, snake_case and SCREAMING_SNAKE_CASE all pass). Wizard parameters take the same `pattern`, and `identifier` is what the MCP server's wizard guide tells an LLM to use for anything that becomes an ID or a pack or sheet name.
+
 Applies to all types:
 
 - **Presence.** Each field is `required` (blank cell is an error), `optional` (blank exports as omitted), or has a `default` (blank exports the default). **Decided default:** `optional`, with blanks omitted from export.

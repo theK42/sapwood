@@ -531,7 +531,7 @@ function WizardView(p: { w: WizardDef; canEdit: boolean; openYaml(): void }) {
                 <code>{d.type}</code>
                 {d.required ? " required" : ""}
                 {d.default !== undefined ? ` (default ${json(d.default)})` : ""}
-                {d.pattern ? ` matching ${d.pattern}` : ""}
+                {d.pattern === "identifier" ? ", an identifier" : d.pattern ? ` matching ${d.pattern}` : ""}
               </td>
             </tr>
           ))}

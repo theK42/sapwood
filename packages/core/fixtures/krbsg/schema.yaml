@@ -111,13 +111,13 @@ wizards:
     title: "A DLC pack"
     description: "A content pack with its own Art and Ships sheets, an enemy, and optionally a weapon and its bolt, using the root's Textured shader and collision shapes."
     params:
-      name:     { type: string, required: true, pattern: "^[A-Z][A-Za-z0-9]*$", description: "The pack, such as VoidRaiders" }
+      name:     { type: string, required: true, pattern: identifier, description: "The pack, such as VoidRaiders" }
       parent:   { type: pack, default: root, description: "The pack it goes in" }
-      enemy:    { type: string, required: true, pattern: "^[a-z][a-z0-9_]*$", description: "The enemy's ID, such as void_raider" }
+      enemy:    { type: string, required: true, pattern: identifier, description: "The enemy's ID, such as void_raider" }
       size:     { type: int, default: 48, description: "The enemy sprite's width and height" }
       collider: { type: "ref<CollisionShape>", default: house, description: "The enemy's collision shape" }
-      weapon:   { type: string, pattern: "^[A-Z][A-Za-z0-9]*$", description: "A weapon's ID, such as IonCannon: leave it blank for none" }
-      bolt:     { type: string, pattern: "^[A-Z][A-Za-z0-9]*$", description: "Its projectile's ID, such as IonBolt: needed with a weapon" }
+      weapon:   { type: string, pattern: identifier, description: "A weapon's ID, such as IonCannon: leave it blank for none" }
+      bolt:     { type: string, pattern: identifier, description: "Its projectile's ID, such as IonBolt: needed with a weapon" }
       damage:   { type: float, default: 1 }
       cooldown: { type: float, default: 0.5 }
     steps:

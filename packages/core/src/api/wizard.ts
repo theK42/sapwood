@@ -9,7 +9,7 @@
 // starts with `=` is a formula.
 
 import type { JsonValue } from "./sapwood.ts";
-import type { WizardDef, WizardRow, WizardStep } from "../schema/model.ts";
+import { readPattern, type WizardDef, type WizardRow, type WizardStep } from "../schema/model.ts";
 
 export interface PlannedRow {
   type: string;
@@ -81,7 +81,10 @@ export function planWizard(w: WizardDef, given: Record<string, unknown>): { plan
     if (typeof v === "string" && /^(int|float)$/.test(d.type) && v.trim() !== "" && Number.isFinite(Number(v))) v = Number(v);
     const blank = v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
     if (blank && d.required) problems.push(`${name} is required`);
-    if (typeof v === "string" && d.pattern && !new RegExp(d.pattern).test(v)) problems.push(`${name} must match ${d.pattern}`);
+    if (typeof v === "string" && d.pattern) {
+      const p = readPattern(d.pattern);
+      if (!p.re.test(v)) problems.push(`${name} must ${p.says}`);
+    }
     if (d.minItems !== undefined && (!Array.isArray(v) || v.length < d.minItems)) problems.push(`${name} needs at least ${d.minItems} ${d.minItems === 1 ? "item" : "items"}`);
     if (d.maxItems !== undefined && Array.isArray(v) && v.length > d.maxItems) problems.push(`${name} takes at most ${d.maxItems} items`);
     if (/^list</.test(d.type) && v !== undefined && !Array.isArray(v)) problems.push(`${name} is a list`);

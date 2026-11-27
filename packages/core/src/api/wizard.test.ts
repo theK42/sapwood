@@ -180,6 +180,20 @@ describe("KRBSG's DLC wizard", () => {
     expect(s.validate().errors).toBe(0);
   });
 
+  it("takes names as identifiers (pattern: identifier)", () => {
+    const s = krbsg();
+    const why = (enemy: string) => {
+      try {
+        s.previewWizard("NewDLC", { name: "Pack", enemy });
+        return null;
+      } catch (e) {
+        return (e as ApiError).message.replace(/^.*can't run: /, "");
+      }
+    };
+    for (const ok of ["voidRaider", "VoidRaider", "void_raider", "VOID_RAIDER", "_raider", "raider2"]) expect(why(ok), ok).toBeNull();
+    for (const bad of ["2raider", "void-raider", "void raider", "raider!", "räider"]) expect(why(bad), bad).toBe("enemy must be an identifier: a letter or _, then letters, digits or _");
+  });
+
   it("needs a Developer, as it makes a pack", () => {
     expect(needsDeveloper(krbsg().project.schema.schema.wizards.find((w) => w.name === "NewDLC")!)).toBe(true);
   });
@@ -200,6 +214,22 @@ describe("KRBSG's DLC wizard", () => {
     rows: [{ type: Note, id: n, sheet: "{nope}" }]
 `);
     expect(resolveSchema(bad.schema).issues.map((i) => i.message)).toContain("{nope} names no parameter");
+    // A pattern is a preset's name or a regex that compiles.
+    const badPattern = parseSchema(SCHEMA + `
+  Odd:
+    params: { k: { type: string, pattern: "([a-z" } }
+    rows: [{ type: Note, id: "n_{k}" }]
+`);
+    expect(resolveSchema(badPattern.schema).issues.map((i) => i.message).join("\n")).toMatch(/Not a valid regular expression, nor a preset \(identifier\)/);
+  });
+
+  it("a string field's pattern can be the preset too", () => {
+    const s = Sapwood.load(
+      "types:\n  Tag: { fields: { code: { type: string, pattern: identifier } } }\n",
+      { sheets: [{ name: "Tags", rows: [["# Tag", "id", "code"], ["Tag", "t1", "MAX_HP"], ["Tag", "t2", "max-hp"]] }] },
+    );
+    const issues = s.validate().issues;
+    expect(issues.map((i) => [i.entity?.id, i.message])).toEqual([["t2", expect.stringContaining("must be an identifier")]]);
   });
 });
 

@@ -4,7 +4,7 @@
 // whatever it could resolve, so a schema editor can show every problem at once.
 
 import type { EnumDef, FieldDef, FieldType, Id, Schema, StructDef, TraitDef, TypeDef, UnionDef } from "./model.ts";
-import { formatType, isValidName, parseType } from "./model.ts";
+import { formatType, isValidName, parseType, PATTERNS, readPattern } from "./model.ts";
 import type { SchemaIssue } from "./yaml.ts";
 
 export interface ResolvedField {
@@ -144,7 +144,7 @@ export function resolveSchema(schema: Schema): ResolvedSchema {
     if (f.jsonSchema !== undefined && k !== "json") misplaced("jsonSchema", "json fields");
     if (f.pattern !== undefined)
       try {
-        new RegExp(f.pattern, "u");
+        readPattern(f.pattern);
       } catch (e) {
         issue(`${p}.pattern`, `Not a valid regular expression: ${(e as Error).message}`);
       }
@@ -270,6 +270,12 @@ export function resolveSchema(schema: Schema): ResolvedSchema {
     claimId(w.id, p);
     const params = new Set(Object.keys(w.params));
     for (const [name, d] of Object.entries(w.params)) {
+      if (d.pattern !== undefined)
+        try {
+          readPattern(String(d.pattern));
+        } catch (e) {
+          issue(`${p}.params.${name}.pattern`, `Not a valid regular expression, nor a preset (${Object.keys(PATTERNS).join(", ")}): ${(e as Error).message}`);
+        }
       if (d.type === "pack") continue;
       try {
         parseType(d.type);

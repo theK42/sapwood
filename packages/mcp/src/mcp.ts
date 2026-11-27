@@ -143,7 +143,11 @@ wizards:
     title: "A DLC pack"            # shown on the form (optional)
     description: "…"               # optional
     params:                        # the form's fields, by name
-      name:   { type: string, required: true, pattern: "^[A-Za-z]\\w*$", description: "…" }
+      name:   { type: string, required: true, pattern: identifier, description: "…" }
+      # pattern: identifier is the preset for anything that becomes an ID or a pack or sheet
+      # name: a C-style identifier (a letter or _, then letters, digits or _), so camelCase,
+      # PascalCase, snake_case and SCREAMING_SNAKE_CASE all pass. Use it rather than a regex of
+      # your own; write a regex only when the user asks for a narrower rule.
       parent: { type: pack, default: root }      # pack: pick an existing pack
       size:   { type: int, default: 48 }
       tags:   { type: "list<string>", minItems: 1, maxItems: 5 }

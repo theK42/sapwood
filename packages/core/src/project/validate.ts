@@ -7,7 +7,7 @@
 import type { PackId } from "../formula/model.ts";
 import { numberToCol } from "../formula/parse.ts";
 import { display, isErr, scalar, toBool, type Value } from "../formula/values.ts";
-import type { FieldDef, FieldType, RuleDef } from "../schema/model.ts";
+import { readPattern, type FieldDef, type FieldType, type RuleDef } from "../schema/model.ts";
 import { refAccepts } from "../schema/resolve.ts";
 import type { Entity, FieldEntry, Issue, Location, Project, Projection, SingletonEntry } from "./project.ts";
 import { checkJsonSchema } from "./jsonSchema.ts";
@@ -236,7 +236,10 @@ function checkValue(
       if (def.nonEmpty && s.trim() === "") bad("must not be empty");
       if (def.minLength !== undefined && [...s].length < def.minLength) bad(`must be at least ${def.minLength} characters`);
       if (def.maxLength !== undefined && [...s].length > def.maxLength) bad(`must be at most ${def.maxLength} characters`);
-      if (def.pattern !== undefined && !new RegExp(def.pattern, "u").test(s)) bad(`must match ${def.pattern}`);
+      if (def.pattern !== undefined) {
+        const p = readPattern(def.pattern);
+        if (!p.re.test(s)) bad(`must ${p.says}`);
+      }
       return;
     }
     case "int":
