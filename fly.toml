@@ -1,10 +1,10 @@
-# fly.toml app configuration file generated for sapwood-demo on 2026-11-27T16:16:06Z
+# fly.toml app configuration file generated for sapwood-demo on 2026-11-27T16:22:35Z
 #
 # See https://docs.fly.io/reference/configuration for information about how to use this file.
 #
 
 app = 'sapwood-demo'
-primary_region = 'iad'
+primary_region = 'sjc'
 
 [build]
   image = 'ghcr.io/thek42/sapwood:latest'
