@@ -1,0 +1,99 @@
+// Search across the project (DESIGN §9.1): entities by ID, types and sheets by name, from the
+// top bar. Each word typed must be in the name, ignoring case; the best matches come first:
+// the whole name, then names starting with it, then one of its words starting with it
+// (after _, -, a space, a change between letters and digits, or a lower-to-upper case
+// change, so "star" finds spr_star1 and "bolt" finds IonBolt), then anywhere in it.
+// Commented-out entities come after live ones that match as well. Apart from React, so
+// it's tested in Node.
+
+import type { Project, SheetId, RowId } from "@thek42/sapwood-core";
+
+export type Hit =
+  | { kind: "entity"; id: string; type: string; where: string; active: boolean; at: { sheet: SheetId; row: RowId } }
+  | { kind: "type"; name: string; count: number }
+  | { kind: "sheet"; id: SheetId; name: string; where: string; rows: number };
+
+export interface Found {
+  /** In order: types, then sheets, then entities, each best first, cut to their limits. */
+  hits: Hit[];
+  /** How many entities matched past the limit. */
+  moreEntities: number;
+}
+
+/** Where the word starts in a name: after a separator, a case change or a letter/digit change. */
+function wordStarts(name: string): number[] {
+  const out = [0];
+  for (let i = 1; i < name.length; i++) {
+    const a = name[i - 1]!;
+    const b = name[i]!;
+    if (/[_\-\s./]/.test(a) || (/[a-z]/.test(a) && /[A-Z]/.test(b)) || (/[A-Za-z]/.test(a) && /\d/.test(b)) || (/\d/.test(a) && /[A-Za-z]/.test(b))) out.push(i);
+  }
+  return out;
+}
+
+/** How well one word matches a name: 0 the whole name, 1 its start, 2 a word's start, 3 anywhere; null not at all. */
+export function rank(name: string, word: string): number | null {
+  const n = name.toLowerCase();
+  const w = word.toLowerCase();
+  if (!w) return 0;
+  if (n === w) return 0;
+  if (n.startsWith(w)) return 1;
+  if (!n.includes(w)) return null;
+  for (const i of wordStarts(name)) if (n.startsWith(w, i)) return 2;
+  return 3;
+}
+
+/** A query's score for a name (lower is better): every word must match; the worst word counts. */
+export function score(name: string, query: string): number | null {
+  const words = query.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  let worst = 0;
+  for (const w of words) {
+    const r = rank(name, w);
+    if (r === null) return null;
+    worst = Math.max(worst, r);
+  }
+  return worst;
+}
+
+const order = <T>(xs: { x: T; s: number; name: string }[]) =>
+  xs.sort((a, b) => a.s - b.s || a.name.length - b.name.length || a.name.localeCompare(b.name)).map((y) => y.x);
+
+export function search(project: Project, query: string, limits = { types: 5, sheets: 5, entities: 12 }): Found {
+  if (!query.trim()) return { hits: [], moreEntities: 0 };
+  const wb = project.wb;
+  const entities = project.project().entities;
+  const counts = new Map<string, number>();
+  for (const e of entities) counts.set(e.type, (counts.get(e.type) ?? 0) + 1);
+
+  const types: { x: Hit; s: number; name: string }[] = [];
+  for (const t of project.schema.types.values()) {
+    if (t.def.singleton) continue;
+    const s = score(t.def.name, query);
+    if (s !== null) types.push({ x: { kind: "type", name: t.def.name, count: counts.get(t.def.name) ?? 0 }, s, name: t.def.name });
+  }
+  const sheets: { x: Hit; s: number; name: string }[] = [];
+  for (const sh of wb.sheets.values()) {
+    const s = score(sh.name, query);
+    if (s === null) continue;
+    const where = sh.pack === wb.root ? "root" : wb.packName(sh.pack);
+    sheets.push({ x: { kind: "sheet", id: sh.id, name: sh.name, where, rows: sh.rows.liveIds().length }, s, name: sh.name });
+  }
+  const found: { x: Hit; s: number; name: string }[] = [];
+  for (const e of entities) {
+    if (e.id === null) continue;
+    const s = score(e.id, query);
+    if (s === null) continue;
+    const sheet = wb.sheet(e.at.sheet).name;
+    const where = e.pack === wb.root ? sheet : `${wb.packName(e.pack)} / ${sheet}`;
+    // Commented-out ones after the live ones that match as well.
+    found.push({ x: { kind: "entity", id: e.id, type: e.type, where, active: e.active, at: { sheet: e.at.sheet, row: e.at.row } }, s: s * 2 + (e.active ? 0 : 1), name: e.id });
+  }
+  const ents = order(found);
+  // An entity whose ID is exactly what was typed comes first of all.
+  const exact = ents[0] && found.some((f) => f.x === ents[0] && f.s === 0) ? [ents[0]] : [];
+  return {
+    hits: [...exact, ...order(types).slice(0, limits.types), ...order(sheets).slice(0, limits.sheets), ...ents.slice(exact.length, limits.entities)],
+    moreEntities: Math.max(0, ents.length - limits.entities),
+  };
+}

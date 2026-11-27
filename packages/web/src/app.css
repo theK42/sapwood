@@ -390,3 +390,17 @@ button.link.muted:hover { text-decoration: underline; }
 .multi-mixed .vf-buttons { margin-top: 4px; }
 .multi-draft { margin-top: 4px; padding: 6px 8px; border-left: 2px solid var(--accent); }
 .entities-bar.small > * { white-space: nowrap; }
+
+/* The top bar's search */
+.search { position: relative; flex: 0 1 280px; min-width: 160px; }
+.search-box { width: 100%; box-sizing: border-box; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
+.search-box:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.search-list { position: absolute; top: calc(100% + 4px); left: 0; width: max(100%, 420px); max-width: calc(100vw - 32px); max-height: 70vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.35); z-index: 50; padding: 4px 0; }
+.search-list > button { display: flex; align-items: baseline; gap: 8px; width: 100%; border: 0; background: none; color: var(--text); font: inherit; font-size: 13px; text-align: left; padding: 5px 12px; cursor: pointer; }
+.search-list > button.on { background: var(--line); }
+.search-kind { flex: none; width: 92px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-id { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.search-where { margin-left: auto; white-space: nowrap; }
+.search-list .pad { padding: 6px 12px; margin: 0; }
+.search-help { margin: 4px 0 0; padding: 6px 12px 2px; border-top: 1px solid var(--line); }
+@media (max-width: 640px) { .search { flex-basis: 100%; order: 5; } }

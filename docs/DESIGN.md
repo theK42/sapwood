@@ -607,7 +607,7 @@ The landing page:
 - The pack tree, with sheets under each pack and per-pack and per-sheet validation badges.
 - A branch selector and the current task with its status and Land button.
 - Recent commits, and other people's open tasks.
-- Search across IDs, sheets and types.
+- Search across IDs, sheets and types. **As built (2026-11-26):** a box in the top bar (Ctrl+K, ⌘K, or / outside a text field or grid) lists matching types, sheets and entities as you type. Each word must be in the name, ignoring case; the whole name comes first, then names starting with it, then a word in the name starting with it (after `_`, `-`, a case change or a letter/digit change, so `bolt` finds `HeavyBolt`), then anywhere. An entity whose ID is exactly what was typed comes first of all, and commented-out entities after live ones. Enter opens an entity or a type on the entity page and a sheet as itself; Shift+Enter opens an entity's row on its sheet, or a type's grid.
 
 ### 9.2 Spreadsheet view
 

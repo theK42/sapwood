@@ -8,6 +8,8 @@ import { listen } from "./events.ts";
 import { HeadView } from "./head.ts";
 import { ChangesPage, CommitPage, HistoryPage } from "./History.tsx";
 import { routeFromPath, routePath, TABS, tabOf, tabTarget, type Route, type Tab } from "./routes.ts";
+import { SearchBox } from "./SearchBox.tsx";
+import type { Hit } from "./search.ts";
 import { IssuePanel } from "./IssuePanel.tsx";
 import { refList } from "./refs.ts";
 import { RefsPanel } from "./RefsPanel.tsx";
@@ -267,6 +269,14 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
     setJump((j) => ({ sheet: sh, row, col, n: (j?.n ?? 0) + 1 }));
   };
   const findRefs = (id: string) => setSide({ kind: "refs", id });
+  /** A search hit: an entity or a type on the entity page, a sheet; or the other way (`other`). */
+  const openHit = (h: Hit, other: boolean) => {
+    if (h.kind === "sheet") return go(branch, { kind: "sheet", id: h.id });
+    if (h.kind === "type") return go(branch, other ? { kind: "type", name: h.name } : { kind: "entities", type: h.name, id: null });
+    const pos = source?.project.wb.sheet(h.at.sheet).rows.posOf(h.at.row);
+    if (other && pos) return goTo(h.at.sheet, pos - 1, null);
+    go(branch, { kind: "entities", type: h.type, id: h.id });
+  };
   const openPanel = (at: PanelCell) => setSide({ kind: "value", at });
   const openForm = (at: FormRow) => setSide({ kind: "form", at });
   const showHistory = (of: HistoryOf) => setSide({ kind: "history", of });
@@ -358,6 +368,7 @@ function Workspace({ me, signedOut }: { me: Me; signedOut(): void }) {
             );
           })}
         </nav>
+        {source && <SearchBox source={source} open={openHit} />}
         <span className="spacer" />
         <span className="muted">
           {me.login} · {me.role}
