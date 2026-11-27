@@ -33,14 +33,22 @@ function asField(name: string, d: WizardDef["params"][string]): FieldDef | null 
   const f: FieldDef = { id: name, name, type };
   if (d.required) f.required = true;
   if (d.description) f.description = d.description;
+  if (d.default !== undefined) f.default = d.default as NonNullable<FieldDef["default"]>;
   return f;
+}
+
+/** The form to start with: each parameter's default, filled in. */
+function defaults(w: WizardDef | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [n, d] of Object.entries(w?.params ?? {})) if (d.default !== undefined) out[n] = d.default;
+  return out;
 }
 
 export function WizardPanel(p: Props) {
   const tick = useSource(p.source);
   const project: Project = p.source.project;
   const w = project.schema.schema.wizards.find((x) => x.name === p.name);
-  const [params, setParams] = useState<Record<string, unknown>>({});
+  const [params, setParams] = useState<Record<string, unknown>>(() => defaults(w));
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<WizardReport | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
@@ -94,7 +102,7 @@ export function WizardPanel(p: Props) {
                 </button>
               )}
               <div className="vf-buttons">
-                <button className="button quiet small" onClick={() => (setDone(null), setParams({}))}>
+                <button className="button quiet small" onClick={() => (setDone(null), setParams(defaults(w)))}>
                   Run it again
                 </button>
               </div>

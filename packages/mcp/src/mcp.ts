@@ -133,7 +133,7 @@ const PATCH = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("runWizard"),
     wizard: z.string().describe("The wizard's name, from the schema's wizards section"),
-    params: z.record(z.string(), z.unknown()).describe("Its parameters by name; missing ones take their defaults"),
+    params: z.record(z.string(), z.unknown()).describe("Its parameters by name; missing or blank ones take their defaults"),
     cursor: z
       .object({ sheet: z.string(), pack: z.string().optional(), row: z.number().int().positive() })
       .optional()

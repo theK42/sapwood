@@ -105,6 +105,19 @@ describe("wizards (DESIGN §9.3)", () => {
     expect(msg(welcome)).toMatch(/ID "mail_welcome" is taken/);
   });
 
+  it("a parameter left blank takes its default, and one with a default is never missing", () => {
+    const s = project();
+    const req = Sapwood.load(SCHEMA.replace("tier: { type: int, default: 1 }", "tier: { type: int, default: 2, required: true }"), { sheets: [] });
+    for (const tier of [undefined, null, "", "  "]) {
+      const r = req.previewWizard("RewardedMail", { ...welcome, tier });
+      expect(r.made.length).toBe(4);
+    }
+    req.runWizard("RewardedMail", { ...welcome, tier: "" });
+    expect(req.get("mail_welcome").cost).toMatchObject({ $formula: "=10*2" });
+    // Without a default, blank is still missing; blank isn't checked against the pattern.
+    expect(() => s.runWizard("RewardedMail", { ...welcome, key: "" })).toThrow(/key is required$/);
+  });
+
   it("a preview changes nothing; as a patch; at the cursor", () => {
     const s = project();
     const before = canonDoc(cloneDoc(s.doc));

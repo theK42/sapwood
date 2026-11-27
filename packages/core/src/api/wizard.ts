@@ -71,17 +71,19 @@ function holds(when: string, scope: Scope): boolean {
 
 /**
  * The plan for a run, or the problems that stop it (each said plainly). `params` are by name;
- * a missing one takes its default.
+ * a missing or blank one takes its default.
  */
 export function planWizard(w: WizardDef, given: Record<string, unknown>): { plan: WizardPlan | null; problems: string[] } {
   const problems: string[] = [];
   const scope: Scope = {};
   for (const [name, d] of Object.entries(w.params)) {
-    let v = given[name] ?? d.default ?? (d.type === "pack" ? "root" : undefined);
+    // Left blank, it takes its default: a required one with a default is never missing.
+    let v = given[name];
+    if (v === undefined || v === null || (typeof v === "string" && v.trim() === "")) v = d.default ?? (d.type === "pack" ? "root" : undefined);
     if (typeof v === "string" && /^(int|float)$/.test(d.type) && v.trim() !== "" && Number.isFinite(Number(v))) v = Number(v);
     const blank = v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0);
     if (blank && d.required) problems.push(`${name} is required`);
-    if (typeof v === "string" && d.pattern) {
+    if (typeof v === "string" && v !== "" && d.pattern) {
       const p = readPattern(d.pattern);
       if (!p.re.test(v)) problems.push(`${name} must ${p.says}`);
     }
