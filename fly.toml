@@ -1,0 +1,43 @@
+# Sapwood on Fly.io (docs/HOSTING.md). Change `app` to your app's name, and the URL in
+# SAPWOOD_PUBLIC_URL with it. Secrets (the GitHub app's) are set with `fly secrets set`.
+
+app = "sapwood-demo"
+primary_region = "iad"
+
+[build]
+  # Published by .github/workflows/image.yml on each push to main.
+  image = "ghcr.io/thek42/sapwood:latest"
+
+[env]
+  PORT = "8080"
+  SAPWOOD_HOST = "0.0.0.0"
+  SAPWOOD_DB = "/data/sapwood.sqlite"
+  SAPWOOD_PUBLIC_URL = "https://sapwood-demo.fly.dev"
+  # First start only: the project and its first Admin (your GitHub login).
+  SAPWOOD_INIT_PROJECT = "krbsg"
+  SAPWOOD_INIT_ADMIN = "thek42"
+
+# The project's SQLite file lives here, and survives restarts and deploys.
+[[mounts]]
+  source = "sapwood_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Stopped when nobody's using it, started again on the next visit (a few seconds).
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

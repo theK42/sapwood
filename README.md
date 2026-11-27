@@ -6,6 +6,7 @@ Status: early development. Nothing usable yet.
 
 - [Design](docs/DESIGN.md)
 - [Roadmap](docs/ROADMAP.md)
+- [Hosting](docs/HOSTING.md): a server on Fly.io, or anywhere with Docker
 
 ## The command line
 

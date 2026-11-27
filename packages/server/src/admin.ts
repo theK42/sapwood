@@ -28,8 +28,11 @@ const HELP = `Usage: sapwood-server <command> [options]
   token <login> --name <name> [--role <r>] [--read-only] [--no-land] [--branch <b>]… [--expires <date>]
                          Make a personal access token; it is shown once
   serve [--port <n>] [--host <h>] [--url <public url>] [--web <dir>]
-                         Serve the HTTP API and the web app (default 127.0.0.1:8417);
-                         the web app is packages/web/dist unless --web says otherwise
+                         Serve the HTTP API and the web app (default 127.0.0.1:8417, or
+                         $PORT and $SAPWOOD_HOST); the web app is packages/web/dist unless
+                         --web says otherwise. On a database with no project, and with
+                         $SAPWOOD_INIT_ADMIN set (a GitHub login), it starts one first:
+                         empty, or the KRBSG sample with $SAPWOOD_INIT_PROJECT=krbsg
 
 Every command takes --db <file> (default: $SAPWOOD_DB, else ./sapwood.sqlite).
 
@@ -40,6 +43,12 @@ GitHub sign-in needs a GitHub OAuth app, with its device flow enabled. serve rea
                                  URL is this plus /auth/github/callback`;
 
 class Usage extends Error {}
+
+/** The KRBSG sample's schema and sheets (packages/core/fixtures/krbsg), for a demo server's first start. */
+function sample(): [string, string] {
+  const dir = fileURLToPath(new URL("../../core/fixtures/krbsg/", import.meta.url));
+  return [readFileSync(join(dir, "schema.yaml"), "utf8"), readFileSync(join(dir, "project.yaml"), "utf8")];
+}
 
 /** packages/web/dist, when it's been built (npm run build:web), else null. */
 function builtWeb(): string | null {
@@ -155,7 +164,7 @@ function admin(argv: string[], io: AdminIo): number | { close(): void } {
       const p = parse(rest, { port: { type: "string" }, host: { type: "string" }, url: { type: "string" }, web: { type: "string" } });
       const port = Number(p.values.port ?? io.env.PORT ?? 8417);
       if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Usage(`Not a port: ${p.values.port}`);
-      const hostname = (p.values.host as string | undefined) ?? "127.0.0.1";
+      const hostname = (p.values.host as string | undefined) ?? io.env.SAPWOOD_HOST ?? "127.0.0.1";
       const options: AppOptions = {};
       const publicUrl = (p.values.url as string | undefined) ?? io.env.SAPWOOD_PUBLIC_URL;
       if (publicUrl !== undefined) {
@@ -175,9 +184,21 @@ function admin(argv: string[], io: AdminIo): number | { close(): void } {
       }
       const db = open(p.values);
       const repo = new Repo(db);
+      if (!repo.initialized && io.env.SAPWOOD_INIT_ADMIN) {
+        // First start on a host with no shell (a container): set up from the environment.
+        const kind = io.env.SAPWOOD_INIT_PROJECT ?? "empty";
+        if (kind !== "empty" && kind !== "krbsg") {
+          db.close();
+          throw new Usage(`$SAPWOOD_INIT_PROJECT is empty or krbsg (got ${kind})`);
+        }
+        const s = kind === "krbsg" ? Sapwood.load(...sample()) : Sapwood.load("", { sheets: [] });
+        const u = new Auth(db).addUser(io.env.SAPWOOD_INIT_ADMIN, "admin", "sapwood-server");
+        const c = repo.init(s.doc, u.login);
+        io.out(`Started the project on main (commit ${c.id}, ${kind === "krbsg" ? "the KRBSG sample" : "empty"}), with ${u.login} as Admin.`);
+      }
       if (!repo.initialized) {
         db.close();
-        throw new RepoError("state", "This database has no project: run sapwood-server init first");
+        throw new RepoError("state", "This database has no project: run sapwood-server init first, or set $SAPWOOD_INIT_ADMIN for the server to start one");
       }
       const auth = new Auth(db);
       const events = new Events(repo, auth);

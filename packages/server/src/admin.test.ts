@@ -69,6 +69,25 @@ describe("sapwood-server", () => {
     expect(runWith({ SAPWOOD_PUBLIC_URL: "nope" }, "serve").r).toBe(2);
   });
 
+  it("on its first start in a container, starts the project from the environment, once", async () => {
+    const { runWith } = setup();
+    const env = { SAPWOOD_INIT_ADMIN: "Ada", SAPWOOD_INIT_PROJECT: "krbsg", SAPWOOD_HOST: "0.0.0.0" };
+    expect(runWith({ ...env, SAPWOOD_INIT_PROJECT: "nope" }, "serve").r).toBe(2);
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    const s = runWith(env, "serve", "--port", String(port));
+    expect(s.out).toMatch(/^Started the project on main \(commit [0-9a-f]+, the KRBSG sample\), with ada as Admin\.\nServing the Sapwood API on http:\/\/0\.0\.0\.0:/);
+    const first = s.r as { close(): void };
+    try {
+      expect((await fetch(`http://127.0.0.1:${port}/healthz`)).status).toBe(200);
+    } finally {
+      first.close();
+    }
+    // Started already: the next start just serves it.
+    const again = runWith(env, "serve", "--port", String(port + 1));
+    expect(again.out).not.toContain("Started the project");
+    (again.r as { close(): void }).close();
+  });
+
   it("serves only a started project, and says what was typed wrong", () => {
     const { run } = setup();
     expect(run("serve").err).toContain("run sapwood-server init first");

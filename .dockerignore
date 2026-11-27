@@ -1,0 +1,16 @@
+.git
+.github
+.claude
+**/node_modules
+**/dist
+**/coverage
+*.tsbuildinfo
+*.sqlite
+*.sqlite-*
+.env
+.env.*
+.mcp.json
+serve-dev.bat
+fly.toml
+Dockerfile
+.dockerignore
