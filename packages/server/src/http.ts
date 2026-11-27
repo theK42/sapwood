@@ -20,6 +20,7 @@ import {
 } from "@thek42/sapwood-core";
 import { demand, isRole, type Auth, type Principal, type Role, type Scopes } from "./auth.ts";
 import { Events } from "./events.ts";
+import { oauthRoutes } from "./oauth.ts";
 import type { GitHub } from "./github.ts";
 import { RepoError, type Repo, type Resolutions, type TaskInfo, type TaskState } from "./repo.ts";
 
@@ -61,10 +62,18 @@ export interface AppOptions {
   events?: Events;
   /** The built web app's folder (packages/web/dist), served at every other path. */
   web?: string;
+  /**
+   * MCP, hosted at /mcp (the MCP package's serveMcp; injected, as that package depends on
+   * this one): one request, as the token's owner, with this server's API in-process.
+   */
+  mcp?: McpHost;
 }
+
+export type McpHost = (req: Request, token: string, ctx: { base: string; api: (url: string, init?: RequestInit) => Promise<Response> }) => Promise<Response>;
 
 const SESSION = "sapwood_session";
 const STATE = "sapwood_oauth_state";
+const RETURN = "sapwood_return";
 const SESSION_DAYS = 30;
 /** A write by session cookie must carry this header, which a page on another site can't send. */
 const CSRF_HEADER = "x-sapwood-request";
@@ -125,6 +134,9 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     const gh = github();
     const state = randomBytes(18).toString("base64url");
     setCookie(c, STATE, state, { httpOnly: true, secure: secure(c), sameSite: "Lax", path: "/auth", maxAge: 600 });
+    // Where to come back to afterwards (a page here only), such as a connector's sign-in.
+    const back = c.req.query("return");
+    if (back && /^\/(?!\/)/.test(back)) setCookie(c, RETURN, back, { httpOnly: true, secure: secure(c), sameSite: "Lax", path: "/auth", maxAge: 600 });
     return c.redirect(gh.authorizeUrl(state, callback(c)));
   });
   app.get("/auth/github/callback", async (c) => {
@@ -147,7 +159,9 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     const expires = new Date(Date.now() + SESSION_DAYS * 86_400_000).toISOString();
     const { token } = auth.createToken(u.login, { name: "Web sign-in", expires }, u.login);
     setCookie(c, SESSION, token, { httpOnly: true, secure: secure(c), sameSite: "Lax", path: "/", maxAge: SESSION_DAYS * 86_400 });
-    return c.redirect("/");
+    const back = getCookie(c, RETURN);
+    deleteCookie(c, RETURN, { path: "/auth" });
+    return c.redirect(back && /^\/(?!\/)/.test(back) ? back : "/");
   });
   /**
    * Sign the browser in with a Sapwood token, for servers without GitHub sign-in: the session
@@ -172,6 +186,24 @@ export function createApp(repo: Repo, auth: Auth, opts: AppOptions = {}): Hono<E
     if (p) auth.revokeToken(p.token, p.login);
     deleteCookie(c, SESSION, { path: "/" });
     return c.json({ signedOut: !!p });
+  });
+
+  /**
+   * MCP, hosted (DESIGN §9.4), for Claude's custom connectors and other remote MCP clients.
+   * By bearer token only, never the session cookie; without one, the answer says where to
+   * find how to get one (OAuth, for connectors).
+   */
+  oauthRoutes(app, { db: auth.db, auth, base, session: SESSION, github: !!opts.github });
+
+  app.all("/mcp", async (c) => {
+    if (!opts.mcp) return c.json({ error: { code: "not-found", message: "This server doesn't host MCP" } }, 404);
+    const m = /^Bearer\s+(\S+)$/i.exec(c.req.header("authorization") ?? "");
+    const p = m ? auth.authenticate(m[1]!) : null;
+    if (!m || !p) {
+      c.header("WWW-Authenticate", `Bearer realm="sapwood", resource_metadata="${base(c)}/.well-known/oauth-protected-resource/mcp"`);
+      return c.json({ error: { code: "unauthenticated", message: "Connect with a Sapwood token (Authorization: Bearer swd_…), or sign in through the connector" } }, 401);
+    }
+    return opts.mcp(c.req.raw, m[1]!, { base: base(c), api: (url, init) => Promise.resolve(app.fetch(new Request(url, init))) });
   });
 
   app.use("/api/*", async (c, next) => {
@@ -658,7 +690,8 @@ function serveWeb(app: Hono<Env>, dir: string): void {
     } catch {
       return next(); // a malformed %-escape
     }
-    if (path.startsWith("/api/") || path.startsWith("/auth/") || path === "/healthz") return next();
+    // Not pages: the API, sign-in, OAuth and its discovery, MCP. (A probe for .well-known/openid-configuration gets a 404, not the app.)
+    if (path.startsWith("/api/") || path.startsWith("/auth/") || path.startsWith("/oauth/") || path.startsWith("/.well-known/") || path === "/mcp" || path === "/healthz") return next();
     let file = resolve(join(root, path));
     if (file !== root && !file.startsWith(root + sep)) return next(); // ../ out of the folder
     let isFile = false;

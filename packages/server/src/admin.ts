@@ -10,7 +10,7 @@ import { Auth, isRole, type Role, type Scopes } from "./auth.ts";
 import { Db } from "./db.ts";
 import { GitHub, type GitHubConfig } from "./github.ts";
 import { Events } from "./events.ts";
-import { createApp, listen, type AppOptions } from "./http.ts";
+import { createApp, listen, type AppOptions, type McpHost } from "./http.ts";
 import { Repo, RepoError } from "./repo.ts";
 
 export interface AdminIo {
@@ -185,6 +185,14 @@ function admin(argv: string[], io: AdminIo): number | { close(): void } {
         if (!existsSync(join(web, "index.html"))) throw new Usage(`No web app in ${web} (no index.html)`);
         options.web = web;
       }
+      // MCP at /mcp, from the MCP package, loaded on the first request (it depends on this
+      // package, so it's found by name at run time rather than imported).
+      let mcp: { serveMcp: McpHost } | undefined;
+      options.mcp = async (req, token, ctx) => {
+        const name = "@thek42/sapwood-mcp/http";
+        mcp ??= (await import(name)) as { serveMcp: McpHost };
+        return mcp.serveMcp(req, token, ctx);
+      };
       const db = open(p.values);
       const repo = new Repo(db);
       if (!repo.initialized && io.env.SAPWOOD_INIT_ADMIN) {

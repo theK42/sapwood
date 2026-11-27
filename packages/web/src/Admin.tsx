@@ -422,6 +422,7 @@ export function AccountPage(p: AccountProps) {
   const { busy, refused, act } = useAct(tokens.again);
   const [made, setMade] = useState<{ token: string; name: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState(false);
   const [dead, setDead] = useState(false);
   const shown = (tokens.data ?? []).filter((t) => dead || tokenState(t) === "live");
   const canWrite = !p.me.scopes.readOnly;
@@ -436,8 +437,29 @@ export function AccountPage(p: AccountProps) {
           {p.me.login} · {ROLE_LABEL[p.me.role]}
         </span>
       </div>
+      <section className="panel">
+        <h2>Connect Claude</h2>
+        <p className="small">
+          In the Claude Desktop app (or claude.ai): <b>Settings</b>, <b>Connectors</b>, <b>Add custom connector</b>. Name it Sapwood, and give it this address:
+        </p>
+        <div className="admin-token">
+          <code>{p.origin}/mcp</code>
+          <button
+            className="button small"
+            onClick={() => {
+              void navigator.clipboard?.writeText(`${p.origin}/mcp`).then(() => setCopiedUrl(true));
+            }}
+          >
+            {copiedUrl ? "Copied" : "Copy"}
+          </button>
+        </div>
+        <p className="muted small">
+          Then <b>Connect</b>: you sign in here and allow it. Claude works in your current task, as you; it can't land, so you review and land what it did. It shows below as a token, “Claude (connector)”, to revoke if you want to disconnect it. In Claude Code:{" "}
+          <code>claude mcp add --transport http sapwood {p.origin}/mcp</code>
+        </p>
+      </section>
       <p className="muted small">
-        A token lets the <code>sapwood</code> command, a script, or an LLM's MCP server act as you, with the limits you give it. It's shown once, when it's made.
+        A token lets the <code>sapwood</code> command, a script, or another MCP client act as you, with the limits you give it. It's shown once, when it's made.
       </p>
       {made && (
         <section className="panel admin-made" role="status">

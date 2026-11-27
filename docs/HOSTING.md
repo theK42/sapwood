@@ -85,6 +85,22 @@ Admins also manage people and tokens.
   anyone signing in with GitHub gets that role at once. Anyone who has the address can get
   in, so use it for demos. You can change a role, or remove someone, on the Admin tab.
 
+## Connecting Claude
+
+The server hosts the MCP server at `/mcp`: nothing to install. Each person connects their
+own Claude, as themselves.
+
+- **Claude Desktop or claude.ai:** **Settings**, **Connectors**, **Add custom connector**,
+  with the address `https://sapwood-demo.fly.dev/mcp`. **Connect** opens this server: sign in
+  with GitHub, and **Allow**. (Claude reaches the server from Anthropic's side, so it must be
+  on the internet, as a Fly server is.)
+- **Claude Code:** `claude mcp add --transport http sapwood https://sapwood-demo.fly.dev/mcp`,
+  then connect from `/mcp` in Claude Code, which signs in the same way.
+
+Claude then works in the person's current task, with their role; it can't land, so they review
+and land what it did. Its token shows under **Your tokens** as "Claude (connector)": revoking it
+disconnects Claude. The same page (click your name in the top bar) shows the address to copy.
+
 ## Updating
 
 Push to `main`, wait for the **Image** workflow to finish, then:
