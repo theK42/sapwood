@@ -5,12 +5,16 @@
 //
 // Several can be picked at once (each row's checkbox, Ctrl- or ⌘-click, Shift-click or
 // Shift+↑↓ for a run, Ctrl+A for all those listed): the form then edits them together.
+//
+// The types can be put in your own order (dragged, or Alt+↑↓ on one), kept in this browser
+// (typeOrder.ts); "Schema order" goes back to the schema's, which everyone shares.
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { validate, type Op, type PackId, type Project, type SheetId } from "@thek42/sapwood-core";
 import { aOrAn, entityAt, entityList, type ListedEntity } from "./form.ts";
 import { FormPanel, NewEntityPanel, type FormRow } from "./FormPanel.tsx";
 import { MultiForm } from "./MultiForm.tsx";
+import { inOrder, moveIn, saveOrder, savedOrder } from "./typeOrder.ts";
 import type { Source } from "./head.ts";
 import { plural, useSource } from "./hooks.ts";
 
@@ -42,8 +46,18 @@ export function EntitiesPage(p: Props) {
   const types = useMemo(() => {
     const n = new Map<string, number>();
     for (const e of project.project().entities) n.set(e.type, (n.get(e.type) ?? 0) + 1);
-    return [...project.schema.types.values()].filter((t) => !t.def.singleton).map((t) => ({ name: t.def.name, count: n.get(t.def.name) ?? 0 }));
+    return [...project.schema.types.values()].filter((t) => !t.def.singleton).map((t) => ({ id: t.def.id, name: t.def.name, count: n.get(t.def.name) ?? 0 }));
   }, [project, tick]);
+  // Your own order of them, if you've set one.
+  const [order, setOrder] = useState<string[]>(savedOrder);
+  const shownTypes = useMemo(() => inOrder(types, order), [types, order]);
+  const reorder = (ids: string[]) => {
+    const same = ids.join("|") === types.map((t) => t.id).join("|");
+    setOrder(same ? [] : ids);
+    saveOrder(same ? [] : ids);
+  };
+  const [dragType, setDragType] = useState<string | null>(null);
+  const [overType, setOverType] = useState<{ id: string; where: "before" | "after" } | null>(null);
   const type = p.type !== null && types.some((t) => t.name === p.type) ? p.type : null;
   const [search, setSearch] = useState("");
   useEffect(() => setSearch(""), [type]);
@@ -149,11 +163,59 @@ export function EntitiesPage(p: Props) {
   return (
     <main className="entities">
       <nav className="entities-types" aria-label="Types">
-        <h2>Types</h2>
+        <h2 className="entities-types-head">
+          Types
+          {order.length > 0 && (
+            <button className="link small" onClick={() => reorder([])} title="Back to the schema's order, which everyone shares">
+              Schema order
+            </button>
+          )}
+        </h2>
         <ul>
-          {types.map((t) => (
-            <li key={t.name}>
-              <button className={t.name === type ? "on" : ""} aria-current={t.name === type ? "page" : undefined} onClick={() => p.openType(t.name)}>
+          {shownTypes.map((t) => (
+            <li
+              key={t.id}
+              draggable
+              className={`${dragType === t.id ? "dragging" : ""}${overType?.id === t.id ? ` drop-${overType.where}` : ""}`}
+              title="Drag to put the types in your own order (kept in this browser)"
+              onDragStart={(e) => {
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", t.name);
+                setDragType(t.id);
+              }}
+              onDragEnd={() => (setDragType(null), setOverType(null))}
+              onDragOver={(e) => {
+                if (!dragType) return;
+                e.preventDefault();
+                const r = e.currentTarget.getBoundingClientRect();
+                const where = e.clientY < r.top + r.height / 2 ? "before" : "after";
+                if (overType?.id !== t.id || overType.where !== where) setOverType({ id: t.id, where });
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragType && overType) reorder(moveIn(shownTypes.map((x) => x.id), dragType, overType.id, overType.where));
+                setDragType(null);
+                setOverType(null);
+              }}
+            >
+              <button
+                className={t.name === type ? "on" : ""}
+                aria-current={t.name === type ? "page" : undefined}
+                onClick={() => p.openType(t.name)}
+                onKeyDown={(e) => {
+                  // Alt+↑↓: move it up or down in your order, keeping the focus on it.
+                  if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+                  e.preventDefault();
+                  const ids = shownTypes.map((x) => x.id);
+                  const i = ids.indexOf(t.id);
+                  const j = e.key === "ArrowUp" ? i - 1 : i + 1;
+                  if (j < 0 || j >= ids.length) return;
+                  reorder(moveIn(ids, t.id, ids[j]!, e.key === "ArrowUp" ? "before" : "after"));
+                  const btn = e.currentTarget;
+                  requestAnimationFrame(() => btn.focus());
+                }}
+                aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+              >
                 <span>{t.name}</span>
                 <span className="muted small">{t.count}</span>
               </button>

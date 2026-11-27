@@ -419,3 +419,11 @@ button.link.muted:hover { text-decoration: underline; }
 .tree-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .tree-row.drop-into { background: color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 6px; }
 .tree-dragging .tree-row a { pointer-events: none; }
+
+/* Your own type order on the entity page */
+.entities-types-head { display: flex; align-items: baseline; gap: 8px; }
+.entities-types-head .link { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: auto; white-space: nowrap; }
+.entities-types li[draggable="true"] { cursor: grab; }
+.entities-types li.dragging { opacity: 0.45; }
+.entities-types li.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.entities-types li.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
