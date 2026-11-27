@@ -377,3 +377,16 @@ button.link.muted:hover { text-decoration: underline; }
 .suggest .suggest-id { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; }
 .suggest .muted { margin-left: auto; }
 .ref-editor { width: 100%; min-width: 0; box-sizing: border-box; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; padding: 0; }
+
+/* Picking several entities on the entity page, and their form */
+.entities-row { display: flex; align-items: baseline; }
+.entities-row > button { flex: 1; min-width: 0; }
+.entities-pick { margin: 0 0 0 10px; flex: none; opacity: 0; cursor: pointer; }
+.entities-row:hover .entities-pick, .entities-pick:checked, .entities-pick:focus-visible, .entities-rows.picking .entities-pick { opacity: 1; }
+@media (hover: none) { .entities-pick { opacity: 1; } }
+.multi-bar { flex-wrap: wrap; gap: 6px; }
+.multi-ids { display: flex; flex-wrap: wrap; gap: 4px; max-height: 84px; overflow: auto; }
+.multi-ids .chip { padding: 1px 9px; }
+.multi-mixed .vf-buttons { margin-top: 4px; }
+.multi-draft { margin-top: 4px; padding: 6px 8px; border-left: 2px solid var(--accent); }
+.entities-bar.small > * { white-space: nowrap; }
